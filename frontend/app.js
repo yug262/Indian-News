@@ -815,7 +815,7 @@ function openModal(article) {
                 ${renderRelevanceBadge(article.news_relevance)}
                 ${renderCategoryBadge(article.news_category)}
             </div>
-            <span class="card-source"><span class="source-dot"></span>${escapeHtml(article.source || 'Unknown')}</span>
+            <span class="card-source"><span class="source-dot"></span>${escapeHtml(article.source || 'Unknown')}<span class="source-dot"></span></span>
         </div>
         <h2 class="modal-title">${escapeHtml(article.title)}</h2>
         <div class="modal-timestamps">
@@ -1220,7 +1220,7 @@ function renderNews(articles) {
                         ${renderCategoryBadge(article.news_category)}
                         <span class="featured-type-badge">${article.featuredType}</span>
                     </div>
-                    <span class="card-source"><span class="source-dot"></span>${escapeHtml(article.source || 'Unknown')}</span>
+                    <span class="card-source"><span class="source-dot"></span>${escapeHtml(article.source || 'Unknown')}<span class="source-dot"></span></span>
                 </div>
                 <h2 class="card-title">${escapeHtml(article.title)}</h2>
                 ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
@@ -1261,7 +1261,7 @@ function renderNews(articles) {
                     ${renderRelevanceBadge(article.news_relevance)}
                     ${renderCategoryBadge(article.news_category)}
                 </div>
-                <span class="card-source"><span class="source-dot"></span>${escapeHtml(article.source || 'Unknown')}</span>
+                <span class="card-source"><span class="source-dot"></span>${escapeHtml(article.source || 'Unknown')}<span class="source-dot"></span></span>
             </div>
             <h2 class="card-title">${escapeHtml(article.title)}</h2>
             ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}

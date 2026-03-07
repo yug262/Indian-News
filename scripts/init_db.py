@@ -6,8 +6,12 @@ Usage:
     python init_db.py
 """
 
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import psycopg2
-from db import DB_CONFIG
+from app.core.db import DB_CONFIG
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS news (

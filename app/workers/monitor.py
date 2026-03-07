@@ -9,11 +9,11 @@ from dateutil import parser as date_parser
 import hashlib
 from difflib import SequenceMatcher
 from urllib.parse import urlparse
-from app.core.agent import classify_batch
-from app.core.db import fetch_all, execute_many, execute_query
+from ..core.agent import classify_batch
+from ..core.db import fetch_all, execute_many, execute_query
 import threading
 import re
-from app.workers.prediction_monitor import check_predictions
+from .prediction_monitor import check_predictions
 
 # ==============================
 # CONFIG
@@ -50,6 +50,12 @@ RSS_FEEDS = [
     "https://www.ft.com/world?format=rss",
     # "https://feeds.marketwatch.com/marketwatch/topstories/"
     "https://www.ft.com/markets?format=rss",
+    "https://feeds.bloomberg.com/markets/news.rss",
+    "https://www.ecb.europa.eu/rss/press.html",
+    "https://finance.yahoo.com/news/rssindex",
+    "https://cointelegraph.com/rss",
+    "https://www.investing.com/rss/news.rss",
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"
     # "https://feeds.bloomberg.com/markets/news.rss",
     "https://www.ecb.europa.eu/rss/press.html",
 ]
