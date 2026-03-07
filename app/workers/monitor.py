@@ -3,6 +3,7 @@ import aiohttp
 import feedparser
 import json
 import os
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from dateutil import parser as date_parser
 import hashlib
@@ -55,6 +56,8 @@ RSS_FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.investing.com/rss/news.rss",
     "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"
+    # "https://feeds.bloomberg.com/markets/news.rss",
+    "https://www.ecb.europa.eu/rss/press.html",
 ]
 FETCH_INTERVAL = 30  # seconds
 
@@ -72,10 +75,9 @@ def cleanup_old_news():
         print(f"Error during cleanup: {e}")
 
 def get_existing_hashes():
-    """Fetch all hashes for today's news from the database."""
-    today = datetime.now(timezone.utc).date()
-    query = "SELECT title_hash, title FROM news WHERE DATE(published) = %s"
-    rows = fetch_all(query, (today,))
+    """Fetch all hashes currently in the database."""
+    query = "SELECT title_hash, title FROM news"
+    rows = fetch_all(query)
     
     hashes = {row['title_hash'] for row in rows}
     titles = [row['title'] for row in rows]
@@ -141,6 +143,15 @@ def extract_image(entry):
 # FETCH SINGLE RSS
 # ==============================
 
+class DictWithAttrs(dict):
+    def __getattr__(self, item):
+        try:
+            return self[item]
+        except KeyError:
+            raise AttributeError(item)
+    def __setattr__(self, key, value):
+        self[key] = value
+
 async def fetch_feed(session, url):
     try:
         async with session.get(url, timeout=15) as response:
@@ -148,9 +159,46 @@ async def fetch_feed(session, url):
             feed = feedparser.parse(content)
             # Attach the source URL to each entry so we know where it came from
             source_name = extract_source(url)
-            for entry in feed.entries:
+            
+            entries = feed.entries
+            
+            # If feedparser finds no entries, fallback to treating it as a news sitemap
+            if not entries and "<urlset" in content:
+                try:
+                    root = ET.fromstring(content)
+                    ns = {
+                        'sitemap': 'http://www.sitemaps.org/schemas/sitemap/0.9',
+                        'news': 'http://www.google.com/schemas/sitemap-news/0.9',
+                        'image': 'http://www.google.com/schemas/sitemap-image/1.1'
+                    }
+                    for url_elem in root.findall('sitemap:url', ns):
+                        loc = url_elem.find('sitemap:loc', ns)
+                        news_elem = url_elem.find('news:news', ns)
+                        
+                        if loc is not None and news_elem is not None:
+                            title_elem = news_elem.find('news:title', ns)
+                            pub_date_elem = news_elem.find('news:publication_date', ns)
+                            
+                            entry = DictWithAttrs()
+                            entry['link'] = loc.text
+                            if title_elem is not None:
+                                entry['title'] = title_elem.text
+                            if pub_date_elem is not None:
+                                entry['published'] = pub_date_elem.text
+                                
+                            entry['summary'] = ""
+                            
+                            image_elem = url_elem.find('image:image/image:loc', ns)
+                            if image_elem is not None:
+                                entry['media_content'] = [{'url': image_elem.text}]
+                            
+                            entries.append(entry)
+                except Exception as xml_e:
+                    print(f"Error parsing sitemap XML for {url}: {xml_e}")
+
+            for entry in entries:
                 entry.source = source_name
-            return feed.entries
+            return entries
     except Exception as e:
         print(f"Error fetching {url}: {e}")
         return []
@@ -313,17 +361,23 @@ async def fetch_all_feeds():
         print("No new articles")
 
 # ==============================
-# LOOP EVERY 30 SECONDS
+# MAIN BACKGROUND LOOPS
 # ==============================
 
-async def main():
+async def run_predictions_loop():
     while True:
         print(f"\n[{datetime.now(timezone.utc).isoformat()}] Running prediction check...")
         try:
             check_predictions()
         except Exception as e:
             print(f"[PRED] Error during prediction check: {e}")
-            
+        await asyncio.sleep(15)
+
+async def main():
+    # Start prediction monitor loop concurrently
+    asyncio.create_task(run_predictions_loop())
+    
+    while True:
         print(f"\nChecking feeds at {datetime.now(timezone.utc)} UTC")
         await fetch_all_feeds()
         await asyncio.sleep(FETCH_INTERVAL)

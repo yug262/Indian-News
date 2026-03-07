@@ -13,6 +13,7 @@ Usage:
 
 import time
 import traceback
+import requests
 from datetime import datetime, timezone, timedelta
 
 from app.core.db import fetch_all, execute_query
@@ -40,6 +41,26 @@ _YF_TO_COINGECKO = {
 }
 
 
+_CG_SEARCH_CACHE = {}
+
+def _get_coingecko_id(query: str) -> str | None:
+    query = query.lower()
+    if query in _CG_SEARCH_CACHE:
+        return _CG_SEARCH_CACHE[query]
+    
+    try:
+        r = requests.get(f"https://api.coingecko.com/api/v3/search?query={query}", timeout=10)
+        data = r.json()
+        if data.get("coins") and len(data["coins"]) > 0:
+            cg_id = data["coins"][0]["id"]
+            _CG_SEARCH_CACHE[query] = cg_id
+            return cg_id
+    except Exception:
+        pass
+    
+    _CG_SEARCH_CACHE[query] = query # fallback
+    return query
+
 def _log(msg: str):
     try:
         print(msg, flush=True)
@@ -51,29 +72,46 @@ def _fetch_price(symbol: str) -> float | None:
     """
     Get the latest real-time price for a symbol.
     Uses yfinance 1-minute intraday tick so indices/equities update during market hours.
-    Falls back to CoinGecko for crypto assets.
+    Falls back to CoinGecko for crypto assets dynamically.
     """
     import yfinance as yf
+    
+    query_symbol = symbol
+    is_crypto_dynamic = False
+    raw_name = symbol
+    
+    if symbol.startswith("CRYPTO:"):
+        is_crypto_dynamic = True
+        raw_name = symbol.replace("CRYPTO:", "")
+        query_symbol = f"{raw_name.upper()}-USD"
+    elif symbol.startswith("FOREX:"):
+        raw_name = symbol.replace("FOREX:", "").replace("/", "").upper()
+        query_symbol = f"{raw_name}=X"
 
     try:
-        # 1d period at 5m interval = intraday price (updates every 5 min)
-        tk = yf.Ticker(symbol)
-        hist = tk.history(period="1d", interval="5m")
+        # Use 5d period to ensure we catch the last traded price even over weekends/holidays
+        tk = yf.Ticker(query_symbol)
+        hist = tk.history(period="5d", interval="1m")
         if not hist.empty:
-            return float(hist["Close"].iloc[-1])
+            valid_closes = hist["Close"].dropna()
+            if not valid_closes.empty:
+                return float(valid_closes.iloc[-1])
     except Exception:
         pass
 
     # Fallback to daily close (for weekends or off-hours)
     try:
-        price = _safe_last_close(symbol)
+        price = _safe_last_close(query_symbol)
         if price is not None:
             return price
     except Exception:
         pass
 
     # CoinGecko fallback for crypto
-    cg_id = _YF_TO_COINGECKO.get(symbol)
+    cg_id = _YF_TO_COINGECKO.get(symbol) or _YF_TO_COINGECKO.get(query_symbol)
+    if is_crypto_dynamic and not cg_id:
+        cg_id = _get_coingecko_id(raw_name)
+
     if cg_id:
         try:
             from app.core.tools import get_crypto_prices
@@ -95,6 +133,7 @@ def _compute_move_pct(start_price: float, current_price: float) -> float:
 
 def _finalize_prediction(pred: dict, final_price: float, now: datetime):
     """Determine final status and update DB."""
+    # Retrieve prediction variables
     pred_id = pred["id"]
     start_price = float(pred["start_price"])
     direction = (pred["direction"] or "").strip()
@@ -104,24 +143,35 @@ def _finalize_prediction(pred: dict, final_price: float, now: datetime):
 
     # Determine status
     if direction.lower() in ("positive", "bullish"):
-        if mfe >= predicted_move * 1.5:
-            status = "overperformed"
-        elif mfe >= predicted_move:
-            status = "hit"
-        elif final_move > 0:
-            status = "underperformed"
+        # Bullish target check
+        if mfe >= predicted_move:
+            # It hit the target at least once
+            if final_move > predicted_move:
+                status = "overperformed"
+            else:
+                status = "hit"
         else:
-            status = "wrong"
+            # It never hit the target
+            if final_move > 0:
+                status = "missed" # Could also be positive but missed target
+            else:
+                status = "wrong"
+                
     elif direction.lower() in ("negative", "bearish"):
-        if mfe >= predicted_move * 1.5:
-            status = "overperformed"
-        elif mfe >= predicted_move:
-            status = "hit"
-        elif final_move < 0:
-            # Moved in correct (negative) direction but not enough
-            status = "underperformed"
+        # Bearish target check
+        if mfe >= predicted_move:
+            # It hit the target at least once (downwards, absolute mfe)
+            if final_move < -predicted_move:
+                status = "overperformed"
+            else:
+                status = "hit"
         else:
-            status = "wrong"
+            # It never hit the target
+            if final_move < 0:
+                status = "missed" # Dropped but didn't hit target
+            else:
+                status = "wrong"
+                
     elif direction.lower() == "neutral":
         if abs(final_move) <= 0.2:
             status = "hit"
@@ -164,7 +214,20 @@ def check_predictions():
     for pred in preds:
         pred_id = pred["id"]
         symbol = pred["asset"]
+        news_id = pred["news_id"]
+        
         try:
+            # 1. Check if the parent news article still exists
+            news_exists = fetch_all("SELECT id FROM news WHERE id = %s", (news_id,))
+            if not news_exists:
+                _log(f"  🗑️ #{pred_id} {symbol}: parent news #{news_id} deleted. Finalizing early.")
+                execute_query(
+                    "UPDATE predictions SET finalized = TRUE, status = 'expired', finalized_at = %s WHERE id = %s",
+                    (now, pred_id)
+                )
+                continue
+
+            # 2. Fetch the current price
             current_price = _fetch_price(symbol)
             if current_price is None:
                 _log(f"  ⚠️ #{pred_id} {symbol}: price unavailable, skipping")

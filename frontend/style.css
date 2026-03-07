@@ -1881,9 +1881,9 @@ body {
 }
 
 .pred-status-hit { background: rgba(0, 212, 170, 0.1); color: var(--bullish); border-color: rgba(0, 212, 170, 0.2); }
-.pred-status-overperformed { background: rgba(162, 107, 255, 0.1); color: #a26bff; border-color: rgba(162, 107, 255, 0.2); }
-.pred-status-underperformed { background: rgba(255, 159, 67, 0.1); color: #ff9f43; border-color: rgba(255, 159, 67, 0.2); }
-.pred-status-wrong, .pred-status-error { background: rgba(255, 71, 87, 0.1); color: var(--bearish); border-color: rgba(255, 71, 87, 0.2); }
+.pred-status-underrated { background: rgba(162, 107, 255, 0.1); color: #a26bff; border-color: rgba(162, 107, 255, 0.2); }
+.pred-status-overstated { background: rgba(255, 193, 7, 0.1); color: #ffc107; border-color: rgba(255, 193, 7, 0.2); }
+.pred-status-missed, .pred-status-expired { background: rgba(255, 71, 87, 0.1); color: var(--bearish); border-color: rgba(255, 71, 87, 0.2); }
 .pred-status-pending { background: rgba(255, 255, 255, 0.05); color: var(--text-primary); border-color: var(--border-color); }
 
 /* Predictions Modal Tab */
@@ -1923,9 +1923,9 @@ body {
     letter-spacing: 0.5px;
 }
 .pred-status-full.pred-status-hit { background: var(--bullish); color: #000; }
-.pred-status-full.pred-status-overperformed { background: #a26bff; color: #fff; }
-.pred-status-full.pred-status-underperformed { background: #ff9f43; color: #fff; }
-.pred-status-full.pred-status-wrong, .pred-status-full.pred-status-error { background: var(--bearish); color: #fff; }
+.pred-status-full.pred-status-underrated { background: #a26bff; color: #fff; }
+.pred-status-full.pred-status-overstated { background: #ffc107; color: #000; }
+.pred-status-full.pred-status-missed, .pred-status-full.pred-status-expired { background: var(--bearish); color: #fff; }
 .pred-status-full.pred-status-pending { background: var(--text-muted); color: #fff; }
 
 .prediction-meta {

@@ -638,7 +638,13 @@ function openModal(article) {
         let biasGroupsHtml = '';
         for (const [marketType, items] of Object.entries(directionalBias)) {
             if (Array.isArray(items) && items.length > 0) {
-                const rows = items.map(item => {
+                const validItems = items.filter(item => {
+                    const name = (item.pair || item.asset || item.index || '').toLowerCase();
+                    return name && name !== 'none' && name !== 'n/a' && name !== 'null';
+                });
+                if (validItems.length === 0) continue;
+
+                const rows = validItems.map(item => {
                     const assetName = escapeHtml(item.pair || item.asset || item.index || '');
                     const dir = item.direction || '';
                     const dirLower = dir.toLowerCase();
@@ -719,7 +725,7 @@ function openModal(article) {
                         <div class="analysis-metric"><span class="analysis-metric-label">Duration</span><span class="analysis-metric-value">${escapeHtml(timeMod.impact_duration || 'N/A')}</span></div>
                         <div class="analysis-metric"><span class="analysis-metric-label">Reaction</span><span class="analysis-metric-value">${escapeHtml(timeMod.reaction_speed || 'N/A')}</span></div>
                         <div class="analysis-metric"><span class="analysis-metric-label">Fatigue</span><span class="analysis-metric-value">${fatigue.fatigue_score || 0}/10</span></div>
-                        <div class="analysis-metric"><span class="analysis-metric-label">Exposure</span><span class="analysis-metric-value">${escapeHtml(String(risk.suggested_exposure_range_pct || 'N/A'))}%</span></div>
+                        <div class="analysis-metric"><span class="analysis-metric-label">Exposure</span><span class="analysis-metric-value">${escapeHtml(String(risk.suggested_exposure_range_pct || 'N/A'))}</span></div>
                         <div class="analysis-metric"><span class="analysis-metric-label">Probability</span><span class="analysis-metric-value">${prob.direction_probability_pct || 0}%</span></div>
                     </div>
                     <div class="analysis-summary-box mt-5">
@@ -895,6 +901,13 @@ async function fetchPredictionsForModal(newsId) {
                 const dirEmoji = isBull ? '📈' : (isBear ? '📉' : '➖');
                 const dirColor = isBull ? 'var(--bullish)' : (isBear ? 'var(--bearish)' : 'var(--text-muted)');
 
+                // Map status to our new classes
+                const statusCls = status === 'expired' ? 'missed' 
+                               : status === 'wrong' ? 'missed' 
+                               : status === 'overperformed' ? 'underrated'
+                               : status === 'underperformed' ? 'overstated'
+                               : status;
+
                 const finalMove = p.final_move_pct != null ? p.final_move_pct.toFixed(2) : (p.last_move_pct != null ? p.last_move_pct.toFixed(2) : '0.00');
                 const mfeRaw = p.mfe_pct != null ? parseFloat(p.mfe_pct) : 0;
                 // MFE sign: favorable direction depends on prediction
@@ -903,31 +916,100 @@ async function fetchPredictionsForModal(newsId) {
                 const mfeColor = isBull ? 'var(--bullish)' : isBear ? 'var(--bearish)' : 'inherit';
                 const mfePrefix = mfeSign > 0 ? '+' : '';
 
+                // For the visual bar: calculate the progress
+                const targetPctStr = p.predicted_move_pct ? parseFloat(p.predicted_move_pct) : 0;
+                let targetNum = targetPctStr;
+                if(isBear) targetNum = -targetNum; // bearish targets are negative visually
+
+                const curPct = parseFloat(finalMove);
+                const mfePct = mfeSign * mfeRaw;
+
+                // Max scale is usually the target, or the MFE if it overshot
+                const maxAbs = Math.max(Math.abs(targetNum), Math.abs(mfePct), Math.abs(curPct), 0.5);
+
+                // Calculate CSS percentages (-100% to +100% mapped to 0-100% width of a zero-centered bar)
+                const toLeft = (val) => {
+                    const pct = (val / maxAbs) * 50; 
+                    return `left: ${50 + pct}%;`;
+                };
+                const toWidth = (val) => {
+                    const pct = Math.abs(val / maxAbs) * 50;
+                    return `width: ${pct}%;`;
+                };
+
+                // The bar logic
+                const isPositiveTarget = targetNum >= 0;
+                const barColor = isPositiveTarget ? 'var(--bullish)' : 'var(--bearish)';
+                const mfeDotLeft = toLeft(mfePct);
+                const curDotLeft = toLeft(curPct);
+                const targetLineLeft = toLeft(targetNum);
+                
+                const fillLeft = isPositiveTarget ? '50%' : toLeft(curPct).replace('left: ', '');
+                const fillWidth = toWidth(curPct).replace('width: ', '');
+                
+                let barHtml = `
+                <div class="prediction-stats-row" style="margin-top:12px;">
+                    <div class="pred-stat-box" style="background:transparent; border:none; padding:0;">
+                        <div class="pred-stat-val ${parseFloat(finalMove) > 0 ? 'bull' : (parseFloat(finalMove) < 0 ? 'bear' : '')}" style="font-size:1.1rem; border-bottom:1px solid ${parseFloat(finalMove) > 0 ? 'var(--bullish)' : parseFloat(finalMove) < 0 ? 'var(--bearish)' : 'var(--text-muted)'}; padding-bottom:4px; margin-bottom:4px; display:inline-block;">${finalMove}%</div>
+                        <div class="pred-stat-lbl">Actual Move</div>
+                    </div>
+                    <div class="pred-stat-box" style="background:transparent; border:none; padding:0;">
+                        <div class="pred-stat-val" style="color:${mfeColor}; font-size:1.1rem; border-bottom:1px solid ${mfeColor}; padding-bottom:4px; margin-bottom:4px; display:inline-block;">${mfePrefix}${mfeDisplay}%</div>
+                        <div class="pred-stat-lbl">Max Favorable</div>
+                    </div>
+                </div>
+
+                <div style="margin-top:24px; position:relative; height:4px; background:rgba(255,255,255,0.05); border-radius:2px; margin-bottom: 24px; width:100%; display:block;">
+                    <!-- Center Zero Line -->
+                    <div style="position:absolute; left:50%; top:-6px; bottom:-6px; width:2px; background:var(--text-muted); z-index:2;"></div>
+                    <div style="position:absolute; left:50%; top:12px; transform:translate(-50%); font-size:0.6rem; color:var(--text-muted);">Start</div>
+
+                    <!-- Target Line -->
+                    <div style="position:absolute; ${targetLineLeft} top:-6px; bottom:-16px; width:2px; z-index:2; border-left: 1px dashed ${barColor};"></div>
+                    <div style="position:absolute; ${targetLineLeft} top:-24px; transform:translate(-50%); font-size:0.6rem; color:${barColor}; font-weight:700;">Target</div>
+
+                    <!-- Actual Fill -->
+                    <div style="position:absolute; left:${fillLeft}; width:${fillWidth}; top:0; height:100%; background:${curPct > 0 ? 'var(--bullish)' : (curPct < 0 ? 'var(--bearish)' : 'transparent')}; opacity:0.3; border-radius:2px;"></div>
+
+                    <!-- MFE (Max Favorable Dot) -->
+                    <div style="position:absolute; ${mfeDotLeft} top:-3px; width:10px; height:10px; background:${mfeColor}; border-radius:50%; transform:translate(-50%); border:2px solid var(--surface-light); z-index:3; box-shadow: 0 0 6px ${mfeColor};"></div>
+                    <div style="position:absolute; ${mfeDotLeft} top:-18px; font-size:0.65rem; color:${mfeColor}; transform:translate(-50%); white-space:nowrap; font-weight:bold;">${mfePrefix}${mfeDisplay}%</div>
+
+                    <!-- Current/Final Dot -->
+                    <div style="position:absolute; ${curDotLeft} top:-4px; width:12px; height:12px; background:${curPct > 0 ? 'var(--bullish)' : (curPct < 0 ? 'var(--bearish)' : 'var(--text-muted)')}; border-radius:50%; transform:translate(-50%); border:2px solid var(--surface-light); z-index:4;"></div>
+                    ${status === 'pending' ? `<div style="position:absolute; ${curDotLeft} top:12px; font-size:0.65rem; color:#fff; transform:translate(-50%); white-space:nowrap; font-weight:bold; background:var(--bg-main); padding:0 4px; border-radius:2px;">${finalMove}%</div>` : ''}
+                </div>
+                `;
+
+                // The new card structure matching directional bias cards
+                const biasBorderColor = isBull ? 'rgba(0, 212, 170, 0.4)' : isBear ? 'rgba(255, 71, 87, 0.4)' : 'rgba(255, 193, 7, 0.4)';
+                const dirCls = isBull ? 'dir-bullish' : isBear ? 'dir-bearish' : 'dir-neutral';
+
                 html += `
-                    <div class="prediction-card">
-                        <div class="prediction-header">
-                            <span class="pred-asset">${escapeHtml(formatSymbol(p.asset))}</span>
-                            <span class="pred-status-full pred-status-${status}">${status.toUpperCase()}</span>
+                    <div class="forex-pair-card" style="border-left-color:${biasBorderColor}; margin-bottom: 0;">
+                        <div class="forex-pair-header">
+                            <span class="forex-pair-name" style="font-size:1.1rem;">${escapeHtml(p.asset_display_name || formatSymbol(p.asset))}</span>
+                            ${p.direction ? `<span class="forex-pair-dir ${dirCls}">${escapeHtml(p.direction.toUpperCase())}</span>` : ''}
+                            <span class="pred-status-full pred-status-${statusCls}" style="margin-left:auto;">${(statusCls).toUpperCase()}</span>
                         </div>
-                        <div class="prediction-meta">
-                            <span><strong style="color:${dirColor}">${dirEmoji} ${escapeHtml(p.direction)}</strong></span>
+                        
+                        <div style="display:flex; justify-content:space-between; margin-top:12px; font-size:0.85rem; color:var(--text-secondary);">
                             <span>Target: <strong>${p.predicted_move_pct}%</strong></span>
                             <span>Duration: <strong>${escapeHtml(p.expected_duration_label)}</strong></span>
                         </div>
-                        <div class="prediction-prices">
-                            <div>Start: $${formatPrice(p.start_price)}</div>
-                            <div>Current/Final: $${formatPrice(p.final_price || p.last_price || p.start_price)}</div>
-                        </div>
-                        <div class="prediction-stats-row">
-                            <div class="pred-stat-box">
-                                <div class="pred-stat-val ${parseFloat(finalMove) > 0 ? 'bull' : (parseFloat(finalMove) < 0 ? 'bear' : '')}">${finalMove}%</div>
-                                <div class="pred-stat-lbl">Actual Move</div>
+
+                        <div class="prediction-prices" style="background:transparent; padding:0; margin-top:16px;">
+                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                <span style="font-size:0.65rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">Start Price</span>
+                                <span style="font-size:0.9rem; color:var(--text-secondary); font-family:'JetBrains Mono', monospace;">$${formatPrice(p.start_price)}</span>
                             </div>
-                            <div class="pred-stat-box">
-                                <div class="pred-stat-val" style="color:${mfeColor}">${mfePrefix}${mfeDisplay}%</div>
-                                <div class="pred-stat-lbl">Max Favorable</div>
+                            <div style="display:flex; flex-direction:column; gap:2px; text-align:right;">
+                                <span style="font-size:0.65rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px;">${status === 'pending' ? 'Current Price' : 'Final Price'}</span>
+                                <span style="font-size:0.9rem; color:var(--text-secondary); font-family:'JetBrains Mono', monospace;">$${formatPrice(p.final_price || p.last_price || p.start_price)}</span>
                             </div>
                         </div>
+
+                        ${barHtml}
                     </div>
                 `;
             });
@@ -969,8 +1051,8 @@ async function fetchPredictionsForModal(newsId) {
                     targetBox.innerHTML = `
                         <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:8px 10px;">
                             <div style="display:flex; justify-content:space-between; align-items:center;">
-                                <span style="font-size:0.75rem; color:var(--text-muted); font-weight:600;">LIVE TRACKER <span style="font-size:0.65rem; color:var(--text-secondary);">(${formatSymbol(p.asset)})</span></span>
-                                <span class="pred-status-full pred-status-${status}" style="font-size:0.6rem; padding:2px 6px;">${statusCap}</span>
+                                <span style="font-size:0.75rem; color:var(--text-muted); font-weight:600;">LIVE TRACKER <span style="font-size:0.65rem; color:var(--text-secondary);">(${p.asset_display_name || formatSymbol(p.asset)})</span></span>
+                                <span class="pred-status-full pred-status-${statusCls}" style="font-size:0.6rem; padding:2px 6px;">${statusCap}</span>
                             </div>
                             <div style="display:flex; justify-content:space-between; margin-top:8px; font-family:'JetBrains Mono', monospace; font-size:0.85rem;">
                                 <div>
@@ -1222,13 +1304,63 @@ async function fetchSources() {
             });
 
             if (currentSource === 'all') {
-                allBtn.classList.add('active');
+            allBtn.classList.add('active');
                 allBtn.setAttribute('aria-selected', 'true');
             }
         }
     } catch (err) {
         console.error('Failed to fetch sources:', err);
     }
+}
+
+function formatSymbol(sym) {
+    if (!sym) return '';
+    sym = sym.toUpperCase();
+    
+    // Hardcoded common indices/commodities
+    const friendlyNames = {
+        'GC=F': 'Gold',
+        'SI=F': 'Silver',
+        'CL=F': 'Crude Oil',
+        'NG=F': 'Natural Gas',
+        '^GSPC': 'S&P 500',
+        '^DJI': 'Dow Jones',
+        '^IXIC': 'Nasdaq',
+        '^NDX': 'Nasdaq 100',
+        '^RUT': 'Russell 2000',
+        '^FTSE': 'FTSE 100',
+        '^N225': 'Nikkei 225',
+        'BTC-USD': 'Bitcoin',
+        'ETH-USD': 'Ethereum',
+        'SOL-USD': 'Solana',
+        'DX-Y.NYB': 'US Dollar Index',
+        'ZN=F': '10-Year T-Note'
+    };
+    
+    if (friendlyNames[sym]) {
+        return friendlyNames[sym];
+    }
+
+    // Try stripping suffixes for Forex / Crypto if no exact match
+    sym = sym.trim();
+    if (sym.endsWith('=X')) {
+        let pair = sym.replace('=X', '').trim();
+        // e.g. USDCNY -> USD/CNY
+        if (pair.length === 6) {
+            return `${pair.substring(0,3)}/${pair.substring(3,6)}`; 
+        }
+        return pair;
+    }
+    
+    if (sym.endsWith('-USD')) {
+        return sym.replace('-USD', '');
+    }
+
+    if (sym.endsWith('=F')) {
+        return sym.replace('=F', ' Futures');
+    }
+
+    return sym;
 }
 
 // ---- Fetch News ----
@@ -1245,12 +1377,16 @@ async function fetchNews() {
         if (currentRelevance && currentRelevance !== 'all') {
             url += `&relevance=${encodeURIComponent(currentRelevance)}`;
         }
+        if (showOnlyAnalyzed) {
+            url += `&analyzed_only=true`;
+        }
 
         const res = await fetch(url);
         const json = await res.json();
 
         if (json.status === 'success') {
             newsData = json.data;
+            // The backend handles the `analyzed_only` filter, but we filter client-side just in case
             let displayData = [...newsData];
             if (showOnlyAnalyzed) displayData = displayData.filter(a => a.impact_score != null);
             renderNews(displayData);
@@ -1370,12 +1506,15 @@ if (analyzedToggle) {
         } else {
             analyzedToggle.classList.remove('active');
         }
-        renderNews(newsData);
+        fetchNews();
     });
 }
 
 // ---- Initial Load ----
 async function init() {
+    if (relevanceFilter) {
+        relevanceFilter.value = 'all';
+    }
     await Promise.all([fetchSources(), fetchNews(), fetchStats()]);
 }
 

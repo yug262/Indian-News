@@ -6,7 +6,7 @@ import uvicorn
 from datetime import datetime, timezone
 from typing import Optional
 import os
-
+from app.core.agent import analyze_news, save_analysis
 from app.core.db import fetch_all, fetch_one
 
 app = FastAPI(title="News Website API")
@@ -26,7 +26,8 @@ app.add_middleware(
 def get_news(source: str = Query(None, description="Filter news by source name"), 
              limit: int = Query(50, description="Max number of articles to return"),
              today_only: bool = Query(False, description="Only fetch today's news"),
-             relevance: str = Query(None, description="Filter news by relevance")):
+             relevance: str = Query(None, description="Filter news by relevance"),
+             analyzed_only: bool = Query(False, description="Only fetch analyzed news")):
     """Get news articles, sorted by newest first."""
     
     query = """SELECT id, title, link, published, source, description, image_url,
@@ -51,6 +52,9 @@ def get_news(source: str = Query(None, description="Filter news by source name")
     if relevance and relevance.lower() != "all":
         query += " AND news_relevance = %s"
         params.append(relevance.lower())
+        
+    if analyzed_only:
+        query += " AND analyzed = TRUE"
         
     query += " ORDER BY published DESC LIMIT %s"
     params.append(limit)
@@ -124,7 +128,7 @@ def get_sources():
 @app.post("/api/analyze/{news_id}")
 def analyze_single_article(news_id: int):
     """Analyze a single news article by its DB id."""
-    from agent import analyze_news, save_analysis
+    
     try:
         article = fetch_one("SELECT id, title, published, description FROM news WHERE id = %s", (news_id,))
         if not article:
