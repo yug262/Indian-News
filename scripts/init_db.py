@@ -6,8 +6,12 @@ Usage:
     python init_db.py
 """
 
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import psycopg2
-from db import DB_CONFIG
+from app.core.db import DB_CONFIG
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS news (
@@ -102,43 +106,12 @@ MIGRATE_ANALYSIS_COLUMNS = [
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_age_label TEXT;",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_age_human TEXT;",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_priced_in BOOLEAN;",
-    # --- FILTER OUTPUT (from filter.py) ---
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_keep BOOLEAN;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_reason TEXT;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_trigger BOOLEAN;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_news_type TEXT;",      # event/reaction
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_event_type TEXT;",     # central_bank/geopolitics/...
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_assets TEXT[];",       # ["gold","usd"]
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_impact_score INTEGER;",# pre-score from filter (NOT agent)
 
-    # --- DEDUP OUTPUT (from dedup.py) ---
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_normalized TEXT;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_reason TEXT;",          # fingerprint/similarity
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_matched_score NUMERIC;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_matched_title TEXT;",
-
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_keep BOOLEAN;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_reason TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_trigger BOOLEAN;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_news_type TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_event_type TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_assets TEXT[];"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_impact_score INTEGER;"
-
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_normalized TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_reason TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_matched_score NUMERIC;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_matched_title TEXT;"
-
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_age_label TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_age_human TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_priced_in BOOLEAN DEFAULT FALSE;"
-
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_category VARCHAR(100);"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_impact_level VARCHAR(50);"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_reason TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_relevance VARCHAR(20) DEFAULT 'unclassified';"
-
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_category VARCHAR(100);",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_impact_level VARCHAR(50);",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_reason TEXT;",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_relevance VARCHAR(20) DEFAULT 'unclassified';",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMP WITH TIME ZONE;"
 ]
 
 
@@ -166,6 +139,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     news_id INTEGER REFERENCES news(id) ON DELETE CASCADE,
 
     asset TEXT NOT NULL,
+    asset_display_name TEXT,
     asset_class TEXT NOT NULL,
     direction TEXT NOT NULL,
 
@@ -196,6 +170,7 @@ CREATE TABLE IF NOT EXISTS predictions (
 """
 
 CREATE_PREDICTIONS_INDEXES_SQL = [
+    "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS asset_display_name TEXT;",
     "CREATE INDEX IF NOT EXISTS idx_predictions_pending ON predictions(finalized, status);",
     "CREATE INDEX IF NOT EXISTS idx_predictions_news_id ON predictions(news_id);",
 ]
