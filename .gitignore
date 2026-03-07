@@ -1,5 +1,6 @@
 venv
 .env
+<<<<<<< HEAD
 app/core/__pycache__/
 app/worker/__pycache__/
 app/api/__pycache__/
@@ -8,3 +9,7 @@ app/schemas/__pycache__/
 app/services/__pycache__/
 app/utils/__pycache__/
 logs/
+=======
+logs/
+__pycache__
+>>>>>>> cf246cbe2350ad8aba75e9ad53b5e40388dd42c6
