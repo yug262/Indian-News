@@ -1,4 +1,5 @@
 yfinance
+ccxt
 fastapi
 uvicorn
 python-dotenv

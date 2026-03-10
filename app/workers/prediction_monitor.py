@@ -71,10 +71,10 @@ def _log(msg: str):
 def _fetch_price(symbol: str) -> float | None:
     """
     Get the latest real-time price for a symbol.
-    Uses yfinance 1-minute intraday tick so indices/equities update during market hours.
-    Falls back to CoinGecko for crypto assets dynamically.
+    Uses ccxt for crypto assets and yfinance 1-minute intraday tick for indices/equities/forex.
     """
     import yfinance as yf
+    from app.core.tools import _is_crypto, _crypto_to_binance, _safe_last_close
     
     query_symbol = symbol
     is_crypto_dynamic = False
@@ -88,6 +88,35 @@ def _fetch_price(symbol: str) -> float | None:
         raw_name = symbol.replace("FOREX:", "").replace("/", "").upper()
         query_symbol = f"{raw_name}=X"
 
+    # 1) CCXT for Crypto
+    if _is_crypto(query_symbol):
+        try:
+            import ccxt
+            exchange = ccxt.binance()
+            binance_sym = _crypto_to_binance(query_symbol)
+            ticker = exchange.fetch_ticker(binance_sym)
+            if ticker and ticker.get('last') is not None:
+                return float(ticker['last'])
+        except Exception as e:
+            _log(f"CCXT fetch_ticker error for {query_symbol}: {e}")
+            pass # Fall back to CoinGecko mapped via get_crypto_prices
+        
+        # CoinGecko fallback for crypto
+        cg_id = _YF_TO_COINGECKO.get(symbol) or _YF_TO_COINGECKO.get(query_symbol)
+        if is_crypto_dynamic and not cg_id:
+            cg_id = _get_coingecko_id(raw_name)
+
+        if cg_id:
+            try:
+                from app.core.tools import get_crypto_prices
+                prices = get_crypto_prices([cg_id])
+                if cg_id in prices and prices[cg_id] is not None:
+                    return float(prices[cg_id])
+            except Exception:
+                pass
+        return None
+
+    # 2) yfinance for non-crypto
     try:
         # Use 5d period to ensure we catch the last traded price even over weekends/holidays
         tk = yf.Ticker(query_symbol)
@@ -106,20 +135,6 @@ def _fetch_price(symbol: str) -> float | None:
             return price
     except Exception:
         pass
-
-    # CoinGecko fallback for crypto
-    cg_id = _YF_TO_COINGECKO.get(symbol) or _YF_TO_COINGECKO.get(query_symbol)
-    if is_crypto_dynamic and not cg_id:
-        cg_id = _get_coingecko_id(raw_name)
-
-    if cg_id:
-        try:
-            from app.core.tools import get_crypto_prices
-            prices = get_crypto_prices([cg_id])
-            if cg_id in prices:
-                return float(prices[cg_id])
-        except Exception:
-            pass
 
     return None
 
@@ -141,34 +156,37 @@ def _finalize_prediction(pred: dict, final_price: float, now: datetime):
     mfe = float(pred["mfe_pct"] or 0)
     final_move = _compute_move_pct(start_price, final_price)
 
+    # Small tolerance for floating-point rounding (0.005%)
+    EPS = 0.005
+
     # Determine status
     if direction.lower() in ("positive", "bullish"):
-        # Bullish target check
-        if mfe >= predicted_move:
+        # Bullish target check — MFE stored as positive favorable move
+        if mfe >= predicted_move - EPS:
             # It hit the target at least once
-            if final_move > predicted_move:
+            if final_move > predicted_move + EPS:
                 status = "overperformed"
             else:
                 status = "hit"
         else:
             # It never hit the target
             if final_move > 0:
-                status = "missed" # Could also be positive but missed target
+                status = "missed"
             else:
                 status = "wrong"
-                
+
     elif direction.lower() in ("negative", "bearish"):
-        # Bearish target check
-        if mfe >= predicted_move:
-            # It hit the target at least once (downwards, absolute mfe)
-            if final_move < -predicted_move:
+        # Bearish target check — MFE stored as positive (abs favorable move)
+        if mfe >= predicted_move - EPS:
+            # It hit the target at least once (downwards)
+            if abs(final_move) > predicted_move + EPS:
                 status = "overperformed"
             else:
                 status = "hit"
         else:
             # It never hit the target
             if final_move < 0:
-                status = "missed" # Dropped but didn't hit target
+                status = "missed"
             else:
                 status = "wrong"
                 
@@ -300,6 +318,3 @@ def check_predictions():
                 )
             except Exception:
                 pass
-
-
-

@@ -1,8 +1,6 @@
 import asyncio
 import aiohttp
 import feedparser
-import json
-import os
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from dateutil import parser as date_parser
@@ -11,9 +9,9 @@ from difflib import SequenceMatcher
 from urllib.parse import urlparse
 from app.core.agent import classify_batch
 from app.core.db import fetch_all, execute_many, execute_query
-import threading
 import re
 from app.workers.prediction_monitor import check_predictions
+import socket
 
 # ==============================
 # CONFIG
@@ -50,6 +48,12 @@ RSS_FEEDS = [
     "https://www.ft.com/world?format=rss",
     # "https://feeds.marketwatch.com/marketwatch/topstories/"
     "https://www.ft.com/markets?format=rss",
+    "https://feeds.bloomberg.com/markets/news.rss",
+    "https://www.ecb.europa.eu/rss/press.html",
+    "https://finance.yahoo.com/news/rssindex",
+    "https://cointelegraph.com/rss",
+    "https://www.investing.com/rss/news.rss",
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"
     # "https://feeds.bloomberg.com/markets/news.rss",
     "https://www.ecb.europa.eu/rss/press.html",
 ]
@@ -62,7 +66,7 @@ FETCH_INTERVAL = 30  # seconds
 def cleanup_old_news():
     """Delete news older than 24 hours based on scrape time."""
     try:
-        deleted = execute_query("DELETE FROM news WHERE created_at < NOW() - INTERVAL '24 hours'")
+        deleted = execute_query("DELETE FROM news WHERE published < NOW() - INTERVAL '24 hours'")
         if deleted > 0:
             print(f"🧹 Cleaned up {deleted} old article(s) older than 24 hours.")
     except Exception as e:
@@ -146,62 +150,67 @@ class DictWithAttrs(dict):
     def __setattr__(self, key, value):
         self[key] = value
 
-async def fetch_feed(session, url):
-    try:
-        async with session.get(url, timeout=15) as response:
-            content = await response.text()
-            feed = feedparser.parse(content)
-            # Attach the source URL to each entry so we know where it came from
-            source_name = extract_source(url)
-            
-            entries = feed.entries
-            
-            # If feedparser finds no entries, fallback to treating it as a news sitemap
-            if not entries and "<urlset" in content:
-                try:
-                    root = ET.fromstring(content)
-                    ns = {
-                        'sitemap': 'http://www.sitemaps.org/schemas/sitemap/0.9',
-                        'news': 'http://www.google.com/schemas/sitemap-news/0.9',
-                        'image': 'http://www.google.com/schemas/sitemap-image/1.1'
-                    }
-                    for url_elem in root.findall('sitemap:url', ns):
-                        loc = url_elem.find('sitemap:loc', ns)
-                        news_elem = url_elem.find('news:news', ns)
-                        
-                        if loc is not None and news_elem is not None:
-                            title_elem = news_elem.find('news:title', ns)
-                            pub_date_elem = news_elem.find('news:publication_date', ns)
-                            
-                            entry = DictWithAttrs()
-                            entry['link'] = loc.text
-                            if title_elem is not None:
-                                entry['title'] = title_elem.text
-                            if pub_date_elem is not None:
-                                entry['published'] = pub_date_elem.text
+async def fetch_feed(session, url, semaphore):
+    async with semaphore:
+        for attempt in range(2):
+            try:
+                async with session.get(url, timeout=10) as response:
+                    content = await response.text()
+                    feed = feedparser.parse(content)
+                    # Attach the source URL to each entry so we know where it came from
+                    source_name = extract_source(url)
+                    
+                    entries = feed.entries
+                    
+                    # If feedparser finds no entries, fallback to treating it as a news sitemap
+                    if not entries and "<urlset" in content:
+                        try:
+                            root = ET.fromstring(content)
+                            ns = {
+                                'sitemap': 'http://www.sitemaps.org/schemas/sitemap/0.9',
+                                'news': 'http://www.google.com/schemas/sitemap-news/0.9',
+                                'image': 'http://www.google.com/schemas/sitemap-image/1.1'
+                            }
+                            for url_elem in root.findall('sitemap:url', ns):
+                                loc = url_elem.find('sitemap:loc', ns)
+                                news_elem = url_elem.find('news:news', ns)
                                 
-                            entry['summary'] = ""
-                            
-                            image_elem = url_elem.find('image:image/image:loc', ns)
-                            if image_elem is not None:
-                                entry['media_content'] = [{'url': image_elem.text}]
-                            
-                            entries.append(entry)
-                except Exception as xml_e:
-                    print(f"Error parsing sitemap XML for {url}: {xml_e}")
+                                if loc is not None and news_elem is not None:
+                                    title_elem = news_elem.find('news:title', ns)
+                                    pub_date_elem = news_elem.find('news:publication_date', ns)
+                                    
+                                    entry = DictWithAttrs()
+                                    entry['link'] = loc.text
+                                    if title_elem is not None:
+                                        entry['title'] = title_elem.text
+                                    if pub_date_elem is not None:
+                                        entry['published'] = pub_date_elem.text
+                                        
+                                    entry['summary'] = ""
+                                    
+                                    image_elem = url_elem.find('image:image/image:loc', ns)
+                                    if image_elem is not None:
+                                        entry['media_content'] = [{'url': image_elem.text}]
+                                    
+                                    entries.append(entry)
+                        except Exception as xml_e:
+                            print(f"Error parsing sitemap XML for {url}: {xml_e}")
 
-            for entry in entries:
-                entry.source = source_name
-            return entries
-    except Exception as e:
-        print(f"Error fetching {url}: {e}")
+                    for entry in entries:
+                        entry.source = source_name
+                    return entries
+            except Exception as e:
+                if attempt == 1:
+                    print(f"Error fetching {url}: {e}")
+                else:
+                    await asyncio.sleep(1)
         return []
 
 # ==============================
 # MAIN FETCH FUNCTION
 # ==============================
 
-async def fetch_all_feeds():
+async def fetch_all_feeds(session, semaphore):
     cleanup_old_news()
     try:
         existing_hashes, existing_titles = get_existing_hashes()
@@ -209,13 +218,11 @@ async def fetch_all_feeds():
         print(f"Database error checking existing news: {e}")
         return
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    tasks = [fetch_feed(session, url, semaphore) for url in RSS_FEEDS]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    async with aiohttp.ClientSession(headers=headers) as session:
-        tasks = [fetch_feed(session, url) for url in RSS_FEEDS]
-        results = await asyncio.gather(*tasks)
+    # Filter out exceptions if any crept through
+    results = [r for r in results if isinstance(r, list)]
 
     new_items_params = []
     
@@ -371,10 +378,27 @@ async def main():
     # Start prediction monitor loop concurrently
     asyncio.create_task(run_predictions_loop())
     
-    while True:
-        print(f"\nChecking feeds at {datetime.now(timezone.utc)} UTC")
-        await fetch_all_feeds()
-        await asyncio.sleep(FETCH_INTERVAL)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    connector = aiohttp.TCPConnector(
+        resolver=aiohttp.ThreadedResolver(),
+        limit=10, 
+        limit_per_host=2,
+        ttl_dns_cache=300,
+        use_dns_cache=True,
+        family=socket.AF_INET,
+        force_close=False,
+    )
+    
+    async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+        semaphore = asyncio.Semaphore(5)
+        
+        while True:
+            print(f"\nChecking feeds at {datetime.now(timezone.utc)} UTC")
+            await fetch_all_feeds(session, semaphore)
+            await asyncio.sleep(FETCH_INTERVAL)
 
 if __name__ == "__main__":
     asyncio.run(main())

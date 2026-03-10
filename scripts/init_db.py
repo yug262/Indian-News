@@ -1,5 +1,5 @@
 """
-Initialize the PostgreSQL database and create the news table.
+Initialize the PostgreSQL database and create required tables.
 Run this script once before starting the monitor or server.
 
 Usage:
@@ -7,6 +7,10 @@ Usage:
 """
 import sys
 import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import os
+import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import psycopg2
@@ -42,7 +46,6 @@ def create_database():
         conn.autocommit = True
         cur = conn.cursor()
 
-        # Check if database exists
         cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
         if not cur.fetchone():
             cur.execute(f'CREATE DATABASE "{db_name}"')
@@ -67,11 +70,11 @@ def create_tables():
             cur.execute(idx_sql)
         conn.commit()
         print("✅ Table 'news' created successfully")
-        print("✅ Indexes created successfully")
+        print("✅ News indexes created successfully")
         cur.close()
     except Exception as e:
         conn.rollback()
-        print(f"❌ Error creating tables: {e}")
+        print(f"❌ Error creating news table: {e}")
         raise
     finally:
         conn.close()
@@ -105,45 +108,15 @@ MIGRATE_ANALYSIS_COLUMNS = [
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_age_label TEXT;",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_age_human TEXT;",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_priced_in BOOLEAN;",
-    # --- FILTER OUTPUT (from filter.py) ---
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_keep BOOLEAN;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_reason TEXT;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_trigger BOOLEAN;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_news_type TEXT;",      # event/reaction
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_event_type TEXT;",     # central_bank/geopolitics/...
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_assets TEXT[];",       # ["gold","usd"]
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_impact_score INTEGER;",# pre-score from filter (NOT agent)
-
-    # --- DEDUP OUTPUT (from dedup.py) ---
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_normalized TEXT;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_reason TEXT;",          # fingerprint/similarity
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_matched_score NUMERIC;",
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_matched_title TEXT;",
-
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_keep BOOLEAN;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_reason TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_trigger BOOLEAN;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_news_type TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_event_type TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_assets TEXT[];"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS filter_impact_score INTEGER;"
-
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_normalized TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_reason TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_matched_score NUMERIC;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS dedup_matched_title TEXT;"
-
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_age_label TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_age_human TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_priced_in BOOLEAN DEFAULT FALSE;"
-
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_category VARCHAR(100);"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_impact_level VARCHAR(50);"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_reason TEXT;"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_relevance VARCHAR(20) DEFAULT 'unclassified';"
-    "ALTER TABLE news ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMP WITH TIME ZONE;"
-    
-
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_category VARCHAR(100);",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_impact_level VARCHAR(50);",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_reason TEXT;",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_relevance VARCHAR(100) DEFAULT 'unclassified';",
+"ALTER TABLE news ALTER COLUMN news_relevance TYPE VARCHAR(100);",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMPTZ;",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS suggestions_data JSONB;",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS suggestions_status VARCHAR(30);",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS suggestions_summary TEXT;",
 ]
 
 
@@ -154,12 +127,15 @@ def migrate_schema():
         cur = conn.cursor()
         for sql in MIGRATE_ANALYSIS_COLUMNS:
             cur.execute(sql)
+
+        for sql in MIGRATE_SUGGESTIONS_COLUMNS:
+            cur.execute(sql)
         conn.commit()
         print("✅ Analysis columns migrated successfully")
         cur.close()
     except Exception as e:
         conn.rollback()
-        print(f"❌ Error migrating schema: {e}")
+        print(f"❌ Error migrating news schema: {e}")
         raise
     finally:
         conn.close()
@@ -171,6 +147,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     news_id INTEGER REFERENCES news(id) ON DELETE CASCADE,
 
     asset TEXT NOT NULL,
+    asset_display_name TEXT,
     asset_class TEXT NOT NULL,
     asset_display_name TEXT,
     direction TEXT NOT NULL,
@@ -207,6 +184,9 @@ CREATE_PREDICTIONS_INDEXES_SQL = [
     "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS asset_display_name TEXT;",
 ]
 
+MIGRATE_SUGGESTIONS_COLUMNS = [
+    "ALTER TABLE suggestions ALTER COLUMN expected_move_pct TYPE VARCHAR(50);",
+]
 
 def create_predictions_table():
     """Create the predictions table and its indexes."""
@@ -218,10 +198,69 @@ def create_predictions_table():
             cur.execute(idx_sql)
         conn.commit()
         print("✅ Predictions table created successfully")
+        print("✅ Prediction indexes created successfully")
         cur.close()
     except Exception as e:
         conn.rollback()
         print(f"❌ Error creating predictions table: {e}")
+        raise
+    finally:
+        conn.close()
+
+
+CREATE_SUGGESTIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS suggestions (
+    id BIGSERIAL PRIMARY KEY,
+    news_id BIGINT NOT NULL REFERENCES news(id) ON DELETE CASCADE,
+
+    suggestion_type VARCHAR(20) NOT NULL,      -- buy / sell / watch / avoid
+    asset VARCHAR(100) NOT NULL,
+    direction VARCHAR(20),
+
+    reasoning TEXT,
+    market_logic TEXT,
+
+    expected_move_pct VARCHAR(50),
+    time_window VARCHAR(100),
+    expected_duration_minutes INTEGER,
+
+    invalidation TEXT,
+
+    start_price NUMERIC,
+    target_price NUMERIC,
+
+    confidence VARCHAR(20),
+    confidence_score INTEGER,
+
+    status VARCHAR(20) DEFAULT 'pending',
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ
+);
+"""
+
+CREATE_SUGGESTIONS_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_suggestions_news_id ON suggestions(news_id);",
+    "CREATE INDEX IF NOT EXISTS idx_suggestions_status ON suggestions(status);",
+    "CREATE INDEX IF NOT EXISTS idx_suggestions_type ON suggestions(suggestion_type);",
+]
+
+
+def create_suggestions_table():
+    """Create the suggestions table and its indexes."""
+    conn = psycopg2.connect(**DB_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(CREATE_SUGGESTIONS_TABLE_SQL)
+        for idx_sql in CREATE_SUGGESTIONS_INDEXES_SQL:
+            cur.execute(idx_sql)
+        conn.commit()
+        print("✅ Suggestions table created successfully")
+        print("✅ Suggestion indexes created successfully")
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error creating suggestions table: {e}")
         raise
     finally:
         conn.close()
@@ -233,4 +272,5 @@ if __name__ == "__main__":
     create_tables()
     migrate_schema()
     create_predictions_table()
+    create_suggestions_table()
     print("🎉 Database initialization complete!")

@@ -74,7 +74,7 @@ def get_news(source: str = Query(None, description="Filter news by source name")
             if article_ids:
                 placeholders = ','.join(['%s'] * len(article_ids))
                 pred_rows = fetch_all(
-                    f"""SELECT DISTINCT ON (news_id) news_id, asset, direction,
+                    f"""SELECT DISTINCT ON (news_id) news_id, asset, asset_display_name, direction,
                         predicted_move_pct, status, final_move_pct, mfe_pct, mae_pct,
                         finalized, expected_duration_label
                     FROM predictions
@@ -99,6 +99,7 @@ def get_news(source: str = Query(None, description="Filter news by source name")
                         p = pred_map[aid]
                         article['prediction_count'] = count_map.get(aid, 0)
                         article['prediction_asset'] = p['asset']
+                        article['prediction_asset_display_name'] = p['asset_display_name']
                         article['prediction_direction'] = p['direction']
                         article['prediction_status'] = p['status']
                         article['predicted_move_pct'] = float(p['predicted_move_pct']) if p['predicted_move_pct'] is not None else None
