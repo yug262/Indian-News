@@ -3,7 +3,7 @@ ccxt
 fastapi
 uvicorn
 python-dotenv
-google-genai
+google-generativeai
 psycopg2
 aiohttp
 feedparser

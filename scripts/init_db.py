@@ -5,6 +5,9 @@ Run this script once before starting the monitor or server.
 Usage:
     python init_db.py
 """
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import os
 import sys
@@ -146,6 +149,7 @@ CREATE TABLE IF NOT EXISTS predictions (
     asset TEXT NOT NULL,
     asset_display_name TEXT,
     asset_class TEXT NOT NULL,
+    asset_display_name TEXT,
     direction TEXT NOT NULL,
 
     predicted_move_pct NUMERIC NOT NULL,
@@ -177,6 +181,7 @@ CREATE TABLE IF NOT EXISTS predictions (
 CREATE_PREDICTIONS_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_predictions_pending ON predictions(finalized, status);",
     "CREATE INDEX IF NOT EXISTS idx_predictions_news_id ON predictions(news_id);",
+    "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS asset_display_name TEXT;",
 ]
 
 MIGRATE_SUGGESTIONS_COLUMNS = [
