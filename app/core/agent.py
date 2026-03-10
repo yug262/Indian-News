@@ -40,10 +40,11 @@ from app.core.tools import (
     get_asset_atr,
     classify_reaction_status,
     detect_reaction_headline,
-    get_similar_news_counts,
     get_repetition_context,
     get_novelty_label,
     compute_remaining_tradable_impact,
+    get_market_status,
+    get_filter_context
 )
 
 load_dotenv()
@@ -62,11 +63,17 @@ def _log(msg: str):
         print(msg.encode("ascii", "replace").decode(), flush=True)
 
 
+def _parse_iso_utc(ts: str) -> datetime:
+    ts = (ts or "").strip().replace("Z", "+00:00")
+    dt = datetime.fromisoformat(ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def _calculate_news_age(published_iso: str) -> tuple[str, str, float]:
     try:
-        pub_dt = datetime.fromisoformat(published_iso.strip())
-        if pub_dt.tzinfo is None:
-            pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+        pub_dt = _parse_iso_utc(published_iso)
         hours_old = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600.0
         minutes = int(hours_old * 60)
 
@@ -176,7 +183,11 @@ def _check_recent_movements(symbols: list[str], published_iso: str) -> dict:
             if not reaction or "reaction_pct" not in reaction:
                 continue
 
-            reaction_pct = float(reaction["reaction_pct"])
+            reaction_pct_raw = reaction.get("reaction_pct")
+            if reaction_pct_raw is None:
+                continue
+
+            reaction_pct = float(reaction_pct_raw)
             atr_pct = float(atr.get("atr_pct_reference") or 1.0)
             status = classify_reaction_status(reaction_pct, atr_pct)
 
@@ -194,37 +205,77 @@ def _check_recent_movements(symbols: list[str], published_iso: str) -> dict:
     return movements
 
 
+def enforce_schema(output: dict, template: dict) -> dict:
+    """
+    Recursively fill missing keys from schema template.
+    """
+    if not isinstance(output, dict):
+        return json.loads(json.dumps(template))
+
+    for key, value in template.items():
+        if key not in output:
+            output[key] = json.loads(json.dumps(value))
+        elif isinstance(value, dict):
+            output[key] = enforce_schema(output.get(key, {}), value)
+        elif isinstance(value, list):
+            if not isinstance(output.get(key), list):
+                output[key] = []
+    return output
+
+
+def remove_empty_objects(arr: list) -> list:
+    cleaned = []
+    for item in arr:
+        if not isinstance(item, dict):
+            continue
+        if any(v not in ("", 0, None, [], {}) for v in item.values()):
+            cleaned.append(item)
+    return cleaned
+
+
+def normalize_analysis_output(result: dict) -> dict:
+    result = enforce_schema(result, SCHEMA_TEMPLATE)
+
+    # Clean empty placeholder objects from arrays
+    result["directional_bias"]["forex"] = remove_empty_objects(result["directional_bias"]["forex"])
+    result["directional_bias"]["crypto"] = remove_empty_objects(result["directional_bias"]["crypto"])
+    result["directional_bias"]["global_equities"] = remove_empty_objects(result["directional_bias"]["global_equities"])
+
+    result["suggestions"]["buy"] = remove_empty_objects(result["suggestions"]["buy"])
+    result["suggestions"]["sell"] = remove_empty_objects(result["suggestions"]["sell"])
+    result["suggestions"]["watch"] = remove_empty_objects(result["suggestions"]["watch"])
+    result["suggestions"]["avoid"] = remove_empty_objects(result["suggestions"]["avoid"])
+
+    # Light enum cleanup
+    allowed_event_types = {"NEW_EVENT", "CONTINUATION", "ESCALATION", "DE_ESCALATION", "COMMENTARY"}
+    if result["event_classification"]["event_type"] not in allowed_event_types:
+        result["event_classification"]["event_type"] = "COMMENTARY"
+
+    allowed_confirmation = {"confirmed", "partially_confirmed", "warning_only", "unconfirmed"}
+    if result["event_classification"]["confirmation_status"] not in allowed_confirmation:
+        result["event_classification"]["confirmation_status"] = "unconfirmed"
+
+    return result
+
 # ─────────────────────────────────────────────
 # Event context helpers
 # ─────────────────────────────────────────────
 
 ESCALATION_KEYWORDS = [
-    "nuclear",
-    "oil supply",
-    "shipping halt",
-    "strait of hormuz",
-    "hormuz",
-    "sanctions",
+    "oil supply disruption",
+    "shipping halted",
+    "sanctions imposed",
     "capital controls",
     "bank collapse",
     "banking stress",
     "central bank action",
-    "first strike",
-    "new front",
-    "new geography",
     "new country joins",
     "trade disruption",
     "pipeline attack",
     "refinery attack",
-    "missile on oil",
-    "blockade",
-    "no oil shipments",
     "waterway closed",
-    "airspace closed",
-    "martial law",
-    "default",
-    "withdrawal halt",
     "exchange halt",
+    "stablecoin depeg",
 ]
 
 COMMENTARY_HINTS = [
@@ -249,9 +300,28 @@ def classify_event_fatigue(similar_news_12h: int) -> str:
 
 def detect_escalation_keywords(title: str, summary: str = "") -> bool:
     """
-    Detect whether the headline/summary introduces materially new market consequences.
+    Detect confirmed escalation-style consequences, not warning language.
     """
     text = f"{title or ''} {summary or ''}".lower()
+
+    warning_words = [
+        "warns", "warning", "threatens", "may", "could",
+        "must be careful", "possible disruption", "monitoring"
+    ]
+    if any(w in text for w in warning_words):
+        # warning language alone should not trigger escalation=True
+        confirmed_words = [
+            "shipping halted",
+            "waterway closed",
+            "oil supply disruption",
+            "sanctions imposed",
+            "capital controls",
+            "bank collapse",
+            "exchange halt",
+            "stablecoin depeg",
+        ]
+        return any(k in text for k in confirmed_words)
+
     return any(keyword in text for keyword in ESCALATION_KEYWORDS)
 
 
@@ -264,7 +334,7 @@ def infer_event_state_hint(
     reaction_headline: bool,
 ) -> str:
     """
-    Lightweight state hint passed to the model.
+    Lightweight hint only. Keep conservative.
     """
     text = f"{title or ''} {summary or ''}".lower()
 
@@ -277,6 +347,10 @@ def infer_event_state_hint(
     if escalation_keywords_detected:
         return "ESCALATION"
 
+    warning_words = ["warns", "warning", "threatens", "may", "could", "must be careful"]
+    if any(w in text for w in warning_words):
+        return "CONTINUATION"
+
     if similar_news_12h == 0:
         return "NEW_EVENT"
 
@@ -286,19 +360,51 @@ def infer_event_state_hint(
     return "NEW_EVENT"
 
 
-def classify_news_relevance(title: str, description: str = "") -> dict:
+def classify_news_relevance(
+    title: str,
+    description: str = "",
+    current_news_id: int | None = None,
+) -> dict:
     """
-    Lightweight Gemini call to classify a news article's category, impact_level, and reason
-    for forex/crypto trading. Returns a dict with these fields.
-    Falls back to a default 'none' impact dict on any error.
+    Strict filter-agent call.
+    Returns:
+    {
+        "category": "...",
+        "should_analyze": bool,
+        "reason": "..."
+    }
     """
-    default_resp = {"category": "error", "impact_level": "none", "reason": "Classification failed or skipped"}
+    default_resp = {
+        "category": "Noisy",
+        "should_analyze": False,
+        "reason": "Classification failed or skipped"
+    }
+
     if not os.getenv("GEMINI_API_KEY") or not client:
         return default_resp
+
     try:
-        user_msg = f"Title: {title}"
-        if description:
-            user_msg += f"\nDescription: {description[:300]}"
+        # Pull the exact event context the prompt expects
+        filter_ctx = get_filter_context(title, current_news_id=current_news_id)
+
+        user_msg = f"""NEWS
+Title: {title}
+Description: {(description or "")[:500]}
+
+EVENT CONTEXT
+theme: {filter_ctx.get("theme", "")}
+similar_news_last_12h: {filter_ctx.get("similar_news_12h", 0)}
+similar_news_last_24h: {filter_ctx.get("similar_news_24h", 0)}
+novelty_label: {filter_ctx.get("novelty_label", "")}
+event_fatigue: {filter_ctx.get("repetition_level", "")}
+
+ADDITIONAL FILTER CONTEXT
+reaction_headline: {filter_ctx.get("reaction_headline", False)}
+has_escalation_words: {filter_ctx.get("has_escalation_words", False)}
+priced_in: {filter_ctx.get("priced_in", False)}
+repetition_pressure: {filter_ctx.get("repetition_pressure", 0)}
+"""
+
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[user_msg],
@@ -308,44 +414,54 @@ def classify_news_relevance(title: str, description: str = "") -> dict:
                 max_output_tokens=300,
             ),
         )
+
         if hasattr(response, "usage_metadata") and response.usage_metadata:
-            _log(f"[TOKEN USAGE - CLASSIFY] In: {response.usage_metadata.prompt_token_count} | Out: {response.usage_metadata.candidates_token_count} | Total: {response.usage_metadata.total_token_count}")
+            _log(
+                f"[TOKEN USAGE - CLASSIFY] In: {response.usage_metadata.prompt_token_count} | "
+                f"Out: {response.usage_metadata.candidates_token_count} | "
+                f"Total: {response.usage_metadata.total_token_count}"
+            )
+
         text = (response.text or "").strip()
         json_match = re.search(r'\{.*\}', text, re.DOTALL)
 
-        result = default_resp.copy()
-        if json_match:
-            try:
-                json_str = json_match.group(0)
-                if json_str.count('{') > json_str.count('}'):
-                    json_str += '}' * (json_str.count('{') - json_str.count('}'))
-                data = json.loads(json_str)
-                category = data.get("category", "unclassified")
-                raw_impact = data.get("importance") or data.get("impact_level") or "none"
-                impact_level = raw_impact.lower()
-                reason = data.get("reason", "")
-                result = {
-                    "category": category,
-                    "impact_level": impact_level,
-                    "reason": reason,
-                }
-            except Exception:
-                pass
+        if not json_match:
+            return default_resp
 
-        try:
-            os.makedirs("logs", exist_ok=True)
-            with open("logs/classification.log", "a", encoding="utf-8") as f:
-                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                f.write(f"[{timestamp}] TITLE: {title}\n")
-                f.write(f"[{timestamp}] RAW: {text}\n")
-                f.write(f"[{timestamp}] FINAL: {result}\n")
-                f.write("-" * 40 + "\n")
-        except Exception:
-            pass
+        json_str = json_match.group(0)
+        if json_str.count('{') > json_str.count('}'):
+            json_str += '}' * (json_str.count('{') - json_str.count('}'))
 
-        return result
+        data = json.loads(json_str)
+
+        category = str(data.get("category", "Noisy")).strip()
+        should_analyze = bool(data.get("should_analyze", False))
+        reason = str(data.get("reason", "")).strip()
+
+        # Safety normalization
+        allowed_categories = {
+            "Very High Useful",
+            "Crypto Useful",
+            "Forex Useful",
+            "Useful",
+            "Medium",
+            "Neutral",
+            "Noisy",
+        }
+        if category not in allowed_categories:
+            category = "Noisy"
+            should_analyze = False
+            if not reason:
+                reason = "Invalid category returned by classifier"
+
+        return {
+            "category": category,
+            "should_analyze": should_analyze,
+            "reason": reason,
+        }
+
     except Exception as e:
-        print(f"[CLASSIFY] Error classifying '{title[:50]}...': {e}", flush=True)
+        _log(f"[CLASSIFY ERROR] {e}")
         return default_resp
 
 
@@ -357,7 +473,7 @@ def classify_batch(items: list[tuple[str, str]]) -> list[dict]:
     if not items:
         return []
 
-    default_resp = {"category": "error", "impact_level": "none", "reason": "Classification failed or skipped"}
+    default_resp = {"category": "Noisy", "should_analyze": False, "reason": "Classification failed or skipped"}
     results = [default_resp] * len(items)
 
     def _classify(idx, title, desc):
@@ -385,7 +501,7 @@ def analyze_news(title: str, published_iso: str, summary: str = "", source: str 
     age_label, age_human, hours_old = _calculate_news_age(published_iso)
 
     # priced-in duplicate check using DB
-    news_check = search_recent_news(title, hours_back=48)
+    news_check = search_recent_news(title, current_news_id=current_news_id, hours_back=48)
     priced_in_by_history = bool(news_check.get("priced_in", False))
 
     for attempt in range(MAX_RETRIES):
@@ -393,9 +509,15 @@ def analyze_news(title: str, published_iso: str, summary: str = "", source: str 
             _log(f"[ATTEMPT {attempt+1}/{MAX_RETRIES}] {title[:80]}")
 
             market_data = fetch_all_market_data()
+            market_status = get_market_status()
 
             # movement since publish (dynamic)
             symbols = _detect_assets_from_title(title)
+            if not symbols:
+                tl = (title or "").lower()
+                if any(w in tl for w in ["fed", "cpi", "inflation", "jobs", "nfp", "payroll", "gdp", "yield", "treasury"]):
+                    symbols = ["DX-Y.NYB", "^GSPC", "GC=F", "BTC-USD"]
+
             movements = _check_recent_movements(symbols, published_iso) if symbols else {}
 
             # choose a dominant movement (largest abs move)
@@ -452,7 +574,7 @@ def analyze_news(title: str, published_iso: str, summary: str = "", source: str 
             novelty_label = get_novelty_label(title)
             remaining_impact_context = compute_remaining_tradable_impact(
                 base_event_impact=6,   # placeholder baseline for model guidance only
-                published_at=datetime.fromisoformat(published_iso.replace("Z", "+00:00")),
+                published_at=_parse_iso_utc(published_iso),
                 title=title,
             )
 
@@ -478,62 +600,53 @@ def analyze_news(title: str, published_iso: str, summary: str = "", source: str 
                 movement_text = "\n".join(lines)
 
             prompt = f"""
-                Return JSON matching this exact template (all keys must exist, unknown = "" or 0 or []):
+                Analyze the following news event and estimate REMAINING market impact from analysis_timestamp_utc onward.
+
+                Return JSON matching this schema exactly:
                 {schema_text}
 
-                NEWS:
-                - title: {title}
-                - summary: {summary}
-                - source: {source}
-                - timestamp_utc: {published_iso}
-                - analysis_timestamp_utc: {analysis_time}
+                INPUTS
 
-                EVENT CONTEXT:
-                - theme: {theme}
-                - similar_news_last_12h: {similar_news_12h}
-                - similar_news_last_24h: {similar_news_24h}
-                - theme_news_last_12h: {theme_news_12h}
-                - theme_news_last_24h: {theme_news_24h}
-                - fatigue_score: {fatigue_score}
-                - repetition_level: {repetition_level}
-                - novelty_label: {novelty_label}
-                - event_fatigue: {event_fatigue}
-                - event_state_hint: {event_state_hint}
-                - escalation_keywords_detected: {escalation_keywords_detected}
+                NEWS
+                title: {title}
+                summary: {summary or ""}
+                source: {source}
+                timestamp_utc: {published_iso}
+                analysis_timestamp_utc: {analysis_time}
 
-                DYNAMIC REACTION INPUTS:
-                - reaction_pct: {reaction_pct}
-                - atr_pct_reference: {atr_pct_reference}
-                - reaction_status: {reaction_status}
-                - already_priced_in_by_history: {priced_in_by_history}
-                - db_duplicate_check: {json.dumps(news_check, default=str)}
+                EVENT CONTEXT
+                theme: {theme}
+                similar_news_last_12h: {similar_news_12h}
+                similar_news_last_24h: {similar_news_24h}
+                novelty_label: {novelty_label}
+                event_fatigue: {event_fatigue}
 
-                LIVE MARKET DATA (use these; do NOT fabricate):
-                - forex: {json.dumps(market_data.get("forex", {}), default=str)}
-                - crypto: {json.dumps(market_data.get("crypto", {}), default=str)}
-                - global_markets: {json.dumps(market_data.get("markets", {}), default=str)}
-                - sentiment: {json.dumps(market_data.get("sentiment", {}), default=str)}
-                - macro: {json.dumps(market_data.get("macro", {}), default=str)}
-                - source_credibility: {json.dumps(source_cred, default=str)}
-                {f"- economic_calendar: {json.dumps(extra_data.get('economic_calendar', {}), default=str)}" if "economic_calendar" in extra_data else ""}
-                {f"- rate_differentials: {json.dumps(extra_data.get('rate_differentials', {}), default=str)}" if "rate_differentials" in extra_data else ""}
+                REACTION DATA
+                reaction_pct: {reaction_pct}
+                atr_pct_reference: {atr_pct_reference}
+                reaction_status: {reaction_status}
 
-                RECENT MOVEMENTS SINCE PUBLISH:
-                {movement_text}
+                MARKET DATA
+                forex: {json.dumps(market_data.get("forex", {}))}
+                crypto: {json.dumps(market_data.get("crypto", {}))}
+                markets: {json.dumps(market_data.get("markets", {}))}
+                macro: {json.dumps(market_data.get("macro", {}))}
 
-                REACTION HEADLINE OVERRIDE:
-                - reaction_headline: {reaction_headline}
-                - headline_move_pct: {headline_move_pct}
-                - has_new_catalyst: {has_new_catalyst}
+                SOURCE
+                source_credibility: {json.dumps(source_cred)}
 
-                RULE REMINDER:
-                - impact_score must represent REMAINING impact from NOW onward.
-                - If reaction_status=fully_priced -> cap impact <= 4 unless crisis.
-                - If event_fatigue is high and no escalation -> treat as continuation, not a fresh shock.
-                - If repetition_level is high and novelty_label = repetition_only -> strongly reduce impact.
-                - If theme has appeared many times in the last 12h/24h, do not treat it as a fresh macro shock unless escalation exists.
-                - If event_state_hint is COMMENTARY -> keep impact low unless policy/action exists.
-                - If news age >12h -> cap impact <= 3.
+                MARKET STATUS
+                market_status: {json.dumps(market_status)}
+
+                REMINDERS
+                - Measure remaining impact from NOW, not from original publication time.
+                - Summary may be empty; do not infer missing facts.
+                - If reaction_status = fully_priced, keep remaining impact low unless there is a clear fresh escalation or crisis condition.
+                - If event fatigue is high and no fresh economic consequence exists, prefer CONTINUATION.
+                - If no structural transmission exists, primary_impact_score must be <= 4.
+                - Only include asset views when direct transmission is clear.
+                - Use ATR for expected_move_pct only when available.
+                - If no clean setup exists, return no_clean_setup.
 
                 Return STRICT JSON only.
                 """
@@ -561,7 +674,49 @@ def analyze_news(title: str, published_iso: str, summary: str = "", source: str 
 
             # inject timing info
             result.setdefault("event_metadata", {})
+            result["event_metadata"].setdefault("title", title)
+            result["event_metadata"].setdefault("summary", summary)
+            result["event_metadata"].setdefault("source", source)
+            result["event_metadata"].setdefault("timestamp_utc", published_iso)
             result["event_metadata"]["analysis_timestamp_utc"] = analysis_time
+
+            # normalize directional arrays
+            directional = result.setdefault("directional_bias", {})
+            for key in ("forex", "crypto", "global_equities"):
+                if not isinstance(directional.get(key), list):
+                    directional[key] = []
+
+            # normalize suggestions
+            suggestions = result.setdefault("suggestions", {})
+            if not isinstance(suggestions, dict):
+                suggestions = {}
+                result["suggestions"] = suggestions
+
+            suggestions["status"] = suggestions.get("status", "failed")
+            suggestions["summary"] = suggestions.get("summary", "")
+
+            for key in ("buy", "sell", "watch", "avoid"):
+                if not isinstance(suggestions.get(key), list):
+                    suggestions[key] = []
+
+            # hard post-processing caps
+            core = result.get("core_impact_assessment", {}) or {}
+            impact_score = int(core.get("primary_impact_score", 0) or 0)
+
+            if hours_old > 12:
+                impact_score = min(impact_score, 3)
+
+            if reaction_status == "fully_priced" and not escalation_keywords_detected:
+                impact_score = min(impact_score, 4)
+
+            if repetition_level == "high" and novelty_label == "repetition_only":
+                impact_score = min(impact_score, 3)
+
+            if event_state_hint == "COMMENTARY":
+                impact_score = min(impact_score, 3)
+
+            core["primary_impact_score"] = impact_score
+            result["core_impact_assessment"] = core
 
             # tag meta
             result["_meta"] = {
@@ -586,7 +741,17 @@ def analyze_news(title: str, published_iso: str, summary: str = "", source: str 
                 "event_fatigue": event_fatigue,
                 "event_state_hint": event_state_hint,
                 "escalation_keywords_detected": escalation_keywords_detected,
+                "remaining_impact_context": remaining_impact_context,
+                "market_status": market_status,
             }
+
+            if market_status["us_equities"] == "closed":
+                suggestions = result.get("suggestions", {}) 
+                suggestions["buy"] = []
+                suggestions["sell"] = []
+                result["suggestions"] = suggestions
+
+            result = normalize_analysis_output(result)
 
             return result
 
@@ -601,13 +766,16 @@ def analyze_news(title: str, published_iso: str, summary: str = "", source: str 
 def save_analysis(news_id: int, analysis: dict):
     """
     Saves the agent's output into existing DB columns your UI reads.
+    Updated to match the current schema.
     """
     core = analysis.get("core_impact_assessment", {})
-    regime = analysis.get("market_regime_context", {})
     prob = analysis.get("probability_and_confidence", {})
     time_mod = analysis.get("time_modeling", {})
     directional = analysis.get("directional_bias", {})
     meta = analysis.get("_meta", {})
+    suggestions = analysis.get("suggestions", {}) or {}
+    fatigue = analysis.get("event_fatigue_analysis", {}) or {}
+    event_cls = analysis.get("event_classification", {}) or {}
 
     forex_items = directional.get("forex", []) or []
     crypto_items = directional.get("crypto", []) or []
@@ -631,7 +799,10 @@ def save_analysis(news_id: int, analysis: dict):
             dollar_liquidity_state = %s,
             news_age_label         = %s,
             news_age_human         = %s,
-            news_priced_in         = %s
+            news_priced_in         = %s,
+            suggestions_data       = %s,
+            suggestions_status     = %s,
+            suggestions_summary    = %s
         WHERE id = %s
     """
 
@@ -641,28 +812,35 @@ def save_analysis(news_id: int, analysis: dict):
         (analysis.get("executive_summary", "") or "")[:500],
         json.dumps(core.get("market_category_scores", {}) or {}),
         (time_mod.get("impact_duration", "") or "")[:100],
-        (regime.get("dominant_market_regime", "") or "")[:50],
+        (event_cls.get("event_type", "") or "")[:50],
         (forex_items[0].get("direction", "") if forex_items else "")[:20],
         (crypto_items[0].get("direction", "") if crypto_items else "")[:20],
         (time_mod.get("reaction_speed", "") or "")[:50],
         str(prob.get("overall_confidence_score", ""))[:50],
-        int(prob.get("direction_probability_pct", 0) or 0),
-        (regime.get("volatility_expectation", "") or "")[:50],
-        (regime.get("liquidity_condition_assumption", "") or "")[:50],
+        int(prob.get("confidence_breakdown", {}).get("cross_asset_logic_strength", 0) or 0),
+        (time_mod.get("time_decay_risk", "") or "")[:50],
+        (event_cls.get("confirmation_status", "") or "")[:50],
         (meta.get("news_age_label", "Fresh") or "")[:20],
         (meta.get("news_age_human", "") or "")[:50],
         bool(meta.get("priced_in_by_history", False) or (meta.get("reaction_status") == "fully_priced")),
+        json.dumps(suggestions),
+        (suggestions.get("status", "") or "")[:30],
+        (suggestions.get("summary", "") or "")[:500],
         news_id,
     )
 
     execute_query(query, params)
     _log(f"[SAVE] news_id={news_id}")
 
-    # Auto-create predictions from directional bias
     try:
         create_predictions(news_id, analysis)
     except Exception as pred_err:
         _log(f"[PRED] Failed to create predictions for news_id={news_id}: {pred_err}")
+
+    try:
+        create_suggestions(news_id, analysis)
+    except Exception as sug_err:
+        _log(f"[SUG] Failed to create suggestions for news_id={news_id}: {sug_err}")
 
 
 # ── Asset normalization for predictions ──────────────────────
@@ -828,6 +1006,12 @@ def create_predictions(news_id: int, analysis: dict):
            else datetime.now(timezone.utc))
     created = 0
 
+    # prevent duplicates on re-analysis
+    try:
+        _exec("DELETE FROM predictions WHERE news_id = %s", (news_id,))
+    except Exception:
+        pass
+
     for asset_class in ("crypto", "forex", "global_equities"):
         items = directional.get(asset_class, []) or []
         for item in items:
@@ -891,4 +1075,60 @@ def create_predictions(news_id: int, analysis: dict):
                 _log(f"[PRED] Error creating prediction for {raw_asset}: {e}")
                 continue
 
-    _log(f"[PRED] Created {created} prediction(s) for news_id={news_id}")   
+    _log(f"[PRED] Created {created} prediction(s) for news_id={news_id}")
+
+
+def create_suggestions(news_id: int, analysis: dict):
+    """
+    Parse suggestions from analysis and insert suggestion rows.
+    """
+    from app.core.db import execute_query as _exec
+
+    suggestions = analysis.get("suggestions", {}) or {}
+    status = suggestions.get("status", "")
+    if status != "success":
+        return
+
+    # prevent duplicates on re-analysis
+    _exec("DELETE FROM suggestions WHERE news_id = %s", (news_id,))
+
+    created = 0
+
+    for suggestion_type in ("buy", "sell", "watch", "avoid"):
+        items = suggestions.get(suggestion_type, []) or []
+        for item in items:
+            try:
+                asset = (item.get("asset") or "").strip()
+                if not asset:
+                    continue
+
+                direction = (item.get("direction") or "").strip().lower()
+                if direction not in ("bullish", "bearish", "neutral"):
+                    direction = ""
+
+                _exec(
+                    """
+                    INSERT INTO suggestions
+                    (news_id, suggestion_type, asset, direction, reasoning, market_logic,
+                     time_window, invalidation, confidence)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        news_id,
+                        suggestion_type,
+                        asset,
+                        direction,
+                        item.get("reasoning", ""),
+                        item.get("market_logic", ""),
+                        (item.get("time_window") or "")[:100],
+                        item.get("invalidation", ""),
+                        (item.get("confidence") or "")[:20],
+                    ),
+                )
+                created += 1
+                _log(f"[SUG] Created: {suggestion_type.upper()} {asset} ({direction or 'n/a'})")
+            except Exception as e:
+                _log(f"[SUG] Error inserting suggestion for {item.get('asset', '')}: {e}")
+                continue
+
+    _log(f"[SUG] Created {created} suggestion(s) for news_id={news_id}")
