@@ -14,14 +14,18 @@ Notes:
 
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any
 
 import requests
 import yfinance as yf
 from bs4 import BeautifulSoup
+import ccxt
+import pandas as pd
 
 from app.core.db import fetch_all
 
@@ -158,71 +162,73 @@ def detect_theme(title: str) -> str:
 
 def has_escalation_words(title: str) -> bool:
     """
-    Repeated theme should not always reduce impact if there is escalation.
+    Strict escalation detector for filter use.
+    Only flags genuinely event-like escalation words.
     """
     t = (title or "").lower()
 
     escalation_words = [
-        "unexpectedly",
-        "emergency",
-        "cuts rates",
-        "raises rates",
-        "misses estimates",
-        "beats estimates",
-        "far above estimates",
-        "far below estimates",
         "sanctions",
-        "attack",
-        "missile",
-        "ceasefire",
-        "default",
-        "bankruptcy",
-        "approval",
-        "approved",
-        "lawsuit",
-        "etf approved",
+        "tariffs",
+        "export ban",
+        "capital controls",
         "intervention",
-        "surprise",
-        "record high",
-        "record low",
-        "collapses",
-        "plunges",
-        "explodes",
+        "rate hike",
+        "rate cut",
+        "emergency meeting",
+        "bankruptcy",
+        "default",
+        "shipping halted",
+        "waterway closed",
+        "strait closed",
+        "pipeline attack",
+        "refinery attack",
+        "missile strike",
+        "new front",
+        "new country joins",
+        "exchange halt",
+        "stablecoin depeg",
     ]
 
-    return any(w in t for w in escalation_words)
+    return any(word in t for word in escalation_words)
 
 
 def detect_reaction_headline(title: str) -> dict:
     """
-    Detect headlines that describe an already-realized move.
-    Example: 'Bitcoin surges 8%' or 'Stocks tumble 3%'.
+    Detect whether a headline is primarily describing market price action.
     """
-    t = (title or "").lower()
+    t = (title or "").lower().strip()
 
     move_verbs = [
-        "surge", "soar", "jump", "rally", "climb", "rise", "gain", "advance",
-        "drop", "tumble", "slump", "fall", "sink", "slide", "plunge", "selloff",
+        "rises", "rise", "falls", "fall", "drops", "drop", "jumps", "jump",
+        "surges", "surge", "slides", "slide", "rebounds", "rebound",
+        "tumbles", "tumble", "gains", "gain", "selloff", "sells off",
+        "rallies", "rally", "slips", "slip"
     ]
+
+    catalyst_words = [
+        "after", "amid", "on", "as", "following", "due to", "because of"
+    ]
+
+    pct_match = re.search(r'(\d+(\.\d+)?)\s*%', t)
+    headline_move_pct = float(pct_match.group(1)) if pct_match else None
 
     has_move_verb = any(v in t for v in move_verbs)
-    percents = re.findall(r"(\d+(?:\.\d+)?)\s*%", t)
-    headline_move_pct = max([float(x) for x in percents], default=None)
+    has_catalyst = any(w in t for w in catalyst_words)
 
-    reaction_headline = bool(has_move_verb and headline_move_pct is not None)
-
-    new_catalyst_words = [
-        "rate hike", "rate cut", "raises rates", "cuts rates",
-        "sanctions", "imposes", "strike", "attack", "missile",
-        "approved", "approval", "etf", "ban", "lawsuit", "sec",
-        "bankruptcy", "defaults", "bailout", "emergency"
-    ]
-    has_new_catalyst = any(w in t for w in new_catalyst_words)
+    # Much broader than before
+    reaction_headline = bool(
+        has_move_verb and (
+            headline_move_pct is not None
+            or has_catalyst
+            or t.startswith(("oil ", "gold ", "bitcoin ", "stocks ", "dollar ", "usd/", "eur/", "gbp/", "spx", "nasdaq"))
+        )
+    )
 
     return {
         "reaction_headline": reaction_headline,
         "headline_move_pct": headline_move_pct,
-        "has_new_catalyst": has_new_catalyst,
+        "has_new_catalyst": has_catalyst,
     }
 
 
@@ -275,7 +281,39 @@ def _safe_last_close(symbol: str) -> float | None:
         return None
 
 
+def _is_crypto(symbol: str) -> bool:
+    s = (symbol or "").upper()
+    return "-USD" in s or s in ["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE"]
+
+def _crypto_to_binance(symbol: str) -> str:
+    base = symbol.split("-")[0].upper()
+    if base == "USD": return "USDC/USDT"
+    return f"{base}/USDT"
+
 def get_asset_atr(symbol: str, period: int = 14) -> dict:
+    if _is_crypto(symbol):
+        try:
+            binance_sym = _crypto_to_binance(symbol)
+            exchange = ccxt.binance()
+            ohlcv = exchange.fetch_ohlcv(binance_sym, timeframe='1d', limit=40)
+            if ohlcv and len(ohlcv) >= period:
+                df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                df["H-L"] = df["High"] - df["Low"]
+                df["H-PC"] = (df["High"] - df["Close"].shift(1)).abs()
+                df["L-PC"] = (df["Low"] - df["Close"].shift(1)).abs()
+                
+                tr = df[["H-L", "H-PC", "L-PC"]].max(axis=1)
+                atr = tr.rolling(period).mean().iloc[-1]
+                price = df["Close"].iloc[-1]
+                
+                if price != 0:
+                    return {
+                        "atr_value": round(float(atr), 6),
+                        "atr_pct_reference": round(float((atr / price) * 100), 6),
+                    }
+        except Exception:
+            pass # Fallback to yfinance if error
+
     try:
         t = yf.Ticker(symbol)
         df = t.history(period="30d")
@@ -312,6 +350,34 @@ def calculate_reaction(symbol: str, published_iso: str) -> dict:
         pub_dt = datetime.fromisoformat((published_iso or "").strip())
         pub_dt = _to_utc(pub_dt)
         now_dt = datetime.now(timezone.utc)
+
+        if _is_crypto(symbol):
+            try:
+                binance_sym = _crypto_to_binance(symbol)
+                exchange = ccxt.binance()
+                since_ts = int((pub_dt - timedelta(hours=6)).timestamp() * 1000)
+                ohlcv = exchange.fetch_ohlcv(binance_sym, timeframe='15m', since=since_ts, limit=1000)
+                
+                if ohlcv:
+                    df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+                    df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
+                    after = df[df['datetime'] >= pub_dt]
+                    
+                    if not after.empty:
+                        news_price = float(after["Close"].iloc[0])
+                        used_ts = after['datetime'].iloc[0]
+                        current_price = float(df["Close"].iloc[-1])
+                        reaction_pct = ((current_price - news_price) / news_price) * 100 if news_price else None
+                        
+                        return {
+                            "news_price": round(news_price, 6),
+                            "current_price": round(current_price, 6),
+                            "reaction_pct": round(reaction_pct, 6) if reaction_pct is not None else None,
+                            "method": "ccxt_intraday_15m",
+                            "used_timestamp_utc": used_ts.isoformat(),
+                        }
+            except Exception:
+                pass # Fallback to yfinance if ccxt fails
 
         t = yf.Ticker(symbol)
 
@@ -415,18 +481,50 @@ def get_crypto_prices(coin_ids: list[str] | None = None) -> dict:
     if not coin_ids:
         coin_ids = ["bitcoin", "ethereum"]
 
-    resp = _http_get(
-        f"{COINGECKO_URL}/simple/price",
-        params={"ids": ",".join(coin_ids), "vs_currencies": "usd"},
-    )
-    if resp is None:
-        return {}
+    cg_to_binance = {
+        "bitcoin": "BTC/USDT",
+        "ethereum": "ETH/USDT",
+        "solana": "SOL/USDT",
+        "ripple": "XRP/USDT",
+        "cardano": "ADA/USDT",
+        "dogecoin": "DOGE/USDT",
+        "avalanche-2": "AVAX/USDT",
+        "chainlink": "LINK/USDT",
+        "polkadot": "DOT/USDT",
+        "litecoin": "LTC/USDT",
+        "shiba-inu": "SHIB/USDT",
+        "polygon": "MATIC/USDT",
+        "matic-network": "MATIC/USDT",
+        "uniswap": "UNI/USDT"
+    }
 
     try:
-        data = resp.json()
-        return {k: float(v["usd"]) for k, v in data.items() if isinstance(v, dict) and "usd" in v}
-    except Exception:
-        return {}
+        exchange = ccxt.binance()
+        to_fetch = []
+        for cid in coin_ids:
+            sym = cg_to_binance.get(cid.lower())
+            if not sym and ("usd" in cid.lower() or "usdt" in cid.lower()):
+                sym = cid.upper().replace("-USD", "/USDT").replace("-", "/")
+            if sym:
+                to_fetch.append(sym)
+                
+        to_fetch = list(set(to_fetch))
+        out = {}
+        if to_fetch:
+            tickers = exchange.fetch_tickers(to_fetch)
+            for cid in coin_ids:
+                sym = cg_to_binance.get(cid.lower())
+                if not sym:
+                    sym = cid.upper().replace("-USD", "/USDT").replace("-", "/")
+                
+                if sym in tickers and tickers[sym]['last'] is not None:
+                    out[cid] = float(tickers[sym]['last'])
+                else:
+                    out[cid] = None
+        return out
+    except Exception as e:
+        print(f"ccxt get_crypto_prices error: {e}")
+    return {}
 
 
 def get_global_markets() -> dict:
@@ -567,32 +665,39 @@ def get_news_source_credibility(source: str) -> dict:
 # DUPLICATE / PRICED-IN / FATIGUE CHECKS
 # =========================================================
 
-def search_recent_news(title: str, hours_back: int = 48, similarity_threshold: float = 0.88) -> dict:
+def search_recent_news(
+    title: str,
+    current_news_id: int | None = None,
+    hours_back: int = 48,
+    similarity_threshold: float = 0.86
+) -> dict:
     """
-    Best-match duplicate / priced-in check.
-    Returns priced_in=True if a very similar story existed and is old enough.
+    Best-match duplicate / priced-in check for filter/analysis agents.
+    Excludes the current row if current_news_id is provided.
     """
     try:
         since = datetime.now(timezone.utc) - timedelta(hours=hours_back)
 
         rows = fetch_all(
             """
-            SELECT title, published
+            SELECT id, title, published
             FROM news
             WHERE published >= %s
             ORDER BY published DESC
-            LIMIT 300
+            LIMIT 400
             """,
             (since,),
         )
 
         best = {"score": 0.0, "title": None, "published": None}
-        base = _normalize_event_title(title)
 
         for row in rows:
+            row_id = row.get("id")
+            if current_news_id is not None and row_id == current_news_id:
+                continue
+
             other_title_raw = row.get("title") or ""
-            other_title = _normalize_event_title(other_title_raw)
-            score = SequenceMatcher(None, base, other_title).ratio()
+            score = _headline_similarity_score(title, other_title_raw)
 
             if score > best["score"]:
                 best = {
@@ -602,16 +707,23 @@ def search_recent_news(title: str, hours_back: int = 48, similarity_threshold: f
                 }
 
         if best["title"] is None:
-            return {"priced_in": False, "match_score": 0.0}
+            return {
+                "priced_in": False,
+                "match_score": 0.0,
+                "matched_title": None,
+                "matched_hours_ago": None,
+            }
 
         older_than_hrs = None
         if best["published"]:
-            older_than_hrs = (datetime.now(timezone.utc) - _to_utc(best["published"])).total_seconds() / 3600.0
+            older_than_hrs = (
+                datetime.now(timezone.utc) - _to_utc(best["published"])
+            ).total_seconds() / 3600.0
 
         priced_in = bool(
             best["score"] >= similarity_threshold
             and older_than_hrs is not None
-            and older_than_hrs >= 6
+            and older_than_hrs >= 4
         )
 
         return {
@@ -622,15 +734,19 @@ def search_recent_news(title: str, hours_back: int = 48, similarity_threshold: f
         }
 
     except Exception as e:
-        return {"priced_in": False, "note": f"db_check_failed: {e}"}
+        return {
+            "priced_in": False,
+            "match_score": 0.0,
+            "matched_title": None,
+            "matched_hours_ago": None,
+            "note": f"db_check_failed: {e}",
+        }
 
 
 def get_similar_news_counts(title: str, current_news_id: int | None = None) -> dict:
     """
-    Count repetition in the last 24h.
-    Returns:
-    - similar_news_* : wording-level / near-duplicate repetition
-    - theme_news_*   : same macro theme repetition
+    Count short-term repetition for strict filtering.
+    Returns both near-duplicate repetition and broad-theme repetition.
     """
     try:
         rows = fetch_all(
@@ -642,72 +758,109 @@ def get_similar_news_counts(title: str, current_news_id: int | None = None) -> d
         )
 
         now = datetime.now(timezone.utc)
-        base = _normalize_event_title(title)
         base_theme = detect_theme(title)
 
+        similar_6h = 0
         similar_12h = 0
         similar_24h = 0
+        theme_6h = 0
         theme_12h = 0
         theme_24h = 0
 
         for row in rows:
             row_id = row.get("id")
             other_title_raw = row.get("title", "")
-            other_title = _normalize_event_title(other_title_raw)
             published = row.get("published")
 
             if current_news_id is not None and row_id == current_news_id:
                 continue
-
-            if not other_title or not published:
+            if not other_title_raw or not published:
                 continue
 
             published_utc = _to_utc(published)
             age_seconds = (now - published_utc).total_seconds()
+            if age_seconds < 0:
+                continue
 
+            sim_score = _headline_similarity_score(title, other_title_raw)
             other_theme = detect_theme(other_title_raw)
-            sim_score = SequenceMatcher(None, base, other_title).ratio()
 
-            # Near duplicate
-            if sim_score >= 0.72:
+            if sim_score >= 0.84:
                 similar_24h += 1
                 if age_seconds <= 12 * 3600:
                     similar_12h += 1
+                if age_seconds <= 6 * 3600:
+                    similar_6h += 1
+            elif sim_score >= 0.74 and base_theme != "general" and other_theme == base_theme:
+                similar_24h += 1
+                if age_seconds <= 12 * 3600:
+                    similar_12h += 1
+                if age_seconds <= 6 * 3600:
+                    similar_6h += 1
 
-            # Theme repetition
             if base_theme != "general" and other_theme == base_theme:
                 theme_24h += 1
                 if age_seconds <= 12 * 3600:
                     theme_12h += 1
+                if age_seconds <= 6 * 3600:
+                    theme_6h += 1
+
+        duplicate_score = min(1.0, (similar_6h * 0.40) + (similar_12h * 0.22) + (similar_24h * 0.08))
+        theme_score = min(1.0, (theme_6h * 0.18) + (theme_12h * 0.10) + (theme_24h * 0.04))
+        repetition_pressure = min(1.0, duplicate_score * 0.7 + theme_score * 0.3)
 
         return {
+            "similar_news_6h": similar_6h,
             "similar_news_12h": similar_12h,
             "similar_news_24h": similar_24h,
+            "theme_news_6h": theme_6h,
             "theme_news_12h": theme_12h,
             "theme_news_24h": theme_24h,
+            "duplicate_score": round(duplicate_score, 3),
+            "theme_score": round(theme_score, 3),
+            "repetition_pressure": round(repetition_pressure, 3),
             "theme": base_theme,
         }
 
     except Exception:
         return {
+            "similar_news_6h": 0,
             "similar_news_12h": 0,
             "similar_news_24h": 0,
+            "theme_news_6h": 0,
             "theme_news_12h": 0,
             "theme_news_24h": 0,
+            "duplicate_score": 0.0,
+            "theme_score": 0.0,
+            "repetition_pressure": 0.0,
             "theme": "general",
         }
 
 
-def compute_fatigue_score(similar_12h: int, similar_24h: int, theme_12h: int, theme_24h: int) -> int:
+def compute_fatigue_score(
+    similar_6h: int,
+    similar_12h: int,
+    similar_24h: int,
+    theme_6h: int,
+    theme_12h: int,
+    theme_24h: int,
+    repetition_pressure: float = 0.0,
+) -> int:
     """
-    Weighted fatigue score from 0 to 10.
+    Weighted fatigue score from 0 to 10 for news filter use.
     """
     score = 0
 
-    score += min(similar_12h * 2, 4)   # near duplicates matter most
-    score += min(similar_24h, 2)
-    score += min(theme_12h, 2)
-    score += min(theme_24h // 2, 2)
+    score += min(similar_6h * 3, 5)
+    score += min(similar_12h, 2)
+    score += min(similar_24h, 1)
+    score += min(theme_6h, 1)
+    score += min(theme_12h, 1)
+
+    if repetition_pressure >= 0.85:
+        score += 2
+    elif repetition_pressure >= 0.65:
+        score += 1
 
     return min(score, 10)
 
@@ -716,10 +869,13 @@ def get_repetition_context(title: str, current_news_id: int | None = None) -> di
     counts = get_similar_news_counts(title, current_news_id=current_news_id)
 
     fatigue_score = compute_fatigue_score(
+        counts["similar_news_6h"],
         counts["similar_news_12h"],
         counts["similar_news_24h"],
+        counts["theme_news_6h"],
         counts["theme_news_12h"],
         counts["theme_news_24h"],
+        counts["repetition_pressure"],
     )
 
     repetition_level = "low"
@@ -730,10 +886,15 @@ def get_repetition_context(title: str, current_news_id: int | None = None) -> di
 
     return {
         "theme": counts["theme"],
+        "similar_news_6h": counts["similar_news_6h"],
         "similar_news_12h": counts["similar_news_12h"],
         "similar_news_24h": counts["similar_news_24h"],
+        "theme_news_6h": counts["theme_news_6h"],
         "theme_news_12h": counts["theme_news_12h"],
         "theme_news_24h": counts["theme_news_24h"],
+        "duplicate_score": counts["duplicate_score"],
+        "theme_score": counts["theme_score"],
+        "repetition_pressure": counts["repetition_pressure"],
         "fatigue_score": fatigue_score,
         "repetition_level": repetition_level,
         "has_escalation_words": has_escalation_words(title),
@@ -752,7 +913,7 @@ def adjust_fatigue_for_novelty(fatigue_score: int, title: str) -> int:
 
 def get_novelty_label(title: str, current_news_id: int | None = None) -> str:
     """
-    Simple novelty label:
+    Strict novelty label for filter agent.
     - true_new_event
     - update_to_existing_theme
     - repetition_only
@@ -762,10 +923,16 @@ def get_novelty_label(title: str, current_news_id: int | None = None) -> str:
     if rep["similar_news_24h"] == 0 and rep["theme_news_24h"] == 0:
         return "true_new_event"
 
+    if rep["repetition_pressure"] >= 0.85 and not rep["has_escalation_words"]:
+        return "repetition_only"
+
     if rep["has_escalation_words"]:
         return "update_to_existing_theme"
 
-    return "repetition_only"
+    if rep["similar_news_12h"] >= 2:
+        return "repetition_only"
+
+    return "update_to_existing_theme"
 
 
 # =========================================================
@@ -826,4 +993,171 @@ def compute_remaining_tradable_impact(
         "time_decay_penalty": time_decay_penalty,
         "novelty_label": novelty_label,
         "remaining_tradable_impact": remaining,
+    }
+
+
+IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
+
+
+def get_market_status(now_ist: datetime | None = None) -> dict:
+    """
+    Return market status using IST as the reference timezone.
+
+    Status meanings:
+    - crypto: always "open"
+    - forex: "open" or "closed"
+    - us_equities: "pre_market" | "regular" | "after_hours" | "closed"
+    - futures: "open" | "maintenance_break" | "closed"
+
+    Notes:
+    - US equities:
+        pre-market   1:30 PM–7:00 PM IST (roughly, DST-adjusted via ET conversion)
+        regular       7:00 PM–1:30 AM IST
+        after-hours   1:30 AM–5:30 AM IST
+      These come from standard ET sessions converted dynamically.
+    - Forex:
+        Open from Sunday 5:00 PM ET to Friday 5:00 PM ET.
+    - CME-style futures:
+        Open from Sunday 6:00 PM ET to Friday 5:00 PM ET,
+        with daily maintenance break 5:00 PM–6:00 PM ET.
+    """
+    if now_ist is None:
+        now_ist = datetime.now(IST)
+    elif now_ist.tzinfo is None:
+        now_ist = now_ist.replace(tzinfo=IST)
+    else:
+        now_ist = now_ist.astimezone(IST)
+
+    now_et = now_ist.astimezone(ET)
+    et_weekday = now_et.weekday()  # Mon=0 ... Sun=6
+    et_t = now_et.time()
+
+    status = {
+        "timestamp_ist": now_ist.isoformat(),
+        "timestamp_et": now_et.isoformat(),
+        "crypto": "open",
+        "forex": _get_forex_status(et_weekday, et_t),
+        "us_equities": _get_us_equities_status(et_weekday, et_t),
+        "futures": _get_futures_status(et_weekday, et_t),
+    }
+
+    return status
+
+
+def _get_us_equities_status(weekday: int, et_t: time) -> str:
+    # Closed on Saturday/Sunday
+    if weekday >= 5:
+        return "closed"
+
+    pre_market_start = time(4, 0)
+    regular_start = time(9, 30)
+    regular_end = time(16, 0)
+    after_hours_end = time(20, 0)
+
+    if pre_market_start <= et_t < regular_start:
+        return "pre_market"
+    if regular_start <= et_t < regular_end:
+        return "regular"
+    if regular_end <= et_t < after_hours_end:
+        return "after_hours"
+    return "closed"
+
+
+def _get_forex_status(weekday: int, et_t: time) -> str:
+    # Forex: Sunday 5:00 PM ET -> Friday 5:00 PM ET
+    # Sat closed, most of Sun closed until 5 PM ET
+    if weekday == 5:  # Saturday
+        return "closed"
+
+    if weekday == 6:  # Sunday
+        return "open" if et_t >= time(17, 0) else "closed"
+
+    if weekday == 4:  # Friday
+        return "open" if et_t < time(17, 0) else "closed"
+
+    return "open"  # Mon-Thu
+
+
+def _get_futures_status(weekday: int, et_t: time) -> str:
+    # CME-style futures:
+    # Open Sunday 6:00 PM ET -> Friday 5:00 PM ET
+    # Daily maintenance break: 5:00 PM–6:00 PM ET
+    if weekday == 5:  # Saturday
+        return "closed"
+
+    if weekday == 6:  # Sunday
+        return "open" if et_t >= time(18, 0) else "closed"
+
+    if weekday == 4:  # Friday
+        if et_t < time(17, 0):
+            return "open"
+        return "closed"
+
+    # Mon-Thu
+    if time(17, 0) <= et_t < time(18, 0):
+        return "maintenance_break"
+    return "open"
+
+
+STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "if", "to", "of", "for", "on", "in",
+    "at", "by", "from", "with", "as", "into", "after", "before", "over", "under",
+    "amid", "near", "around", "says", "said", "say", "sees", "warns", "expects",
+    "watch", "watching", "traders", "markets", "market", "investors", "update"
+}
+
+
+def _title_tokens(title: str) -> set[str]:
+    norm = _normalize_event_title(title)
+    return {t for t in norm.split() if len(t) > 2 and t not in STOPWORDS and t != "<num>"}
+
+
+def _token_overlap_score(a: str, b: str) -> float:
+    ta = _title_tokens(a)
+    tb = _title_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    return inter / union if union else 0.0
+
+
+def _headline_similarity_score(a: str, b: str) -> float:
+    a_norm = _normalize_event_title(a)
+    b_norm = _normalize_event_title(b)
+    seq = SequenceMatcher(None, a_norm, b_norm).ratio()
+    tok = _token_overlap_score(a_norm, b_norm)
+    return max(seq, tok)
+
+
+def get_filter_context(title: str, current_news_id: int | None = None) -> dict:
+    reaction = detect_reaction_headline(title)
+    repetition = get_repetition_context(title, current_news_id=current_news_id)
+    recent = search_recent_news(title, current_news_id=current_news_id, hours_back=48)
+
+    novelty_label = get_novelty_label(title, current_news_id=current_news_id)
+
+    return {
+        "theme": repetition["theme"],
+        "novelty_label": novelty_label,
+        "has_escalation_words": repetition["has_escalation_words"],
+        "reaction_headline": reaction["reaction_headline"],
+        "headline_move_pct": reaction["headline_move_pct"],
+        "has_new_catalyst_words": reaction["has_new_catalyst"],
+        "similar_news_6h": repetition["similar_news_6h"],
+        "similar_news_12h": repetition["similar_news_12h"],
+        "similar_news_24h": repetition["similar_news_24h"],
+        "theme_news_6h": repetition["theme_news_6h"],
+        "theme_news_12h": repetition["theme_news_12h"],
+        "theme_news_24h": repetition["theme_news_24h"],
+        "duplicate_score": repetition["duplicate_score"],
+        "theme_score": repetition["theme_score"],
+        "repetition_pressure": repetition["repetition_pressure"],
+        "fatigue_score": repetition["fatigue_score"],
+        "repetition_level": repetition["repetition_level"],
+        "priced_in": recent["priced_in"],
+        "match_score": recent["match_score"],
+        "matched_title": recent.get("matched_title"),
+        "matched_hours_ago": recent.get("matched_hours_ago"),
     }
