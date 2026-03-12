@@ -479,7 +479,7 @@ def classify_batch(items: list[tuple[str, str]]) -> list[dict]:
     def _classify(idx, title, desc):
         return idx, classify_news_relevance(title, desc)
 
-    with ThreadPoolExecutor(max_workers=min(len(items), 5)) as executor:
+    with ThreadPoolExecutor(max_workers=min(len(items), 20)) as executor:
         futures = {
             executor.submit(_classify, i, title, desc): i
             for i, (title, desc) in enumerate(items)
@@ -493,7 +493,7 @@ def classify_batch(items: list[tuple[str, str]]) -> list[dict]:
     return results
 
 
-def analyze_news(title: str, published_iso: str, summary: str = "", source: str = "") -> dict | None:
+def analyze_news(title: str, published_iso: str, summary: str = "", source: str = "", current_news_id: int | None = None) -> dict | None:
     """
     Returns JSON matching schema template.
     """

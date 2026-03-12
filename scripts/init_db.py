@@ -270,7 +270,7 @@ if __name__ == "__main__":
     print("🔧 Initializing database...")
     create_database()
     create_tables()
-    migrate_schema()
     create_predictions_table()
     create_suggestions_table()
+    migrate_schema()
     print("🎉 Database initialization complete!")

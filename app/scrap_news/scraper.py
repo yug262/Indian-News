@@ -18,14 +18,14 @@ from urllib.parse import urljoin
 
 # Add the project root to sys.path so we can import app.core.db
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
-from app.core.db import execute_query, fetch_one, execute_many
+from app.core.db import execute_query, fetch_one, execute_many, fetch_all
 from app.core.agent import classify_batch
 
 # ══════════════════════════════════════════════════════
 #  CONFIG
 # ══════════════════════════════════════════════════════
-FAST_INTERVAL = 15         # seconds between fast source cycles
-SLOW_INTERVAL = 20         # seconds between slow source cycles
+FAST_INTERVAL = 30         # seconds between fast source cycles
+SLOW_INTERVAL = 30         # seconds between slow source cycles
 REUTERS_INTERVAL = 60     # seconds between Reuters cycles (heavy)
 DETAIL_WORKERS = 8         # threads for fetching article details
 SOURCE_WORKERS = 12        # threads for scraping sources concurrently
@@ -62,6 +62,26 @@ logger.addHandler(_fh)
 # ══════════════════════════════════════════════════════
 _scraper = None
 _scraper_lock = threading.Lock()
+
+# Global Deduplication Cache
+_seen_urls = set()
+_seen_titles = set()
+_cache_lock = threading.Lock()
+
+def preload_cache():
+    """Load recent articles from DB into memory cache to avoid DB duplicate checks."""
+    try:
+        # Load the last 2000 articles for a robust warm cache
+        rows = fetch_all("SELECT link, title FROM news ORDER BY id DESC LIMIT 2000")
+        with _cache_lock:
+            for r in rows:
+                if r.get('link'):
+                    _seen_urls.add(r['link'])
+                if r.get('title'):
+                    _seen_titles.add(r['title'])
+        logger.info(f"Preloaded cache with {len(rows)} recent articles.")
+    except Exception as e:
+        logger.error(f"Failed to preload cache: {e}")
 
 def get_scraper():
     global _scraper
@@ -300,6 +320,12 @@ def extract_clean_title(a_tag):
         if span:
             return " ".join(span.get_text(separator=' ', strip=True).split())
             
+    # Deep nested spans used by newer AP News and Bloomberg layouts
+    for span in a_tag.find_all('span'):
+        txt = " ".join(span.get_text(separator=' ', strip=True).split())
+        if len(txt) > 25:
+            return txt
+            
     return " ".join(a_tag.get_text(separator=' ', strip=True).split())
 
 def scrape_cnbc(scraper):
@@ -420,7 +446,8 @@ def scrape_reuters(scraper):
 def scrape_bloomberg(scraper):
     articles = []
     url = "https://www.bloomberg.com/markets"
-    resp = cffi_requests.get(url, impersonate="chrome120", timeout=15)
+    # Switch back to cloudscraper to handle advanced JS challenges blocking cffi_requests
+    resp = scraper.get(url, timeout=15)
     soup = BeautifulSoup(resp.text, 'lxml')
     for a in soup.find_all('a', href=True):
         if '/news/articles/' in a['href']:
@@ -532,27 +559,19 @@ def scrape_aljazeera(scraper):
 
 def scrape_france24(scraper):
     articles = []
-    url = "https://www.france24.com/en/rss"
-    resp = scraper.get(url, timeout=15)
-    soup = BeautifulSoup(resp.text, 'xml')
+    url = "https://www.france24.com/en/"
+    # Switching to curl_cffi to bypass 403 Forbidden errors
+    resp = cffi_requests.get(url, impersonate="chrome120", timeout=15)
+    soup = BeautifulSoup(resp.text, 'lxml')
     seen = set()
-    for item in soup.find_all('item'):
-        title_tag = item.find('title')
-        link_tag = item.find('link')
-        if title_tag and link_tag:
-            text = title_tag.text.strip()
-            if len(text) > 25 and text not in seen:
+    for a in soup.find_all('a', href=True):
+        href = a['href']
+        if '/en/' in href:
+            text = extract_clean_title(a)
+            if len(text) > 30 and text not in seen:
                 seen.add(text)
-                link = link_tag.text.strip()
-                published = None
-                pub_tag = item.find('pubDate')
-                if pub_tag:
-                    try:
-                        published = date_parser.parse(pub_tag.text)
-                        if published.tzinfo is None:
-                            published = published.replace(tzinfo=timezone.utc)
-                    except:
-                        pass
+                link = urljoin(url, href)
+                published = extract_time(a.parent)
                 articles.append({
                     "title": text, "link": link,
                     "published": published, "source": "France 24"
@@ -622,19 +641,34 @@ def fetch_and_store_single(fn):
     except Exception as e:
         logger.error(f"{fn.__name__} unexpected error: {e}")
 
-    # 2. Filter short titles & check duplicates
+    # 2. Filter short titles & check memory cache first
     new_articles = []
     dup_count = 0
     for article in all_articles:
         if len(article['title']) < 15:
             continue
+            
+        is_dup = False
+        with _cache_lock:
+            if article['link'] in _seen_urls or article['title'] in _seen_titles:
+                is_dup = True
+                
+        if is_dup:
+            dup_count += 1
+            continue
+            
         try:
+            # Secondary check in case it's not in the 2000 cache but is in the DB
             existing = fetch_one(
                 "SELECT id FROM news WHERE link = %s OR title = %s",
                 (article['link'], article['title'])
             )
             if existing:
                 dup_count += 1
+                # Add to memory cache to prevent future DB checks for this one
+                with _cache_lock:
+                    _seen_urls.add(article['link'])
+                    _seen_titles.add(article['title'])
             else:
                 new_articles.append(article)
         except Exception as e:
@@ -655,14 +689,14 @@ def fetch_and_store_single(fn):
                 except Exception:
                     details_map[idx] = {"description": None, "image_url": None, "published": None}
 
-    # Filter to keep only today's news
-    now_date = datetime.now(timezone.utc).date()
+    # Filter to keep only news from the last 24 hours
+    now = datetime.now(timezone.utc)
     filtered_articles = []
     filtered_details = {}
     for i, a in enumerate(new_articles):
         details = details_map.get(i, {"description": None, "image_url": None, "published": None})
         actual_published = details.get('published') or a.get('published')
-        if actual_published and actual_published.date() == now_date:
+        if actual_published and actual_published >= now - timedelta(hours=24):
             filtered_details[len(filtered_articles)] = details
             filtered_articles.append(a)
     new_articles = filtered_articles
@@ -713,6 +747,12 @@ def fetch_and_store_single(fn):
                  relevance, category, impact, reason)
             )
             new_count += 1
+            
+            # Add to memory cache so next scrape is O(1)
+            with _cache_lock:
+                _seen_urls.add(article['link'])
+                _seen_titles.add(article['title'])
+                
             logger.info(f"[+] {article['source']} - {article['title'][:70]}")
             logger.info(f"     Desc: {description[:80]}...")
             logger.info(f"     Published: {actual_published}")
@@ -740,17 +780,14 @@ SLOW_SOURCES = [
 HEAVY_SOURCES = [scrape_reuters]
 
 async def _async_sleep(interval):
-    slept = 0
+    slept = 0.0
     while slept < interval and not _shutdown.is_set():
-        await asyncio.sleep(1)
-        slept += 1
+        await asyncio.sleep(0.1)
+        slept += 0.1
 
 async def run_scraper_loop(fn, interval):
     """Scrape a single standard source on its own interval."""
-    # Add initial jitter to prevent all sources bombarding simultaneously
-    import random
-    await _async_sleep(random.uniform(0, 3))
-    
+    # Instantly trigger the first loop instead of waiting
     while not _shutdown.is_set():
         try:
             await asyncio.to_thread(fetch_and_store_single, fn)
@@ -768,12 +805,22 @@ def run_heavy_scrape():
             # Call Reuters directly on THIS thread (no ThreadPoolExecutor!)
             articles = with_retry(scrape_reuters, scraper, retries=MAX_RETRIES, label="scrape_reuters") or []
             
-            # Filter & deduplicate
+            # Filter & deduplicate memory fast check
             new_articles = []
             dup_count = 0
             for article in articles:
                 if len(article['title']) < 15:
                     continue
+                    
+                is_dup = False
+                with _cache_lock:
+                    if article['link'] in _seen_urls or article['title'] in _seen_titles:
+                        is_dup = True
+                
+                if is_dup:
+                    dup_count += 1
+                    continue
+                    
                 try:
                     existing = fetch_one(
                         "SELECT id FROM news WHERE link = %s OR title = %s",
@@ -781,6 +828,9 @@ def run_heavy_scrape():
                     )
                     if existing:
                         dup_count += 1
+                        with _cache_lock:
+                            _seen_urls.add(article['link'])
+                            _seen_titles.add(article['title'])
                     else:
                         new_articles.append(article)
                 except Exception as e:
@@ -794,13 +844,13 @@ def run_heavy_scrape():
                 details = fetch_article_details(article['link'], article['source'])
                 details_map[article['title']] = details
 
-            # Filter to keep only today's news
-            now_date = datetime.now(timezone.utc).date()
+            # Filter to keep only news from the last 24 hours
+            now = datetime.now(timezone.utc)
             filtered_articles = []
             for a in new_articles:
                 details = details_map.get(a['title'], {"description": None, "image_url": None, "published": None})
                 actual_published = details.get('published') or a.get('published')
-                if actual_published and actual_published.date() == now_date:
+                if actual_published and actual_published >= now - timedelta(hours=24):
                     filtered_articles.append(a)
             new_articles = filtered_articles
 
@@ -847,6 +897,9 @@ def run_heavy_scrape():
                          relevance, category, impact, reason)
                     )
                     new_count += 1
+                    with _cache_lock:
+                        _seen_urls.add(article['link'])
+                        _seen_titles.add(article['title'])
                     logger.info(f"[+] Reuters - {article['title'][:70]}")
                     logger.info(f"     Classified: {relevance} | {category} | {impact}")
                 except Exception as e:
@@ -903,6 +956,8 @@ def main():
     logger.info(f"  Retries: {MAX_RETRIES}  |  Backoff: {RETRY_BACKOFF}s")
     logger.info(f"  Display available: {_has_display()}")
     logger.info("=" * 60)
+
+    preload_cache()
 
     try:
         asyncio.run(async_main())
