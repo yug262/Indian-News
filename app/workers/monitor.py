@@ -1,5 +1,6 @@
 import asyncio
 import aiohttp
+import re
 import feedparser
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -9,7 +10,6 @@ from difflib import SequenceMatcher
 from urllib.parse import urlparse
 from app.core.agent import classify_batch
 from app.core.db import fetch_all, execute_many, execute_query
-import re
 from app.workers.prediction_monitor import check_predictions
 import socket
 
@@ -56,6 +56,14 @@ RSS_FEEDS = [
     "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"
     # "https://feeds.bloomberg.com/markets/news.rss",
     "https://www.ecb.europa.eu/rss/press.html",
+    "https://www.france24.com/en/business/rss",
+    "https://www.france24.com/en/business-tech/rss",
+    "https://www.france24.com/en/france/rss",
+    "https://www.france24.com/en/europe/rss",
+    "https://www.france24.com/en/africa/rss",
+    "https://www.france24.com/en/americas/rss",
+    "https://www.france24.com/en/asia-pacific/rss",
+    "https://www.france24.com/en/middle-east/rss"
 ]
 FETCH_INTERVAL = 30  # seconds
 

@@ -22,3 +22,4 @@ lxml
 google-genai
 playwright
 playwright-stealth
+ccxt
