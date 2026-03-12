@@ -8,7 +8,8 @@ from dateutil import parser as date_parser
 import hashlib
 from difflib import SequenceMatcher
 from urllib.parse import urlparse
-from app.core.agent import classify_batch
+from concurrent.futures import ThreadPoolExecutor
+from app.core.agent import classify_news_relevance
 from app.core.db import fetch_all, execute_many, execute_query
 from app.workers.prediction_monitor import check_predictions
 import socket
@@ -162,7 +163,7 @@ async def fetch_feed(session, url, semaphore):
     async with semaphore:
         for attempt in range(2):
             try:
-                async with session.get(url, timeout=10) as response:
+                async with session.get(url, timeout=5) as response:
                     content = await response.text()
                     feed = feedparser.parse(content)
                     # Attach the source URL to each entry so we know where it came from
@@ -295,66 +296,37 @@ async def fetch_all_feeds(session, semaphore):
         # ── Step 1: Classify all new articles FIRST ──
         
         classify_items = [(p[0], p[5]) for p in new_items_params]  # (title, description)
-        try:
-            classification_results = classify_batch(classify_items)
-            for c_res, item in zip(classification_results, classify_items):
-                impact = c_res.get("impact_level")
-                print(f"  [{impact.upper():7s}] {item[0][:80]}")
-        except Exception as e:
-            print(f"[CLASSIFY] Batch classification failed: {e}")
-            classification_results = [{"category": "error", "impact_level": "none", "reason": str(e)}] * len(new_items_params)
+        classification_results = []
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = []
+            for item in classify_items:
+                futures.append(pool.submit(classify_news_relevance, item[0], item[1]))
+            
+            for future in futures:
+                try:
+                    classification_results.append(future.result())
+                except Exception as e:
+                    print(f"[CLASSIFY] Item classification failed: {e}")
+                    classification_results.append({"category": "error", "relevance": "none", "reason": str(e)})
+
+        for c_res, item in zip(classification_results, classify_items):
+            rel = str(c_res.get("relevance", "none"))
+            print(f"  [{rel.upper():12s}] {item[0][:80]}")
 
         # ── Step 2: Store all articles in the DB (with relevance) ──
         final_params = []
-        mapped_relevances = []
         for params, c_res in zip(new_items_params, classification_results):
-            impact = c_res.get("impact_level", "none").lower()
-            category = c_res.get("category", "")
-            
-            # Map category to relevance/type
-            crypto_useful_categories=[
-                "crypto_ecosystem_event","regulatory_policy"
-            ]
-            forex_useful_categories=[
-                "commodity_supply_shock", "geopolitical_event"
-            ]
-            very_high_useful_categories=[
-                "macro_data_release","central_bank_policy","central_bank_guidance","systemic_risk_event"
-            ]
-            useful_categories = [
-                "institutional_research", 
-                "liquidity_flows"
-            ]
-            medium_neutral_categories = [
-                "market_structure_event", "sector_trend_analysis",
-                "sentiment_indicator"
-            ]
-            noisy_categories = [
-                "price_action_noise","routine_market_update"
-            ]
-            if category in crypto_useful_categories:
-                relevance = "crypto useful"
-            elif category in forex_useful_categories:
-                relevance = "forex useful"
-            elif category in very_high_useful_categories:
-                relevance = "very high useful"
-            elif category in useful_categories:
-                relevance = "useful"
-            elif category in medium_neutral_categories:
-                relevance = "medium/neutral"
-            elif category in noisy_categories:
-                relevance = "noisy"
-            else:
-                relevance = "neutral"
+            category = str(c_res.get("category", ""))[:50]
+            relevance = str(c_res.get("relevance", "Neutral"))[:20]
+            reason = str(c_res.get("reason", ""))[:500]
 
-            mapped_relevances.append(relevance)
             final_params.append(
-                (*params, relevance, category, impact, c_res.get("reason", ""))
+                (*params, relevance, category, reason)
             )
 
         insert_query = """
-            INSERT INTO news (title, link, title_hash, published, source, description, image_url, news_relevance, news_category, news_impact_level, news_reason)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO news (title, link, title_hash, published, source, description, image_url, news_relevance, news_category, news_reason)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (title_hash) DO NOTHING
             RETURNING id
         """

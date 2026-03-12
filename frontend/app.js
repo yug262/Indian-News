@@ -969,7 +969,6 @@ function openModal(article) {
         <div class="initial-classification-box">
             <div class="ic-header">
                 <span class="ic-title">INITIAL CLASSIFICATION</span>
-                <span class="ic-impact impact-${article.news_impact_level?.toLowerCase() || 'none'}">Impact: ${escapeHtml(article.news_impact_level || 'none')}</span>
             </div>
             <div class="ic-reason">
                 <strong>Reason:</strong> ${escapeHtml(article.news_reason || 'No initial reason provided.')}
@@ -1357,10 +1356,11 @@ function renderNews(articles) {
                         ${renderImpactBadge(article)}
                     </div>
                 </div>
-                ${article.prediction_count ? `
-                <div class="card-prediction-footer">
-                    ${renderPredictionBadge(article)}
-                </div>` : ''}
+                <div class="card-action-row" style="margin-top: 12px;">
+                    <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
+                        Read Now →
+                    </a>
+                </div>
             `;
 
             card.addEventListener('click', () => openModal(article));
@@ -1398,10 +1398,11 @@ function renderNews(articles) {
                     ${renderImpactBadge(article)}
                 </div>
             </div>
-            ${article.prediction_count ? `
-            <div class="card-prediction-footer">
-                ${renderPredictionBadge(article)}
-            </div>` : ''}
+            <div class="card-action-row" style="margin-top: 12px;">
+                <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
+                    Read Now →
+                </a>
+            </div>
         `;
 
         card.addEventListener('click', () => openModal(article));
@@ -1497,7 +1498,7 @@ async function fetchNews() {
     showRefreshIndicator();
 
     try {
-        let url = `${API_BASE}/api/news?today_only=false&limit=100`;
+        let url = `${API_BASE}/api/news?today_only=false`;
         if (currentSource && currentSource !== 'all') {
             url += `&source=${encodeURIComponent(currentSource)}`;
         }

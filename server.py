@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 import uvicorn
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Any, List, Dict
 import os
 from app.core.agent import analyze_news, save_analysis
 from app.core.db import fetch_all, fetch_one
@@ -24,7 +24,7 @@ app.add_middleware(
 # API Endpoints
 @app.get("/api/news")
 def get_news(source: str = Query(None, description="Filter news by source name"), 
-             limit: int = Query(50, description="Max number of articles to return"),
+             limit: int = Query(1000, description="Max number of articles to return"),
              today_only: bool = Query(False, description="Only fetch today's news"),
              relevance: str = Query(None, description="Filter news by relevance"),
              analyzed_only: bool = Query(False, description="Only fetch analyzed news")):
@@ -38,7 +38,7 @@ def get_news(source: str = Query(None, description="Filter news by source name")
         is_new_information, tools_used, analysis_data, news_relevance, news_category,
         news_impact_level, news_reason
     FROM news WHERE 1=1"""
-    params = []
+    params: List[Any] = []
     
     if today_only:
         today = datetime.now(timezone.utc).date()
@@ -186,12 +186,13 @@ def get_stats():
 
 
 @app.get("/api/predictions")
-def get_predictions(news_id: Optional[int] = Query(None), limit: int = Query(50)):
+def get_predictions(news_id: Optional[int] = Query(None), limit: Optional[int] = Query(1000)):
     """List predictions, optionally filtered by news_id."""
     try:
+        rows: List[Dict[str, Any]] = []
         if news_id:
-            rows = fetch_all(
-                """SELECT p.*, n.title as news_title
+            raw_rows = fetch_all(
+                """SELECT p.*, n.title as news_title, n.link as news_link
                 FROM predictions p
                 LEFT JOIN news n ON n.id = p.news_id
                 WHERE p.news_id = %s
@@ -199,14 +200,15 @@ def get_predictions(news_id: Optional[int] = Query(None), limit: int = Query(50)
                 (news_id,),
             )
         else:
-            rows = fetch_all(
-                """SELECT p.*, n.title as news_title
+            raw_rows = fetch_all(
+                """SELECT p.*, n.title as news_title, n.link as news_link
                 FROM predictions p
                 LEFT JOIN news n ON n.id = p.news_id
                 ORDER BY p.created_at DESC
                 LIMIT %s""",
                 (limit,),
             )
+        rows = [dict(r) for r in raw_rows]
         for r in rows:
             for k in ('start_time', 'last_checked_at', 'finalized_at', 'created_at'):
                 if isinstance(r.get(k), datetime):
@@ -243,9 +245,9 @@ def get_prediction_stats():
         if not row:
             return {"status": "success", "data": {}}
 
-        total_finalized = row['finalized'] or 0
-        hit_count = (row['hit'] or 0) + (row['overperformed'] or 0)
-        hit_rate = round((hit_count / total_finalized * 100), 1) if total_finalized > 0 else 0
+        total_finalized = float(row['finalized'] or 0)
+        hit_count = float((row['hit'] or 0) + (row['overperformed'] or 0))
+        hit_rate = float(f"{(hit_count / total_finalized * 100.0):.1f}") if total_finalized > 0 else 0.0
 
         return {
             "status": "success",
@@ -259,9 +261,9 @@ def get_prediction_stats():
                 "wrong": row['wrong'],
                 "errors": row['errors'],
                 "hit_rate": hit_rate,
-                "avg_final_move_pct": round(float(row['avg_final_move']), 2),
-                "avg_mfe_pct": round(float(row['avg_mfe']), 2),
-                "avg_mae_pct": round(float(row['avg_mae']), 2),
+                "avg_final_move_pct": float(f"{float(row['avg_final_move'] if row.get('avg_final_move') is not None else 0):.2f}"),
+                "avg_mfe_pct": float(f"{float(row['avg_mfe'] if row.get('avg_mfe') is not None else 0):.2f}"),
+                "avg_mae_pct": float(f"{float(row['avg_mae'] if row.get('avg_mae') is not None else 0):.2f}"),
             }
         }
     except Exception as e:
@@ -269,7 +271,12 @@ def get_prediction_stats():
 
 
 # Serve static frontend files
-frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
+try:
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+except NameError:
+    current_dir = os.getcwd()
+
+frontend_dir = os.path.join(current_dir, "frontend")
 if not os.path.exists(frontend_dir):
     os.makedirs(frontend_dir)
 
@@ -280,6 +287,14 @@ def read_root():
     if os.path.exists(index_path):
         return FileResponse(index_path)
     return {"message": "Frontend not found. Please create frontend/index.html"}
+
+@app.get("/predictions")
+def read_predictions():
+    """Serve the predictions.html page."""
+    pred_path = os.path.join(frontend_dir, "predictions.html")
+    if os.path.exists(pred_path):
+        return FileResponse(pred_path)
+    return {"message": "Frontend not found. Please create frontend/predictions.html"}
 
 # Mount static AFTER explicit routes so /api/* and / are matched first
 app.mount("/static", StaticFiles(directory=frontend_dir), name="static")

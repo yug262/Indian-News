@@ -19,7 +19,7 @@ from urllib.parse import urljoin
 # Add the project root to sys.path so we can import app.core.db
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 from app.core.db import execute_query, fetch_one, execute_many, fetch_all
-from app.core.agent import classify_batch
+from app.core.agent import classify_news_relevance
 
 # ══════════════════════════════════════════════════════
 #  CONFIG
@@ -129,31 +129,6 @@ def get_reuters_browser():
 def get_hash(text):
     return hashlib.md5(text.strip().lower().encode("utf-8")).hexdigest()
 
-# ══════════════════════════════════════════════════════
-#  CLASSIFICATION RELEVANCE MAPPER
-# ══════════════════════════════════════════════════════
-def map_category_to_relevance(category):
-    """Map classification category to a relevance label."""
-    crypto_useful = ["crypto_ecosystem_event", "regulatory_policy"]
-    forex_useful = ["commodity_supply_shock", "geopolitical_event"]
-    very_high_useful = ["macro_data_release", "central_bank_policy", "central_bank_guidance", "systemic_risk_event"]
-    useful = ["institutional_research", "liquidity_flows"]
-    medium_neutral = ["market_structure_event", "sector_trend_analysis", "sentiment_indicator"]
-    noisy = ["price_action_noise", "routine_market_update"]
-
-    if category in crypto_useful:
-        return "crypto useful"
-    elif category in forex_useful:
-        return "forex useful"
-    elif category in very_high_useful:
-        return "very high useful"
-    elif category in useful:
-        return "useful"
-    elif category in medium_neutral:
-        return "medium/neutral"
-    elif category in noisy:
-        return "noisy"
-    return "neutral"
 
 def parse_relative_time(time_str):
     time_str = time_str.lower()
@@ -702,20 +677,25 @@ def fetch_and_store_single(fn):
     new_articles = filtered_articles
     details_map = filtered_details
 
-    # 4. Classify new articles in batch
+    # 4. Classify new articles concurrently
     if new_articles:
-        classify_items = [
-            (a['title'], details_map.get(i, {}).get('description') or a['title'])
-            for i, a in enumerate(new_articles)
-        ]
-        try:
-            classification_results = classify_batch(classify_items)
-            for c_res, item in zip(classification_results, classify_items):
-                impact = c_res.get("impact_level", "none")
-                logger.info(f"  [{impact.upper():7s}] {item[0][:80]}")
-        except Exception as e:
-            logger.error(f"Batch classification failed: {e}")
-            classification_results = [{"category": "error", "impact_level": "none", "reason": str(e)}] * len(new_articles)
+        classification_results = []
+        with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as pool:
+            futures = []
+            for i, a in enumerate(new_articles):
+                desc = details_map.get(i, {}).get('description') or a['title']
+                futures.append(pool.submit(classify_news_relevance, a['title'], desc))
+            
+            for future in futures:
+                try:
+                    classification_results.append(future.result())
+                except Exception as e:
+                    logger.error(f"Classification failed: {e}")
+                    classification_results.append({"category": "error", "relevance": "none", "reason": str(e)})
+                    
+        for c_res, a in zip(classification_results, new_articles):
+            rel = str(c_res.get("relevance", "none"))
+            logger.info(f"  [{rel.upper():12s}] {a['title'][:80]}")
     else:
         classification_results = []
 
@@ -730,21 +710,20 @@ def fetch_and_store_single(fn):
         actual_published = details.get('published') or article.get('published')
 
         c_res = classification_results[i] if i < len(classification_results) else {}
-        category = c_res.get("category", "")
-        impact = c_res.get("impact_level", "none").lower()
-        reason = c_res.get("reason", "")
-        relevance = map_category_to_relevance(category)
+        category = str(c_res.get("category", ""))[:50]
+        relevance = str(c_res.get("relevance", "Neutral"))[:20]
+        reason = str(c_res.get("reason", ""))[:500]
 
         try:
             title_hash = get_hash(article['title'])
             execute_query(
                 """INSERT INTO news (title, link, title_hash, published, source, description, image_url,
-                                    news_relevance, news_category, news_impact_level, news_reason)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    news_relevance, news_category, news_reason)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (title_hash) DO NOTHING""",
                 (article['title'], article['link'], title_hash, actual_published,
                  article['source'], description, image_url,
-                 relevance, category, impact, reason)
+                 relevance, category, reason)
             )
             new_count += 1
             
@@ -756,7 +735,7 @@ def fetch_and_store_single(fn):
             logger.info(f"[+] {article['source']} - {article['title'][:70]}")
             logger.info(f"     Desc: {description[:80]}...")
             logger.info(f"     Published: {actual_published}")
-            logger.info(f"     Classified: {relevance} | {category} | {impact}")
+            logger.info(f"     Classified: {relevance} | {category}")
             if image_url:
                 logger.info(f"     Img: {image_url[:60]}...")
         except Exception as e:
@@ -856,15 +835,23 @@ def run_heavy_scrape():
 
             # Classify before insert
             if new_articles:
-                classify_items = [(a['title'], details_map.get(a['title'], {}).get('description') or a['title']) for a in new_articles]
-                try:
-                    classification_results = classify_batch(classify_items)
-                    for c_res, item in zip(classification_results, classify_items):
-                        impact = c_res.get("impact_level", "none")
-                        logger.info(f"  [{impact.upper():7s}] {item[0][:80]}")
-                except Exception as e:
-                    logger.error(f"Reuters classification failed: {e}")
-                    classification_results = [{"category": "error", "impact_level": "none", "reason": str(e)}] * len(new_articles)
+                classification_results = []
+                with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as pool:
+                    futures = []
+                    for a in new_articles:
+                        desc = details_map.get(a['title'], {}).get('description') or a['title']
+                        futures.append(pool.submit(classify_news_relevance, a['title'], desc))
+                    
+                    for future in futures:
+                        try:
+                            classification_results.append(future.result())
+                        except Exception as e:
+                            logger.error(f"Reuters classification failed: {e}")
+                            classification_results.append({"category": "error", "relevance": "none", "reason": str(e)})
+
+                for c_res, a in zip(classification_results, new_articles):
+                    rel = str(c_res.get("relevance", "none"))
+                    logger.info(f"  [{rel.upper():12s}] {a['title'][:80]}")
             else:
                 classification_results = []
 
@@ -880,28 +867,27 @@ def run_heavy_scrape():
                 actual_published = details.get('published') or article.get('published')
 
                 c_res = classification_results[idx] if idx < len(classification_results) else {}
-                category = c_res.get("category", "")
-                impact = c_res.get("impact_level", "none").lower()
-                reason = c_res.get("reason", "")
-                relevance = map_category_to_relevance(category)
+                category = str(c_res.get("category", ""))[:50]
+                relevance = str(c_res.get("relevance", "Neutral"))[:20]
+                reason = str(c_res.get("reason", ""))[:500]
 
                 try:
                     title_hash = get_hash(article['title'])
                     execute_query(
                         """INSERT INTO news (title, link, title_hash, published, source, description, image_url,
-                                            news_relevance, news_category, news_impact_level, news_reason)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                            news_relevance, news_category, news_reason)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                            ON CONFLICT (title_hash) DO NOTHING""",
                         (article['title'], article['link'], title_hash, actual_published,
                          article['source'], description, image_url,
-                         relevance, category, impact, reason)
+                         relevance, category, reason)
                     )
                     new_count += 1
                     with _cache_lock:
                         _seen_urls.add(article['link'])
                         _seen_titles.add(article['title'])
                     logger.info(f"[+] Reuters - {article['title'][:70]}")
-                    logger.info(f"     Classified: {relevance} | {category} | {impact}")
+                    logger.info(f"     Classified: {relevance} | {category} ")
                 except Exception as e:
                     if "duplicate key value" not in str(e).lower():
                         logger.error(f"DB insert error: {e}")

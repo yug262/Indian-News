@@ -74,6 +74,13 @@ def _clamp(value: float, min_value: float, max_value: float) -> float:
 # TITLE / EVENT UNDERSTANDING
 # =========================================================
 
+# Pre-compiled regexes for hot-loop performance
+_RE_NUMBERS = re.compile(r"\d+(?:\.\d+)?")
+_RE_PUNCTUATION = re.compile(r"[^a-z0-9\s<>]")
+_RE_WHITESPACE = re.compile(r"\s+")
+_RE_PCT = re.compile(r'(\d+(\.\d+)?)\s*%')
+
+
 def _normalize_event_title(title: str) -> str:
     """
     Strong normalization for title similarity matching.
@@ -81,19 +88,13 @@ def _normalize_event_title(title: str) -> str:
     t = (title or "").lower().strip()
 
     # Standardize common market text
-    t = t.replace("u.s.", "us")
-    t = t.replace("u.s", "us")
-    t = t.replace("%", " percent ")
-    t = t.replace("&", " and ")
+    t = t.replace("u.s.", "us").replace("u.s", "us")
+    t = t.replace("%", " percent ").replace("&", " and ")
 
-    # Replace numbers for more stable matching
-    t = re.sub(r"\d+(?:\.\d+)?", " <num> ", t)
-
-    # Remove punctuation
-    t = re.sub(r"[^a-z0-9\s<>]", " ", t)
-
-    # Collapse whitespace
-    t = re.sub(r"\s+", " ", t).strip()
+    # Fast substring replacements
+    t = _RE_NUMBERS.sub(" <num> ", t)
+    t = _RE_PUNCTUATION.sub(" ", t)
+    t = _RE_WHITESPACE.sub(" ", t).strip()
     return t
 
 
@@ -210,7 +211,7 @@ def detect_reaction_headline(title: str) -> dict:
         "after", "amid", "on", "as", "following", "due to", "because of"
     ]
 
-    pct_match = re.search(r'(\d+(\.\d+)?)\s*%', t)
+    pct_match = _RE_PCT.search(t)
     headline_move_pct = float(pct_match.group(1)) if pct_match else None
 
     has_move_verb = any(v in t for v in move_verbs)
@@ -690,6 +691,9 @@ def search_recent_news(
         )
 
         best = {"score": 0.0, "title": None, "published": None}
+        
+        # Pre-normalize the incoming title ONCE
+        title_norm = _normalize_event_title(title)
 
         for row in rows:
             row_id = row.get("id")
@@ -697,7 +701,8 @@ def search_recent_news(
                 continue
 
             other_title_raw = row.get("title") or ""
-            score = _headline_similarity_score(title, other_title_raw)
+            other_title_norm = _normalize_event_title(other_title_raw)
+            score = _headline_similarity_score(title_norm, other_title_norm)
 
             if score > best["score"]:
                 best = {
@@ -759,6 +764,9 @@ def get_similar_news_counts(title: str, current_news_id: int | None = None) -> d
 
         now = datetime.now(timezone.utc)
         base_theme = detect_theme(title)
+        
+        # Pre-normalize the incoming title ONCE
+        title_norm = _normalize_event_title(title)
 
         similar_6h = 0
         similar_12h = 0
@@ -774,7 +782,8 @@ def get_similar_news_counts(title: str, current_news_id: int | None = None) -> d
 
             if current_news_id is not None and row_id == current_news_id:
                 continue
-            if not other_title_raw or not published:
+
+            if not published:
                 continue
 
             published_utc = _to_utc(published)
@@ -782,7 +791,8 @@ def get_similar_news_counts(title: str, current_news_id: int | None = None) -> d
             if age_seconds < 0:
                 continue
 
-            sim_score = _headline_similarity_score(title, other_title_raw)
+            other_title_norm = _normalize_event_title(other_title_raw)
+            sim_score = _headline_similarity_score(title_norm, other_title_norm)
             other_theme = detect_theme(other_title_raw)
 
             if sim_score >= 0.84:
@@ -1108,14 +1118,13 @@ STOPWORDS = {
 }
 
 
-def _title_tokens(title: str) -> set[str]:
-    norm = _normalize_event_title(title)
-    return {t for t in norm.split() if len(t) > 2 and t not in STOPWORDS and t != "<num>"}
+def _title_tokens(norm_title: str) -> set[str]:
+    return {t for t in norm_title.split() if len(t) > 2 and t not in STOPWORDS and t != "<num>"}
 
 
-def _token_overlap_score(a: str, b: str) -> float:
-    ta = _title_tokens(a)
-    tb = _title_tokens(b)
+def _token_overlap_score(a_norm: str, b_norm: str) -> float:
+    ta = _title_tokens(a_norm)
+    tb = _title_tokens(b_norm)
     if not ta or not tb:
         return 0.0
     inter = len(ta & tb)
@@ -1123,9 +1132,7 @@ def _token_overlap_score(a: str, b: str) -> float:
     return inter / union if union else 0.0
 
 
-def _headline_similarity_score(a: str, b: str) -> float:
-    a_norm = _normalize_event_title(a)
-    b_norm = _normalize_event_title(b)
+def _headline_similarity_score(a_norm: str, b_norm: str) -> float:
     seq = SequenceMatcher(None, a_norm, b_norm).ratio()
     tok = _token_overlap_score(a_norm, b_norm)
     return max(seq, tok)

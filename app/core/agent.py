@@ -370,13 +370,13 @@ def classify_news_relevance(
     Returns:
     {
         "category": "...",
-        "should_analyze": bool,
+        "relevance": "Very High Useful | Crypto Useful | Forex Useful | Useful | Medium | Neutral | Noisy",
         "reason": "..."
     }
     """
     default_resp = {
-        "category": "Noisy",
-        "should_analyze": False,
+        "category": "None",
+        "relevance": "None",
         "reason": "Classification failed or skipped"
     }
 
@@ -434,9 +434,9 @@ repetition_pressure: {filter_ctx.get("repetition_pressure", 0)}
 
         data = json.loads(json_str)
 
-        category = str(data.get("category", "Noisy")).strip()
-        should_analyze = bool(data.get("should_analyze", False))
-        reason = str(data.get("reason", "")).strip()
+        category = str(data.get("category") or "None").strip()
+        relevance = str(data.get("relevance") or "None").strip()
+        reason = str(data.get("reason") or "").strip()
 
         # Safety normalization
         allowed_categories = {
@@ -448,15 +448,20 @@ repetition_pressure: {filter_ctx.get("repetition_pressure", 0)}
             "Neutral",
             "Noisy",
         }
-        if category not in allowed_categories:
-            category = "Noisy"
-            should_analyze = False
+
+        if category not in allowed_categories and category != "None":
+            category = "None"
             if not reason:
                 reason = "Invalid category returned by classifier"
 
+        if relevance not in allowed_relevance and relevance != "None":
+            relevance = "None"
+            if not reason:
+                reason = "Invalid relevance returned by classifier"
+
         return {
             "category": category,
-            "should_analyze": should_analyze,
+            "relevance": relevance,
             "reason": reason,
         }
 
@@ -473,8 +478,12 @@ def classify_batch(items: list[tuple[str, str]]) -> list[dict]:
     if not items:
         return []
 
-    default_resp = {"category": "Noisy", "should_analyze": False, "reason": "Classification failed or skipped"}
-    results = [default_resp] * len(items)
+    default_resp = {
+        "category": "None",
+        "relevance": "None",
+        "reason": "Classification failed or skipped"
+    }
+    results = [default_resp.copy() for _ in items]
 
     def _classify(idx, title, desc):
         return idx, classify_news_relevance(title, desc)
@@ -499,6 +508,9 @@ def analyze_news(title: str, published_iso: str, summary: str = "", source: str 
     """
     analysis_time = datetime.now(timezone.utc).isoformat()
     age_label, age_human, hours_old = _calculate_news_age(published_iso)
+
+    # Note: Filter agent classification (category, relevance) is now handled 
+    # upstream by the scrapers (monitor.py/scraper.py) to save tokens and time.
 
     # priced-in duplicate check using DB
     news_check = search_recent_news(title, current_news_id=current_news_id, hours_back=48)
@@ -625,6 +637,8 @@ def analyze_news(title: str, published_iso: str, summary: str = "", source: str 
                 reaction_pct: {reaction_pct}
                 atr_pct_reference: {atr_pct_reference}
                 reaction_status: {reaction_status}
+                asset_movements_since_publish:
+                {movement_text}
 
                 MARKET DATA
                 forex: {json.dumps(market_data.get("forex", {}))}
@@ -1043,8 +1057,8 @@ def create_predictions(news_id: int, analysis: dict):
                         except Exception:
                             pass
                     if start_price is None:
-                        _log(f"[PRED] No price for {symbol}, skipping")
-                        continue
+                        _log(f"[PRED] No price for {symbol}, setting start_price to 0")
+                        start_price = 0.0
 
                 if direction.lower() in ("positive", "bullish", "up"):
                     target_price = start_price * (1 + predicted_move / 100)
