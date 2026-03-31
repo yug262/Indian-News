@@ -181,21 +181,22 @@ async def save_article(article):
         if analysis:
             news_category = analysis.get("category", news_category)
             news_relevance = analysis.get("relevance", news_relevance)
-            news_impact_level = analysis.get("sector_impact", news_impact_level)
-            affected_sectors = analysis.get("affected_sectors", affected_sectors)
             news_reason = analysis.get("reason", news_reason)
+            symbols = analysis.get("symbols", [])
+        else:
+            symbols = []
 
         # 4. Insert into DB with analysis data
         await asyncio.to_thread(
             execute_query,
             """INSERT INTO indian_news 
                (title, link, title_hash, published, source, description, image_url, 
-                news_category, news_relevance, news_impact_level, affected_sectors, news_reason, analyzed, analyzed_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
+                news_category, news_relevance, news_reason, symbols, analyzed, analyzed_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
                ON CONFLICT (title_hash) DO NOTHING""",
             (article['title'], article['link'], article['title_hash'], 
              article['published'], article['source'], article['description'], article['image_url'],
-             news_category, news_relevance, news_impact_level, affected_sectors, news_reason)
+             news_category, news_relevance, news_reason, symbols)
         )
         return 1  # New article added
         
@@ -250,6 +251,17 @@ async def run_scraper_cycle():
     total_all = sum(s["total"] for s in source_stats.values())
     duration = time.time() - start_time
     logger.info(f"===== Cycle Complete in {duration:.2f}s: {total_new} New, {total_dup} Duplicates, {total_all} Total Articles Processed =====")
+
+async def cleanup_old_news():
+    """Deletes articles older than 24 hours from the database."""
+    try:
+        await asyncio.to_thread(
+            execute_query,
+            "DELETE FROM indian_news WHERE published < (NOW() - INTERVAL '24 hours')"
+        )
+        logger.info("Background cleanup: Deleted Indian news articles older than 24h.")
+    except Exception as e:
+        logger.error(f"Cleanup Error: {e}")
 
 async def cleanup_old_news():
     """Deletes articles older than 24 hours from the database."""

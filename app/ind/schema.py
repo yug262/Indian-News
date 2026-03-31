@@ -1,64 +1,189 @@
-STOCK_IMPACT_ITEM = {
-    "symbol": "",
-    "company_name": "",
-    "role": "",                    # direct / indirect / peer
-    "bias": "",                    # bullish / bearish / mixed / neutral / unclear
-    "expected_move": {
-        "intraday": "",            # 0-1% / 1-3% / 3-5% / 5-8% / 8%+ / unclear
-        "short_term": ""           # 1-3 sessions
-    },
-    "confidence": 0,               # 0-100
-    "why": "",                     # short plain-English reason
-    "risk": "",                    # biggest risk to the view
-    "invalidation": ""             # what breaks the view
-}
-
-SECOND_ORDER_INSIGHT_ITEM = {
-    "if": "",
-    "then": "",
-    "confidence": 0
-}
+# schema.py
 
 SCHEMA_TEMPLATE = {
+    "signal_bucket": "",  # DIRECT / AMBIGUOUS / WEAK_PROXY / NOISE
+
     "event": {
         "title": "",
         "source": "",
         "timestamp_utc": "",
-        "event_type": "",          # order_win / earnings / policy / macro / sector / disruption / other
-        "status": "",              # confirmed / developing / rumor / follow_up / noise
-        "scope": ""                # single_stock / peer_group / sector / broad_market
+        "event_type": "",      # earnings / policy / order_win / macro / regulation / disruption / corporate_action / other
+        "status": "",          # confirmed / developing / rumor / follow_up / noise
+        "scope": ""            # single_stock / peer_group / sector / broad_market
     },
 
-    "analysis": {
-        "summary": "",             # one-line summary
-        "market_bias": "",         # bullish / bearish / mixed / neutral / unclear
-        "impact_score": 0,         # 0-10
-        "confidence": 0,           # 0-100
-        "horizon": "",             # intraday / short_term / medium_term / long_term
-        "surprise": "",            # low / medium / high / unknown
-        "why_it_matters": []       # 1-3 key points
+    "news_summary": {
+        "what_happened": "",
+        "what_is_confirmed": [],
+        "what_is_unknown": []
     },
 
-    "market_logic": {
-        "financial_impact": [],    # revenue / margin / demand / cost / order_book / regulation / sentiment / valuation
-        "causal_chain": ""         # short WHAT -> WHY -> MOVE chain
+    "core_view": {
+        "summary": "",
+        "market_bias": "",     # bullish / bearish / mixed / neutral / unclear
+        "impact_score": 0,     # 0-10
+        "surprise_level": "",  # low / medium / high / unknown
+        "primary_horizon": "", # intraday / short_term / medium_term / long_term
+        "overall_confidence": 0
     },
 
     "affected_entities": {
         "stocks": [],
         "sectors": [],
+        "indices": []
     },
 
-    "stock_impacts": [],
+    "stock_impacts": [
+        {
+            "symbol": "",
+            "company_name": "",
+            "role": "",        # direct / indirect / peer / beneficiary / risk
+            "bias": "",        # bullish / bearish / mixed / neutral / unclear
+            "expected_move": {
+                "intraday": "",
+                "short_term": "",
+                "medium_term": ""
+            },
+            "why": "",
+            "confidence": 0,
+            "risk": "",
+            "invalidation": ""
+        }
+    ],
 
-    "scenario": {
-        "second_order_insights": [],
-        "invalidation_trigger": ""
+    "sector_impacts": [
+        {
+            "sector": "",
+            "bias": "",
+            "strength": "",    # low / medium / high
+            "time_horizon": "",
+            "why": "",
+            "confidence": 0
+        }
+    ],
+
+    "evidence": [
+        {
+            "type": "",        # confirmed_fact / management_commentary / historical_pattern / inference / market_structure
+            "detail": "",
+            "strength": "",    # low / medium / high
+            "confidence": 0
+        }
+    ],
+
+    "tradeability": {
+        "classification": "",  # actionable_now / wait_for_confirmation / no_edge
+        "reasoning": "",
+        "action_triggers": []
     },
 
-    "evidence": [],                # 1-3 short evidence lines
-    "missing_info": [],            # what is still unknown
-    "executive_summary": ""        # final crisp conclusion
+    "impact_triggers": {
+        "impact_killers": [
+            {
+            "trigger": "",
+            "why_it_kills_the_impact": "",
+            "resulting_market_effect": "",
+            "time_sensitivity": "",
+            "confidence": 0
+            }
+        ],
+        "impact_amplifiers": [
+            {
+            "trigger": "",
+            "why_it_amplifies_the_impact": "",
+            "resulting_market_effect": "",
+            "time_sensitivity": "",
+            "confidence": 0
+            }
+        ]
+    },
+
+    "executive_summary": ""
 }
 
 REQUIRED_TOP_LEVEL_KEYS = list(SCHEMA_TEMPLATE.keys())
+
+ALLOWED_ENUMS = {
+    "signal_bucket": [
+        "DIRECT",
+        "AMBIGUOUS",
+        "WEAK_PROXY",
+        "NOISE"
+    ],
+
+    "event_type": [
+        "earnings",
+        "policy",
+        "order_win",
+        "macro",
+        "regulation",
+        "disruption",
+        "corporate_action",
+        "other"
+    ],
+
+    "event_status": [
+        "confirmed",
+        "developing",
+        "rumor",
+        "follow_up",
+        "noise"
+    ],
+
+    "event_scope": [
+        "single_stock",
+        "peer_group",
+        "sector",
+        "broad_market"
+    ],
+
+    "bias": [
+        "bullish",
+        "bearish",
+        "mixed",
+        "neutral",
+        "unclear"
+    ],
+
+    "strength": [
+        "low",
+        "medium",
+        "high"
+    ],
+
+    "surprise_level": [
+        "low",
+        "medium",
+        "high",
+        "unknown"
+    ],
+
+    "primary_horizon": [
+        "intraday",
+        "short_term",
+        "medium_term",
+        "long_term"
+    ],
+
+    "tradeability_classification": [
+        "actionable_now",
+        "wait_for_confirmation",
+        "no_edge"
+    ],
+
+    "stock_role": [
+        "direct",
+        "indirect",
+        "peer",
+        "beneficiary",
+        "risk"
+    ],
+
+    "evidence_type": [
+        "confirmed_fact",
+        "management_commentary",
+        "historical_pattern",
+        "inference",
+        "market_structure"
+    ]
+}

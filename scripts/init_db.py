@@ -178,6 +178,58 @@ def create_indian_news_table():
     finally:
         conn.close()
 
+MIGRATE_INDIAN_AGENT_COLUMNS = [
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS event_type VARCHAR(50);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS event_status VARCHAR(30);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS event_scope VARCHAR(30);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS market_bias VARCHAR(20);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS analysis_confidence INTEGER;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS horizon VARCHAR(30);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS surprise VARCHAR(20);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS primary_symbol VARCHAR(50);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS primary_company_name VARCHAR(255);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS executive_summary TEXT;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS stock_impacts JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS sector_impacts JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS scenarios JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS priority_ranking JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS tradeability_classification VARCHAR(30);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS tradeability_data JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS confidence_breakdown JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS agent_output JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS signal_bucket VARCHAR(20);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS news_summary JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS affected_entities JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS evidence JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS symbols TEXT[];"
+]
+
+def create_indian_news_table():
+    """Create the indian_news table and indexes, and apply migrations."""
+    conn = psycopg2.connect(**DB_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(CREATE_INDIAN_NEWS_TABLE_SQL)
+
+        for idx_sql in CREATE_INDIAN_NEWS_INDEXES_SQL:
+            cur.execute(idx_sql)
+
+        for sql in MIGRATE_ANALYSIS_COLUMNS:
+            cur.execute(sql.replace("ALTER TABLE news ", "ALTER TABLE indian_news "))
+
+        for sql in MIGRATE_INDIAN_AGENT_COLUMNS:
+            cur.execute(sql)
+
+        conn.commit()
+        print("✅ Table 'indian_news' and schema created successfully")
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error creating indian_news table: {e}")
+        raise
+    finally:
+        conn.close()
+
 
 CREATE_PREDICTIONS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS predictions (

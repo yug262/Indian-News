@@ -49,6 +49,8 @@ async def analyze_indian_news(title: str, description: str = "") -> Optional[Dic
                         response_mime_type="application/json"
                     )
                 )
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    logger.info(f"[TOKEN USAGE - INDIAN_FILTER] In: {response.usage_metadata.prompt_token_count} | Out: {response.usage_metadata.candidates_token_count} | Total: {response.usage_metadata.total_token_count}")
                 break
             except Exception as e:
                 if attempt < 2 and ("503" in str(e) or "UNAVAILABLE" in str(e) or "overload" in str(e).lower()):
@@ -85,9 +87,8 @@ async def analyze_indian_news(title: str, description: str = "") -> Optional[Dic
         return {
             "category": str(data.get("category", "routine_market_update")),
             "relevance": str(data.get("relevance", "Noisy")),
-            "sector_impact": str(data.get("sector_impact", "None")),
-            "affected_sectors": data.get("affected_sectors", []) if isinstance(data.get("affected_sectors"), list) else [],
-            "reason": str(data.get("reason", "No specific reason provided."))
+            "reason": str(data.get("reason", "No specific reason provided.")),
+            "symbols": list(data.get("symbols", []))
         }
 
     except Exception as e:

@@ -6,7 +6,6 @@ import os
 import re
 import time
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
@@ -15,9 +14,9 @@ from google import genai
 from google.genai import types
 
 from app.core.db import execute_query, fetch_one
-from app.ind.prompt import INDIAN_SYSTEM_PROMPT, INDIAN_CLASSIFY_PROMPT
-from app.ind.tools import get_indian_stock_price, run_indian_news_analysis
+from app.ind.prompt import INDIAN_SYSTEM_PROMPT, build_compact_prompt
 from app.ind.schema import SCHEMA_TEMPLATE
+from app.ind.tools import build_analysis_context
 
 
 load_dotenv()
@@ -58,34 +57,6 @@ def _parse_iso_utc(ts: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _calculate_news_age(published_iso: str) -> tuple[str, str, float]:
-    """
-    Returns:
-        age_label: Fresh / Recent / Old
-        age_human: e.g. '2.3h'
-        hours_old: float
-    """
-    try:
-        pub_dt = _parse_iso_utc(published_iso)
-        hours_old = max(0.0, (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600)
-
-        if hours_old < 6:
-            age_label = "Fresh"
-        elif hours_old < 24:
-            age_label = "Recent"
-        else:
-            age_label = "Old"
-
-        if hours_old < 1:
-            age_human = f"{int(hours_old * 60)}m"
-        else:
-            age_human = f"{round(hours_old, 1)}h"
-
-        return age_label, age_human, hours_old
-    except Exception:
-        return "Fresh", "", 0.0
-
-
 def _safe_json_loads(text: str) -> dict:
     text = (text or "").strip()
     if not text:
@@ -106,100 +77,254 @@ def _safe_json_loads(text: str) -> dict:
                 continue
         raise ValueError("LLM did not return valid JSON")
 # =========================================================
-# CLASSIFICATION LAYER
+# RULES AND ENFORCEMENT
 # =========================================================
 
-def classify_indian_news(title: str, summary: str = "", source: str = "") -> str:
-    """
-    Lightweight arrival-time classifier.
-    Returns one label string.
-    """
-    if not client or not MODEL_NAME:
-        _log("[INDIA CLASSIFY] Missing MODEL_NAME or GEMINI_API_KEY")
-        return "unknown"
+def normalize_to_schema(data: dict) -> dict:
+    valid_bias = {"bullish", "bearish", "mixed", "neutral", "unclear"}
+    valid_surprise = {"low", "medium", "high", "unknown"}
+    valid_strength = {"low", "medium", "high"}
 
-    prompt = f"""
-{INDIAN_CLASSIFY_PROMPT}
+    # -------------------------
+    # core_view
+    # -------------------------
+    core_view = data.get("core_view", {}) or {}
 
-Classify this Indian-market news item into one concise label.
+    surprise = str(core_view.get("surprise_level", "unknown")).strip().lower()
+    surprise_map = {
+        "positive": "high",
+        "negative": "high",
+        "significant": "high",
+        "moderate": "medium",
+        "expected": "low",
+        "minimal": "low",
+    }
+    if surprise not in valid_surprise:
+        core_view["surprise_level"] = surprise_map.get(surprise, "unknown")
 
-Return ONLY the label text, no JSON.
+    bias = str(core_view.get("market_bias", "unclear")).strip().lower()
+    if bias not in valid_bias:
+        core_view["market_bias"] = "unclear"
 
-Title: {title}
-Source: {source}
-Summary: {summary}
-""".strip()
+    core_view["impact_score"] = int(max(0, min(10, int(core_view.get("impact_score", 0) or 0))))
+    core_view["overall_confidence"] = int(max(0, min(100, int(core_view.get("overall_confidence", 0) or 0))))
+    core_view["overall_confidence"] = min(core_view["overall_confidence"], 85)
+    data["core_view"] = core_view
 
-    for attempt in range(MAX_RETRIES):
-        try:
-            resp = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=INDIAN_SYSTEM_PROMPT,
-                    temperature=0.0,
-                ),
-            )
-            label = (resp.text or "").strip()
-            if not label:
-                raise ValueError("Empty classifier response")
-            return label
-        except Exception as e:
-            _log(f"[INDIA CLASSIFY ERROR] {e}")
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(BASE_DELAY * (attempt + 1))
+    # -------------------------
+    # signal_bucket
+    # -------------------------
+    valid_buckets = {"DIRECT", "AMBIGUOUS", "WEAK_PROXY", "NOISE"}
 
-    return "unknown"
+    bucket = str(data.get("signal_bucket", "") or "").strip().upper()
+    if bucket not in valid_buckets:
+        data["signal_bucket"] = ""
+    else:
+        data["signal_bucket"] = bucket
 
+    # -------------------------
+    # stock_impacts
+    # -------------------------
+    cleaned_stock_impacts = []
 
-def classify_indian_news_batch(items: list[tuple[str, str]], max_workers: int = 8) -> dict[int, str]:
-    """
-    items: [(title, summary), ...]
-    returns: {index: label}
-    """
-    results: dict[int, str] = {}
+    for item in data.get("stock_impacts", []) or []:
+        item = dict(item)
 
-    def _worker(idx: int, title: str, summary: str) -> tuple[int, str]:
-        return idx, classify_indian_news(title=title, summary=summary)
+        item["symbol"] = str(item.get("symbol", "") or "").strip().upper()
+        item["company_name"] = str(item.get("company_name", "") or "").strip()
+        item["role"] = str(item.get("role", "direct") or "direct").strip().lower()
+        valid_roles = {"direct", "indirect", "peer", "beneficiary", "risk"}
+        if item["role"] not in valid_roles:
+            item["role"] = "direct"
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(_worker, idx, title, summary): idx
-            for idx, (title, summary) in enumerate(items)
+        bias = str(item.get("bias", "unclear") or "unclear").strip().lower()
+        if bias == "positive":
+            bias = "bullish"
+        elif bias == "negative":
+            bias = "bearish"
+        if bias not in valid_bias:
+            bias = "unclear"
+        item["bias"] = bias
+
+        exp = item.get("expected_move", {}) or {}
+        if isinstance(exp, str):
+            exp = {
+                "intraday": exp,
+                "short_term": "unclear",
+                "medium_term": "unclear",
+            }
+
+        item["expected_move"] = {
+            "intraday": exp.get("intraday", "unclear"),
+            "short_term": exp.get("short_term", "unclear"),
+            "medium_term": exp.get("medium_term", "unclear"),
         }
-        for future in as_completed(futures):
-            idx = futures[future]
-            try:
-                i, label = future.result()
-                results[i] = label
-            except Exception:
-                results[idx] = "unknown"
 
-    return results
+        item["why"] = str(item.get("why", "") or "").strip()
+        item["risk"] = str(item.get("risk", "") or "").strip()
+        item["invalidation"] = str(item.get("invalidation", "") or "").strip()
+        item["confidence"] = int(max(0, min(100, int(item.get("confidence", 0) or 0))))
 
+        title_val = ((data.get("event", {}) or {}).get("title", "") or "").lower()
+        company_name_val = item["company_name"].lower()
 
-def enforce_hard_rules(data: dict) -> dict:
-    event = data.get("event", {})
-    title = (event.get("title") or "").lower()
-    event_type = event.get("event_type")
+        company_is_headline = (
+            len(item["company_name"].split()) > 6
+            or (company_name_val and company_name_val == title_val)
+        )
 
-    stock_impacts = data.get("stock_impacts", [])
+        # only hard reject on truly bad mapping
+        if not item["company_name"] or company_is_headline:
+            continue
 
-    for s in stock_impacts:
-        company = (s.get("company_name") or "").lower()
+        if not item["symbol"]:
+            continue
 
-        # 🚨 HARD RULE: earnings main subject → direct
-        if event_type == "earnings":
-            if company and company in title:
-                s["role"] = "direct"
+        if not item["why"] and item["confidence"] < 50:
+            continue
 
-        # fallback if company_name empty but symbol exists
-        symbol = (s.get("symbol") or "").lower()
-        if event_type == "earnings" and symbol:
-            if symbol.lower() in title:
-                s["role"] = "direct"
+        cleaned_stock_impacts.append(item)
+
+    data["stock_impacts"] = cleaned_stock_impacts
+
+    # -------------------------
+    # sector_impacts
+    # -------------------------
+    cleaned_sector_impacts = []
+    for item in data.get("sector_impacts", []) or []:
+        item = dict(item)
+
+        bias = str(item.get("bias", item.get("impact", "unclear"))).strip().lower()
+        if bias == "positive":
+            bias = "bullish"
+        elif bias == "negative":
+            bias = "bearish"
+        elif bias not in valid_bias:
+            bias = "unclear"
+
+        strength = str(item.get("strength", "medium")).strip().lower()
+        if strength not in valid_strength:
+            # crude fallback from impact_score
+            score = int(item.get("impact_score", 0) or 0)
+            if score >= 7:
+                strength = "high"
+            elif score >= 4:
+                strength = "medium"
+            else:
+                strength = "low"
+
+        sector_name = str(item.get("sector", "") or "").strip()
+        why_text = str(item.get("why", item.get("reasoning", "")) or "").strip()
+        confidence_val = int(max(0, min(100, int(item.get("confidence", 50) or 50))))
+
+        if not sector_name:
+            continue
+
+        if not why_text and confidence_val < 50:
+            continue
+
+        cleaned_sector_impacts.append({
+            "sector": sector_name,
+            "bias": bias,
+            "strength": strength,
+            "time_horizon": item.get("time_horizon", data.get("core_view", {}).get("primary_horizon", "short_term")),
+            "why": why_text,
+            "confidence": confidence_val,
+        })
+
+    data["sector_impacts"] = cleaned_sector_impacts
+
+    # -------------------------
+    # evidence
+    # -------------------------
+    cleaned_evidence = []
+    for item in data.get("evidence", []) or []:
+        item = dict(item)
+
+        strength_val = str(item.get("strength", "medium") or "medium").strip().lower()
+        if strength_val not in valid_strength:
+            strength_val = "medium"
+
+        evidence_type = str(item.get("type", "inference") or "inference").strip().lower()
+        valid_evidence_types = {
+            "confirmed_fact",
+            "management_commentary",
+            "historical_pattern",
+            "inference",
+            "market_structure",
+        }
+        if evidence_type not in valid_evidence_types:
+            evidence_type = "inference"
+
+        cleaned_evidence.append({
+            "type": evidence_type,
+            "detail": item.get("detail", item.get("description", "")),
+            "strength": strength_val,
+            "confidence": int(max(0, min(100, int(item.get("confidence", 50) or 50)))),
+        })
+
+    data["evidence"] = cleaned_evidence
+
+    # -------------------------
+    # tradeability
+    # -------------------------
+    tradeability = data.get("tradeability", {}) or {}
+    classification = str(tradeability.get("classification", "") or "").strip().lower()
+    valid_tradeability = {"actionable_now", "wait_for_confirmation", "no_edge"}
+
+    if classification not in valid_tradeability:
+        classification = "no_edge"
+
+    action_triggers = tradeability.get("action_triggers", []) or []
+    if not isinstance(action_triggers, list):
+        action_triggers = []
+
+    data["tradeability"] = {
+        "classification": classification,
+        "reasoning": str(tradeability.get("reasoning", "") or "").strip(),
+        "action_triggers": [str(x).strip() for x in action_triggers if str(x).strip()]
+    }
+
+    # -------------------------
+    # impact_triggers
+    # -------------------------
+    impact_triggers = data.get("impact_triggers", {}) or {}
+
+    def _clean_trigger_items(items):
+        cleaned = []
+        for item in items or []:
+            item = dict(item)
+            trigger = str(item.get("trigger", "") or "").strip()
+            why = str(item.get("why_it_kills_the_impact", item.get("why_it_amplifies_the_impact", "")) or "").strip()
+            effect = str(item.get("resulting_market_effect", "") or "").strip()
+            time_sensitivity = str(item.get("time_sensitivity", "") or "").strip().lower()
+            valid_time_sensitivity = {"immediate", "intraday", "short_term", "medium_term", "long_term", "high", "medium", "low"}
+            if time_sensitivity not in valid_time_sensitivity:
+                time_sensitivity = "short_term"
+            confidence = int(max(0, min(100, int(item.get("confidence", 0) or 0))))
+
+            if not trigger:
+                continue
+            if not why and confidence < 50:
+                continue
+
+            cleaned.append({
+                "trigger": trigger,
+                "why_it_kills_the_impact": str(item.get("why_it_kills_the_impact", "") or "").strip(),
+                "why_it_amplifies_the_impact": str(item.get("why_it_amplifies_the_impact", "") or "").strip(),
+                "resulting_market_effect": effect,
+                "time_sensitivity": time_sensitivity,
+                "confidence": confidence,
+            })
+        return cleaned
+
+    data["impact_triggers"] = {
+        "impact_killers": _clean_trigger_items(impact_triggers.get("impact_killers", [])),
+        "impact_amplifiers": _clean_trigger_items(impact_triggers.get("impact_amplifiers", [])),
+    }
 
     return data
+
 
 
 # =========================================================
@@ -230,121 +355,7 @@ def _call_indian_llm_compact(context: dict) -> dict:
 
     # Build LLM-facing context: strip _internal metadata (post-processing only)
     llm_context = {k: v for k, v in context.items() if k != "_internal"}
-
-    schema_text = json.dumps(SCHEMA_TEMPLATE, ensure_ascii=False, indent=2)
-
-    compact_prompt = f"""
-You are an Indian equities market intelligence agent.
-
-Decide if this news creates a real, tradable impact.
-
-==================================================
-CORE ANALYSIS
-==================================================
-
-Always evaluate:
-- directness (economic linkage)
-- materiality (revenue/margin/cost/demand/regulation/valuation)
-- surprise (expected vs unexpected)
-- breadth (single / peer / sector / market)
-- evidence quality (strong / medium / weak)
-
-Weak signal → weak output  
-Unclear → say "unclear"  
-No validated mapping → no stock output  
-
-==================================================
-STOCK MAPPING (STRICT)
-==================================================
-
-- Use ONLY validated_mappings.company_matches
-- Ignore weak_hints for stock selection
-- No clear company → stock_impacts must be EMPTY
-- Incidental mention → role = "peer"
-- No Indian listed linkage → EMPTY
-
-Max 5 stocks (usually 0–2)
-
-==================================================
-SCOPE
-==================================================
-
-single_stock → one main company  
-peer_group → multiple similar companies  
-sector → industry-level impact  
-broad_market → multi-sector impact  
-
-Do NOT assign scope from keywords alone.
-
-==================================================
-ROLE
-==================================================
-
-direct → direct economic impact  
-indirect → second-order / macro  
-peer → sentiment only  
-
-Hard rule:
-If earnings + main company → role = "direct"
-
-==================================================
-IMPACT SCORE (0–10)
-
-0–2 → noise  
-3–4 → mild  
-5–6 → moderate  
-7–8 → strong  
-9–10 → major shock  
-
-Rules:
-- expected event → max 5
-- no financial impact → max 6
-- no exaggeration
-
-==================================================
-MOVE ESTIMATION
-
-Allowed:
-0-1%, 1-3%, 3-5%, 5-8%, 8%+, unclear
-
-Weak → 0-1%  
-Moderate → 1-3%  
-Strong → 3-5%+  
-
-If bias unclear → move = unclear  
-
-==================================================
-CONFIDENCE (0–100, max 85)
-
-70–85 → strong  
-50–69 → medium  
-<50 → weak  
-
-Reduce if:
-- weak evidence
-- unclear mapping
-- assumptions required
-
-==================================================
-OUTPUT RULES
-
-- Return ONLY JSON
-- Follow schema EXACTLY
-- No extra keys
-- No hallucination
-- No forced stocks
-- Use "unclear" when needed
-
-==================================================
-OUTPUT SCHEMA
-
-{schema_text}
-
-==================================================
-TOOL CONTEXT
-
-{json.dumps(llm_context, ensure_ascii=False, indent=2)}
-""".strip()
+    compact_prompt = build_compact_prompt(llm_context, str(SCHEMA_TEMPLATE))
 
     resp = client.models.generate_content(
         model=MODEL_NAME,
@@ -356,12 +367,14 @@ TOOL CONTEXT
         ),
     )
 
+    usage = resp.usage_metadata
+    if usage:
+        _log(f"   [TOKENS] In: {usage.prompt_token_count} | Out: {usage.candidates_token_count} | Total: {usage.total_token_count}")
+
     result = _safe_json_loads(resp.text or "")
-    result = enforce_hard_rules(result)
+    result = normalize_to_schema(result)
 
     return result
-
-
 
 def analyze_indian_news(
     title: str,
@@ -381,18 +394,31 @@ def analyze_indian_news(
         try:
             _log(f"[INDIA ATTEMPT {attempt + 1}/{MAX_RETRIES}] {title[:120]}")
 
-            result = run_indian_news_analysis(
-                llm_callable=_call_indian_llm_compact,
+            # 1. Build deterministic context
+            
+            context = build_analysis_context(
                 title=title,
                 summary=summary,
                 published_iso=published_iso,
                 source=source,
-                current_news_id=current_news_id,
             )
 
+            # 2. Call LLM (which includes normalization)
+            result = _call_indian_llm_compact(context)
+
             result["_meta"] = {
-                "analysis_timestamp_utc": datetime.now(timezone.utc).isoformat()
+                "analysis_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "orchestrator": "compact_v2"
             }
+
+            event = result.get("event", {}) or {}
+            event_type = str(event.get("event_type", "") or "").lower()
+
+            if "price_action" in event_type:
+                event["event_type"] = "other"
+
+            result["event"] = event
+
             return result
 
         except Exception as e:
@@ -409,65 +435,49 @@ def analyze_indian_news(
 
 def save_indian_analysis(news_id: int, analysis: dict) -> None:
     """
-    Save compact Indian agent output.
+    Save consolidated Indian agent output.
+    All rich data is stored in analysis_data (v4 schema).
+    Filtering columns (score, bias, bucket) are kept separate.
     """
     event = analysis.get("event", {}) or {}
-    analysis_block = analysis.get("analysis", {}) or {}
-    scenario = analysis.get("scenario", {}) or {}
-
-    age_label, age_human, hours_old = _calculate_news_age(event.get("timestamp_utc", ""))
-    priced_in = hours_old >= 24
+    core_view = analysis.get("core_view", {}) or {}
+    stock_impacts = analysis.get("stock_impacts", [])
+    primary_symbol = stock_impacts[0].get("symbol", "")[:50] if stock_impacts else None
 
     query = """
-        UPDATE news SET
-            analyzed               = TRUE,
-            analyzed_at            = NOW(),
-            analysis_data          = %s,
-            impact_score           = %s,
-            impact_summary         = %s,
-            affected_markets       = %s,
-            impact_duration        = %s,
-            market_mode            = %s,
-            execution_window       = %s,
-            confidence             = %s,
-            conviction_score       = %s,
-            volatility_regime      = %s,
-            dollar_liquidity_state = %s,
-            news_age_label         = %s,
-            news_age_human         = %s,
-            news_priced_in         = %s,
-            suggestions_data       = %s,
-            suggestions_status     = %s,
-            suggestions_summary    = %s
+        UPDATE indian_news SET
+            analyzed          = TRUE,
+            analyzed_at       = NOW(),
+            analysis_data     = %s,
+            impact_score      = %s,
+            market_bias       = %s,
+            signal_bucket     = %s,
+            news_category     = %s,
+            news_relevance    = %s,
+            primary_symbol    = %s,
+            executive_summary = %s
         WHERE id = %s
     """
 
+    # Extract core metrics for indexing/filtering
+    impact_score_val = int(core_view.get("impact_score", 0) or 0)
+    market_bias_val = (core_view.get("market_bias") or "neutral").lower()
+    bucket_val = (analysis.get("signal_bucket") or "unclassified").upper()
+    
     params = (
         json.dumps(analysis),
-        int(analysis_block.get("impact_score", 0) or 0),
-        (analysis.get("executive_summary", "") or "")[:500],
-        json.dumps({
-            "stocks": analysis.get("affected_entities", {}).get("stocks", []),
-            "sectors": analysis.get("affected_entities", {}).get("sectors", []),
-        }),
-        (analysis_block.get("horizon", "") or "")[:100],
-        (event.get("event_type", "") or "")[:50],
-        (analysis_block.get("horizon", "") or "")[:50],
-        int(analysis_block.get("confidence", 0) or 0),
-        int(round((analysis_block.get("confidence", 0) or 0) / 10)),  # legacy 0-10 column
-        (analysis_block.get("surprise", "") or "")[:50],
-        (event.get("status", "") or "")[:50],
-        age_label[:20],
-        age_human[:50],
-        bool(priced_in),
-        json.dumps({"second_order_insights": scenario.get("second_order_insights", [])}),
-        "compact_agent",
-        (scenario.get("invalidation_trigger", "") or "")[:500],
+        impact_score_val,
+        market_bias_val[:20],
+        bucket_val[:20],
+        (event.get("event_type", "general"))[:100],
+        "High" if impact_score_val >= 6 else "Medium" if impact_score_val >= 3 else "Low",
+        primary_symbol,
+        (analysis.get("executive_summary", "") or "")[:2000],
         news_id,
     )
 
     execute_query(query, params)
-    _log(f"[INDIA SAVE] news_id={news_id}")
+    _log(f"[INDIA SAVE] news_id={news_id} (Consolidated)")
 
     try:
         create_indian_predictions_compact(news_id, analysis)
@@ -570,7 +580,7 @@ def _normalize_prediction_direction(direction: str) -> str:
 
 def _pick_prediction_move(item: dict, horizon: str) -> tuple[str, float]:
     """
-    Prefer short_term for predictions; fallback to intraday.
+    Prefefor predictions; fallback to intraday.
     """
     expected_move = item.get("expected_move", {}) or {}
     if horizon == "intraday":
@@ -586,17 +596,21 @@ def create_indian_predictions_compact(news_id: int, analysis: dict) -> None:
     """
     Create rows in predictions table from compact schema:
     - analysis.stock_impacts[]
-    - analysis.analysis.horizon
     """
     stock_impacts = analysis.get("stock_impacts", []) or []
-    analysis_block = analysis.get("analysis", {}) or {}
-    horizon = analysis_block.get("horizon", "short_term") or "short_term"
+    core_view = analysis.get("core_view", {}) or {}
+    horizon = core_view.get("primary_horizon", "short_term") or "short_term"
+
+    tradeability = analysis.get("tradeability", {}) or {}
+    if tradeability.get("classification") != "actionable_now":
+        _log(f"[INDIA PRED] Skipping prediction creation for news_id={news_id} because tradeability is not actionable_now")
+        return
 
     if not stock_impacts:
         _log(f"[INDIA PRED] No stock_impacts for news_id={news_id}")
         return
 
-    news_row = fetch_one("SELECT analyzed_at FROM news WHERE id = %s", (news_id,))
+    news_row = fetch_one("SELECT analyzed_at FROM indian_news WHERE id = %s", (news_id,))
     now_dt = news_row["analyzed_at"] if news_row and news_row.get("analyzed_at") else datetime.now(timezone.utc)
 
     try:
@@ -676,9 +690,13 @@ def create_indian_watchlists_compact(news_id: int, analysis: dict) -> None:
     This is watchlist-style output mapped onto your legacy suggestions table.
     """
     stock_impacts = analysis.get("stock_impacts", []) or []
-    analysis_block = analysis.get("analysis", {}) or {}
-    scenario = analysis.get("scenario", {}) or {}
-    horizon = (analysis_block.get("horizon", "") or "").strip()
+    core_view = analysis.get("core_view", {}) or {}
+    horizon = str(core_view.get("primary_horizon", "short_term") or "short_term").strip()
+
+    tradeability = analysis.get("tradeability", {}) or {}
+    if tradeability.get("classification") == "no_edge":
+        _log(f"[INDIA SUG] Skipping watchlist creation for news_id={news_id} because tradeability is no_edge")
+        return
 
     if not stock_impacts:
         _log(f"[INDIA SUG] No stock_impacts for news_id={news_id}")
@@ -743,7 +761,7 @@ def create_indian_watchlists_compact(news_id: int, analysis: dict) -> None:
                     reasoning[:1000],
                     market_logic_text[:1000],
                     (horizon or "short_term")[:100],
-                    (invalidation or scenario.get("invalidation_trigger", ""))[:1000],
+                    (invalidation)[:1000],
                     confidence
                 ),
             )
