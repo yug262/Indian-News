@@ -791,8 +791,12 @@ def build_minimal_tool_context(
             {
                 "symbol": symbol,
                 "company_name": match.get("company_name", ""),
-                "reaction": reaction_block,
-                "atr": atr_block,
+                "news_price": reaction_block.get("news_price"),
+                "current_price": reaction_block.get("current_price"),
+                "reaction_pct": reaction_block.get("reaction_pct"),
+                "interval_used": reaction_block.get("interval_used"),
+                "atr_value": atr_block.get("atr_value"),
+                "atr_pct_reference": atr_block.get("atr_pct_reference"),
                 "reaction_status": reaction_status,
                 "pricing_in_estimate": pricing_in_estimate,
             }
