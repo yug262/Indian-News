@@ -128,7 +128,9 @@ def get_indian_news(source: str = Query(None, description="Filter news by source
         execution_window, confidence, forex_pairs, conviction_score, volatility_regime,
         dollar_liquidity_state, position_size_percent, safe_haven_flow, research_text,
         is_new_information, tools_used, analysis_data, news_relevance, news_category,
-        news_impact_level, news_reason
+        news_impact_level, news_reason, symbols,
+        -- Institutional V4 Consistent Fields
+        market_bias, signal_bucket, primary_symbol, executive_summary
     FROM indian_news WHERE 1=1"""
     params: List[Any] = []
     
@@ -380,8 +382,45 @@ def get_indian_stats():
 
 @app.post("/api/indian_analyze/{news_id}")
 def analyze_single_indian_article(news_id: int):
-    """Placeholder for Indian news analysis."""
-    return {"status": "error", "message": "Analysis coming soon for Indian Markets"}
+    """Analyze a single Indian news article by its DB id using the Indian Agent."""
+    from app.ind.agent import analyze_indian_news, save_indian_analysis
+    
+    try:
+        article = fetch_one("SELECT id, title, published, description, source FROM indian_news WHERE id = %s", (news_id,))
+        if not article:
+            return {"status": "error", "message": "Indian Article not found"}
+
+        title = article["title"]
+        published = str(article["published"])
+        description = article.get("description", "") or ""
+        source = article.get("source", "") or ""
+
+        analysis = analyze_indian_news(
+            title=title, 
+            published_iso=published, 
+            summary=description, 
+            source=source,
+            current_news_id=news_id
+        )
+
+        if analysis:
+            try:
+                save_indian_analysis(news_id, analysis)
+                print(f"[API] Indian Analysis saved for news_id={news_id}")
+                return {"status": "success", "data": analysis}
+            except Exception as save_err:
+                print(f"[API] save_indian_analysis FAILED for news_id={news_id}: {save_err}")
+                import traceback
+                traceback.print_exc()
+                return {"status": "error", "message": f"Save failed: {save_err}"}
+        else:
+            print(f"[API] analyze_indian_news returned None for news_id={news_id}")
+            return {"status": "error", "message": "Analysis failed — click to retry"}
+    except Exception as e:
+        print(f"[API] Exception in indian_analyze endpoint: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
 
 @app.get("/indian_news")
 def read_indian_news():

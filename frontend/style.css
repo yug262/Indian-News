@@ -3390,3 +3390,488 @@ body {
     background: linear-gradient(to right, transparent, rgba(108, 99, 255, 0.03));
     pointer-events: none;
 }
+
+/* ---- Indian Compact Schema UI Components ---- */
+.tradeability-badge {
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.trade-actionable {
+    background: rgba(0, 212, 170, 0.1);
+    border: 1px solid var(--accent-2);
+    color: var(--accent-2);
+}
+
+.trade-potential {
+    background: rgba(108, 99, 255, 0.1);
+    border: 1px solid var(--accent-1);
+    color: var(--accent-1);
+}
+
+.trade-no-edge {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--text-muted);
+    color: var(--text-muted);
+}
+
+.scenario-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    margin-top: 12px;
+}
+
+.scenario-card {
+    padding: 14px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    transition: all var(--transition-normal);
+}
+
+/* =========================================
+   Premium News Card & Modal Additions
+   ========================================= */
+
+.card-timestamps-premium, .modal-timestamps-premium {
+    margin-top: 12px;
+    margin-bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.card-timestamps-premium .ts-row, .modal-timestamps-premium .ts-row {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+}
+
+.card-timestamps-premium .ts-row strong, .modal-timestamps-premium .ts-row strong {
+    color: var(--text-primary);
+    font-weight: 700;
+    margin-right: 6px;
+    text-transform: uppercase;
+    font-size: 0.72rem;
+    letter-spacing: 0.5px;
+}
+
+/* Base Full-width Premium Gradient Button */
+.read-article-btn {
+    width: 100%;
+    margin-top: 20px;
+    padding: 16px 24px;
+    background: linear-gradient(90deg, #6366f1, #00d4aa);
+    border: none !important;
+    border-radius: 14px;
+    color: #fff !important;
+    font-weight: 800;
+    font-size: 1rem;
+    text-decoration: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: 0 4px 15px rgba(99, 102, 241, 0.25);
+    cursor: pointer;
+}
+
+.read-article-btn:hover {
+    transform: translateY(-3px) scale(1.01);
+    box-shadow: 0 12px 30px rgba(99, 102, 241, 0.4), 0 0 20px rgba(0, 212, 170, 0.25);
+    filter: brightness(1.1);
+}
+
+.read-article-btn:active {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 15px rgba(99, 102, 241, 0.3);
+}
+
+/* News grid card adjustment */
+.news-card .card-action-row {
+    margin-top: auto;
+}
+
+/* Adjust card footer for cleaner look */
+.card-footer {
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+    margin-top: 16px;
+}
+
+.modal-title {
+    font-size: 1.6rem !important;
+    line-height: 1.4;
+    margin-bottom: 20px;
+    color: var(--text-primary);
+}
+
+.modal-description {
+    font-size: 1rem !important;
+    line-height: 1.6;
+    color: var(--text-secondary) !important;
+    margin-bottom: 28px;
+}
+
+.scenario-name {
+    font-size: 0.65rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.scenario-condition {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+
+.scenario-impact {
+    font-size: 0.8rem;
+    color: var(--accent-1);
+    line-height: 1.4;
+}
+
+.impact-pill {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 700;
+}
+
+.impact-pos { color: var(--accent-2); background: rgba(0, 212, 170, 0.1); }
+.impact-neg { color: #ff4757; background: rgba(255, 71, 87, 0.1); }
+.impact-neu { color: var(--text-muted); background: rgba(255, 255, 255, 0.05); }
+
+.confidence-bar-container {
+    margin-top: 10px;
+}
+
+.confidence-bar-item {
+    margin-bottom: 8px;
+}
+
+.confidence-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.7rem;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.confidence-bar-track {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+/* =========================================
+   INDIAN IQ V4 — Institutional UI Additions
+   ========================================= */
+
+.signal-bucket-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.bucket-direct { background: rgba(0, 212, 170, 0.15); color: var(--accent-2); border: 1px solid rgba(0, 212, 170, 0.3); }
+.bucket-ambiguous { background: rgba(255, 193, 7, 0.15); color: #ffc107; border: 1px solid rgba(255, 193, 7, 0.3); }
+.bucket-weak-proxy { background: rgba(108, 99, 255, 0.15); color: var(--accent-1); border: 1px solid rgba(108, 99, 255, 0.3); }
+.bucket-noise { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); border: 1px solid var(--border); }
+
+.summary-split-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.summary-split-box {
+    padding: 14px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border);
+}
+
+.summary-split-box.confirmed { border-left: 3px solid var(--accent-2); }
+.summary-split-box.unknown { border-left: 3px solid #ff4757; }
+
+.summary-split-title {
+    font-size: 0.65rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.summary-split-title.confirmed { color: var(--accent-2); }
+.summary-split-title.unknown { color: #ff4757; }
+
+.summary-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.summary-item {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    line-height: 1.4;
+    position: relative;
+    padding-left: 14px;
+}
+
+.summary-item::before {
+    content: '•';
+    position: absolute;
+    left: 0;
+    opacity: 0.5;
+}
+
+.trade-trigger-container {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.trade-trigger-item {
+    padding: 10px 14px;
+    background: rgba(108, 99, 255, 0.05);
+    border: 1px solid rgba(108, 99, 255, 0.15);
+    border-left: 3px solid var(--accent-1);
+    border-radius: 0 8px 8px 0;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    line-height: 1.4;
+}
+
+.entity-tags-container {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+}
+
+.entity-tag {
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.entity-tag.stock { color: var(--accent-2); background: rgba(0, 212, 170, 0.08); border-color: rgba(0, 212, 170, 0.2); }
+.entity-tag.sector { color: var(--accent-1); background: rgba(108, 99, 255, 0.08); border-color: rgba(108, 99, 255, 0.2); }
+.entity-tag.index { color: #ffc107; background: rgba(255, 193, 7, 0.08); border-color: rgba(255, 193, 7, 0.2); }
+
+@media (max-width: 640px) {
+    .summary-split-container {
+        grid-template-columns: 1fr;
+    }
+}
+
+/* Signal Buckets (V4) */
+.signal-bucket-badge {
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border: 1px solid transparent;
+    display: inline-flex;
+    align-items: center;
+}
+.bucket-direct { background: rgba(0, 212, 170, 0.15); color: #00d4aa; border-color: rgba(0, 212, 170, 0.3); }
+.bucket-ambiguous { background: rgba(255, 193, 7, 0.15); color: #ffc107; border-color: rgba(255, 193, 7, 0.3); }
+.bucket-weak-proxy { background: rgba(108, 99, 255, 0.15); color: #a78bfa; border-color: rgba(108, 99, 255, 0.3); }
+.bucket-noise { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); border-color: var(--border); }
+
+/* ---- Indian Institutional Modal Redesign ---- */
+.modal-timestamps-stacked {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 20px;
+}
+
+.modal-ts-line {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+}
+
+.modal-ts-line strong {
+    color: var(--text-primary);
+    font-weight: 700;
+}
+
+.modal-source-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.modal-date-mini {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+.initial-classification-box {
+    background: rgba(18, 18, 28, 0.4);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    margin: 20px 0;
+}
+
+.ic-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.ic-title {
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.ic-impact {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.ic-impact.impact-positive { background: rgba(0, 212, 170, 0.15); color: #00d4aa; }
+.ic-impact.impact-negative { background: rgba(255, 71, 87, 0.15); color: #ff6b7a; }
+
+.ic-body {
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+.ic-body strong {
+    color: var(--text-primary);
+}
+
+.modal-analyze-center {
+    display: flex;
+    justify-content: center;
+    margin: 24px 0;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+}
+
+.modal-analyze-center .analyze-btn {
+    padding: 8px 24px;
+    font-size: 0.8rem;
+    background: rgba(108, 99, 255, 0.2);
+    border-color: rgba(108, 99, 255, 0.4);
+    box-shadow: 0 0 15px rgba(108, 99, 255, 0.2);
+}
+
+.modal-action-footer {
+    display: flex;
+    flex-direction: column;
+    margin-top: 10px;
+}
+
+/* Institutional V4 Intelligence Section (Image 6) */
+.ia-flat-display {
+    background: rgba(18, 18, 28, 0.4);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-top: 24px;
+}
+
+.ia-reason-box {
+    border-left: 4px solid #6c63ff;
+    background: rgba(108, 99, 255, 0.05);
+    padding: 16px;
+    border-radius: 0 8px 8px 0;
+}
+
+.reason-label {
+    color: #6c63ff;
+    font-weight: 800;
+    text-transform: uppercase;
+    font-size: 0.7rem;
+    margin-bottom: 8px;
+    opacity: 0.8;
+}
+
+.ia-reason-text {
+    font-size: 0.95rem;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+
+.impact-tag {
+    font-size: 0.75rem;
+    font-weight: 800;
+    padding: 4px 12px;
+    border-radius: 99px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    display: inline-flex;
+    align-items: center;
+}
+
+.impact-tag.impact-positive { background: rgba(0, 212, 170, 0.15); color: #00d4aa; border: 1px solid rgba(0, 212, 170, 0.3); }
+.impact-tag.impact-negative { background: rgba(255, 71, 87, 0.15); color: #ff4757; border: 1px solid rgba(255, 71, 87, 0.3); }
+.impact-tag.impact-neutral { background: rgba(255, 255, 255, 0.05); color: var(--text-muted); border: 1px solid var(--border); }
+
+/* Centered Analyze Button in Modal */
+.modal-analyze-center .analyze-btn-sm {
+    background: linear-gradient(135deg, #6c63ff, #4338ca);
+    color: #fff;
+    border: none;
+    box-shadow: 0 4px 15px rgba(108, 99, 255, 0.3);
+    transition: all 0.2s ease;
+}
+
+.modal-analyze-center .analyze-btn-sm:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(108, 99, 255, 0.4);
+}
+
