@@ -184,10 +184,14 @@ Examples:
 
 NOISE
 Use when:
-- no actionable event exists
-- article is opinion / explainer / watchlist / commentary
-- purely descriptive price recap with no new event
-- no India-specific market transmission exists
+- no meaningful new change is identified
+- or the article contains no clear first-order business/economic consequence
+- or India linkage is absent
+- or the impact thesis is too vague to justify market relevance
+
+Do NOT classify based only on article format or label
+(e.g. commentary, explainer, opinion, analysis).
+Classify based on the presence or absence of a real change and a defensible economic consequence.
 
 ==================================================
 EVIDENCE VS INFERENCE CHECK (LIGHT CONTROL)
@@ -410,6 +414,19 @@ Evaluate Remaining Edge based on provided metrics:
 2. `absorption_strength`: If this is `MODERATE_ABSORPTION` or `STRONG_ABSORPTION`, momentum continuation is highly valid.
 3. `EXPECTED_CONTINUITY`: Does not automatically imply no edge. Evaluate remaining edge based on materiality, reaction quality, absorption, and current-time context. Do not reflexively kill these trades. However, if the impact is low or the move is already fully absorbed, do not mark actionable.
 4. `EXPECTED_SURPRISE`: Filter this through reaction quality. An expected event with a surprising outcome is only actionable if it hasn't already overreacted.
+
+
+FORMAT-NEUTRAL REASONING RULE
+
+Do NOT classify an item as DIRECT, AMBIGUOUS, WEAK_PROXY, or NOISE
+based only on the article format or label
+(e.g. explainer, commentary, opinion, analysis, interview, market wrap).
+
+Always decide from:
+1. what changed,
+2. whether that change is confirmed,
+3. whether it creates a first-order economic consequence,
+4. and whether Indian equity linkage is clear.
 
 ==================================================
 CONFIDENCE RULES
