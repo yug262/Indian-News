@@ -2388,36 +2388,18 @@ function syncNewsOverlay() {
             return;
         }
 
-        // Find candle price for anchor Y (SUPER-ROBUST Lookup)
-        let anchorY = null;
-        if (window.chartCandleData && window.chartCandleData.length > 0) {
-            let closest = null;
-            let minDiff = Infinity;
+        // Find candle HIGH for anchor Y
+        let dotY = 0; // relative to group origin; group is placed at candle high
+        let anchorY = containerH * 0.45;
+        if (window.chartCandleData) {
             for (let i = 0; i < window.chartCandleData.length; i++) {
                 const c = window.chartCandleData[i];
-                const diff = Math.abs(c.time - time);
-                if (diff < minDiff) {
-                    minDiff = diff;
-                    closest = c;
-                }
-                // Stop if we've passed the news time by a reasonable amount
-                if (c.time > time + 43200) break; // 12h
-            }
-
-            // Wide fallback window to ensure dots are pinned to nearest price
-            if (closest && minDiff < 43200) { 
-                if (lwCandleSeries && typeof lwCandleSeries.priceToCoordinate === 'function') {
-                    const yp = lwCandleSeries.priceToCoordinate(closest.high);
-                    if (yp !== null && !isNaN(yp)) {
-                        anchorY = yp - 8; // Pin above the wick
-                    }
+                if (c.time >= time) {
+                    const yp = lwCandleSeries.priceToCoordinate(c.high);
+                    if (yp !== null && !isNaN(yp)) anchorY = yp;
+                    break;
                 }
             }
-        }
-        
-        // Final fallback to chart center if no price found
-        if (anchorY === null) {
-            anchorY = containerH * 0.45;
         }
 
         // Place group at the candle's high coordinate
