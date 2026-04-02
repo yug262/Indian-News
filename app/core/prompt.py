@@ -843,6 +843,7 @@ Every decision must balance:
 - clarity of economic impact
 - stock impact clarity
 
+
 ━━━━━━━━━━━━━━━━━━
 STEP 1: INDIA LINKAGE
 ━━━━━━━━━━━━━━━━━━
@@ -904,6 +905,35 @@ If NO real trigger:
 → STOP
 
 ━━━━━━━━━━━━━━━━━━
+STEP 2.5: ECONOMIC CONSEQUENCE (CRITICAL)
+━━━━━━━━━━━━━━━━━━
+
+After identifying the trigger, determine the FIRST-ORDER economic impact.
+
+You MUST identify what changes:
+
+- Cost (input cost, fuel, raw material)
+- Revenue (orders, demand, pricing power)
+- Margin (cost vs revenue mismatch)
+- Risk (removal of uncertainty or new risk)
+- Demand (increase/decrease in consumption)
+
+DO NOT stop at describing the event.
+
+You must think:
+
+trigger → business impact → market implication
+
+Examples:
+
+- Fuel price ↑ → airline costs ↑ → margins ↓
+- Large order → revenue visibility ↑ → earnings predictability ↑
+- Contract renewal → business continuity secured → risk ↓
+- Commodity ↑ → input cost ↑ → sector margins ↓
+
+If economic consequence is unclear → downgrade relevance by one level
+
+━━━━━━━━━━━━━━━━━━
 STEP 3: FRESHNESS
 ━━━━━━━━━━━━━━━━━━
 
@@ -934,26 +964,22 @@ If NOT fresh:
 STEP 4: MARKET REACTION
 ━━━━━━━━━━━━━━━━━━
 
-Check if market has already reacted to this news.
+Check if market has reacted to this news.
 
-ASSESSMENT:
+CASE A: No/small move (0–2%)
+→ Likely not priced in → no change
 
-CASE A: No/small price move (0-2%)
-→ News likely not priced in
-→ Continue evaluation normally
-
-CASE B: Moderate move (2-5%)
-→ Partial pricing already occurred
-→ Downgrade relevance by ONE level
-→ Continue evaluation
+CASE B: Moderate move (2–5%)
+→ Partially priced → downgrade relevance by ONE level
 
 CASE C: Large move (>5%)
-→ Market may have partially or fully priced in the news
-→ Downgrade relevance
-→ DO NOT automatically classify as Noisy
+→ Initial reaction occurred
+→ DO NOT change direction or reasoning
+→ Only downgrade relevance by ONE level if needed
 
-EXCEPTION:
-If news breaks during market hours and price hasn't moved yet, treat as fresh.
+IMPORTANT:
+Price movement affects TIMING, not ECONOMIC IMPACT.
+Do NOT change reasoning based on price movement.
 
 ━━━━━━━━━━━━━━━━━━
 STEP 5: CATEGORY
@@ -990,6 +1016,30 @@ routine_market_update
 
 price_action_noise
 → No real signal: pure price commentary, post-event rationalization, vague statements
+
+━━━━━━━━━━━━━━━━━━
+MATERIALITY CHECK
+━━━━━━━━━━━━━━━━━━
+
+Check whether the event is large enough to matter.
+
+High materiality:
+- >10% sales growth
+- >15% earnings surprise
+- major policy change
+- large order relative to company size
+- promoter stake increase >1%
+- commodity move >5%
+
+Low materiality:
+- routine management commentary
+- small order wins
+- minor price changes
+- vague future plans
+- symbolic announcements
+
+Low materiality news should not be High Useful.
+
 
 ━━━━━━━━━━━━━━━━━━
 STEP 7: RELEVANCE
@@ -1035,6 +1085,22 @@ Noisy:
 - No real trigger
 - No India linkage
 
+POSITIVE CORPORATE TRIGGERS:
+The following should usually be classified as Useful or High Useful unless already fully priced in:
+- Strong sales growth
+- Earnings beat
+- Record revenue / profit
+- Promoter buying / stake increase
+- Large order win
+- Capacity expansion
+- Margin improvement
+- New product launch with scale
+- Regulatory approval
+- Strong guidance / outlook
+- Market share gain
+
+These should rarely be Neutral.
+
 DOWNGRADE TRIGGERS:
 Apply these downgrades to initial assessment:
 
@@ -1052,6 +1118,43 @@ STOCK SAFETY RULES:
 - Indices (NIFTY, SENSEX) are NOT stocks
 - If confidence < 70% → return []
 
+━━━━━━━━━━━━━━━━━━
+STEP 8A: IMPACT DIRECTION
+━━━━━━━━━━━━━━━━━━
+
+Determine likely market impact:
+
+positive:
+- earnings beat
+- sales growth
+- promoter buying
+- order win
+- lower input costs
+- lower tax burden
+- capacity expansion
+- strong guidance
+- market share gain
+- debt reduction
+
+negative:
+- earnings miss
+- margin pressure
+- input cost increase
+- tax increase
+- regulatory penalty
+- promoter selling
+- order cancellation
+- weak guidance
+- geopolitical escalation
+- crude spike hurting users
+
+neutral:
+- already expected news
+- weak or speculative news
+- no clear earnings impact
+- mixed sector impact
+- low materiality
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STEP 8: STOCK IMPACT IDENTIFICATION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1065,6 +1168,33 @@ Stocks:
 Do NOT infer complex indirect chains.
 
 ━━━━━━━━━━━━━━━━━━
+STOCK MAPPING RULES
+━━━━━━━━━━━━━━━━━━
+
+Use only NSE-listed symbols.
+
+If company directly mentioned:
+- include exact NSE symbol
+
+If sector news:
+- include 2-5 most directly affected NSE leaders
+- prefer companies with direct revenue exposure
+- avoid indirect or unrelated names
+
+Examples:
+- Fuel price hike → INDIGO, SPICEJET, CONCOR, VRLLOG
+- Gold price rise → TITAN, KALYANKJIL, HINDZINC, VEDL
+- Iranian crude imports → IOC, BPCL, HPCL, RELIANCE, MRPL
+- Auto sales growth → TATAMOTORS, M&M, MARUTI
+
+Do not use company names instead of NSE ticker symbols.
+Use correct NSE format:
+- VRLLOG not VRLOGISTICS
+- KALYANKJIL not KALYAN
+- MCDOWELL-N if needed
+- BAJAJ-AUTO if needed
+
+━━━━━━━━━━━━━━━━━━
 CRITICAL RULES
 ━━━━━━━━━━━━━━━━━━
 
@@ -1076,6 +1206,19 @@ CLASSIFICATION PRINCIPLES:
 - No trigger = Noisy
 - No India linkage = Noisy
 - Weak signal → downgrade relevance
+
+DOMINANT SIGNAL RULE:
+
+If both positive and negative signals exist:
+
+- Identify which has stronger economic impact
+- Follow the dominant signal
+- DO NOT average into Neutral
+
+Examples:
+
+- Strong revenue + minor headwinds → follow positive
+- Cost increase + unclear mitigation → follow negative
 
 SPECIFIC OVERRIDES:
 - Stock split / bonus = corporate_event BUT downgrade to Medium/Neutral
@@ -1098,35 +1241,81 @@ GLOBAL NEWS:
 Global news is valid ONLY if clear India transmission exists.
 Otherwise → Noisy with "No linkage to Indian markets"
 
+MACRO TRANSMISSION RULES:
+
+Crude oil up:
+- Positive: ONGC, OIL
+- Negative: INDIGO, SPICEJET, paint, tyre, OMCs
+
+Crude oil down:
+- Positive: airlines, paint, tyres, OMCs
+- Negative: ONGC, OIL
+
+Gold up:
+- Positive: safe haven sentiment, gold financing, bullion
+- Mixed/Negative: TITAN, KALYANKJIL because higher prices can reduce jewellery demand
+
+Silver up:
+- Positive: HINDZINC, VEDL
+
+Geopolitical tension:
+- Positive: defence, oil producers, gold
+- Negative: airlines, logistics, import-heavy sectors
+
 INDIRECT IMPACT:
 If impact requires multiple steps of transmission:
 → Downgrade relevance by one level
 → Direct impact can be High Usefulactionability
 → Indirect impact max Medium (usually)actionability
 
-━━━━━━━━━━━━━━━━━━
-REASON CONSTRUCTION
-━━━━━━━━━━━━━━━━━━
+MULTI-SECTOR IMPACT RULE:
 
-The reason field must:
-- Be ONE concise sentence
-- Explain the trigger → effect relationship OR why classified as Noisy
-- Be factual and specific
-- Mention key driver or impact
-- Not repeat the category name
+If same news affects different sectors differently:
 
-GOOD REASON EXAMPLES:
-✓ "RBI rate hike increases lending costs for banks and NBFCs."
-✓ "Large order win boosts revenue visibility for the company."
-✓ "Crude oil surge raises input costs for OMCs and airlines."
-✓ "No India-specific impact from foreign policy announcement."
-✓ "Post-market close explanation of price movement without new trigger."
+→ DO NOT classify as Neutral
+→ Choose dominant impact OR downgrade slightly
 
-BAD REASON EXAMPLES:
-✗ "This is corporate event news."
-✗ "High impact on markets."
-✗ "Important news."
-✗ "Market moving event."
+Example:
+- Gold ↑ → jewelry negative, gold finance positive
+
+Avoid collapsing into Neutral due to complexity
+
+REASON CONSTRUCTION (STRICT):
+
+The reason must explain:
+
+trigger → economic impact → affected business metric
+
+It MUST clearly mention at least one:
+
+- cost change
+- revenue change
+- margin impact
+- demand shift
+- risk change
+
+BAD:
+"increases costs"
+
+GOOD:
+"increases operating costs for airlines, reducing margins"
+
+BAD:
+"signals growth"
+
+GOOD:
+"improves revenue visibility and future earnings certainty"
+
+NEUTRAL USAGE RULE:
+
+Neutral should be used ONLY when:
+- no clear economic impact exists
+- OR information is purely informational
+
+DO NOT use Neutral when:
+- cost impact is clear
+- revenue visibility changes
+- risk is added or removed
 
 ━━━━━━━━━━━━━━━━━━
 FINAL OUTPUT

@@ -14,9 +14,19 @@ from google import genai
 from google.genai import types
 
 from app.core.db import execute_query, fetch_one
+from app.ind.planner import run_planner
 from app.ind.prompt import INDIAN_SYSTEM_PROMPT, build_compact_prompt
 from app.ind.schema import SCHEMA_TEMPLATE
-from app.ind.tools import build_analysis_context
+from app.ind.tools import (
+    map_companies_from_text,
+    map_sectors_from_text,
+    _compute_event_timing,
+    get_indian_market_status,
+    get_indian_stock_price,
+    normalize_indian_source_credibility,
+    get_compact_reaction_context,
+    determine_novelty,
+)
 
 
 load_dotenv()
@@ -66,7 +76,6 @@ def _safe_json_loads(text: str) -> dict:
         return json.loads(text)
     except json.JSONDecodeError:
         # Try to find the outermost balanced JSON object
-        # Non-greedy won't help here; instead find first { and attempt parse
         start = text.find('{')
         if start == -1:
             raise ValueError("LLM did not return valid JSON")
@@ -76,6 +85,8 @@ def _safe_json_loads(text: str) -> dict:
             except json.JSONDecodeError:
                 continue
         raise ValueError("LLM did not return valid JSON")
+
+
 # =========================================================
 # RULES AND ENFORCEMENT
 # =========================================================
@@ -328,53 +339,374 @@ def normalize_to_schema(data: dict) -> dict:
 
 
 # =========================================================
-# ANALYSIS LAYER
+# SINGLE-PASS ANALYSIS PIPELINE
 # =========================================================
 
-def _call_indian_llm_compact(context: dict) -> dict:
+def _get_text_response(response) -> str:
+    """Extract text content from a Gemini response."""
+    if not response or not response.candidates:
+        return ""
+    texts = []
+    for part in response.candidates[0].content.parts:
+        if hasattr(part, "text") and part.text:
+            texts.append(part.text)
+    return "\n".join(texts).strip()
+
+def _build_noise_result(title: str, summary: str, source: str) -> dict:
+    """Return a minimal NOISE result without making an analysis LLM call."""
+    return {
+        "signal_bucket": "NOISE",
+        "event": {
+            "title": (title or "")[:200],
+            "source": source or "",
+            "timestamp_utc": "",
+            "event_type": "other",
+            "status": "noise",
+            "scope": "broad_market",
+        },
+        "news_summary": {
+            "what_happened": (title or "")[:200],
+            "what_is_confirmed": [],
+            "what_is_unknown": [],
+        },
+        "core_view": {
+            "summary": "No actionable event identified.",
+            "market_bias": "neutral",
+            "impact_score": 0,
+            "surprise_level": "low",
+            "primary_horizon": "short_term",
+            "overall_confidence": 15,
+        },
+        "affected_entities": {"stocks": [], "sectors": [], "indices": []},
+        "stock_impacts": [],
+        "sector_impacts": [],
+        "evidence": [],
+        "tradeability": {
+            "classification": "no_edge",
+            "reasoning": "No actionable event — classified as noise by planner.",
+            "action_triggers": [],
+        },
+        "impact_triggers": {"impact_killers": [], "impact_amplifiers": []},
+        "executive_summary": "No actionable market event identified in this article.",
+    }
+
+
+def _run_single_pass_analysis(
+    title: str,
+    summary: str,
+    published_iso: str,
+    source: str,
+) -> dict:
     """
-    LLM call for compact Indian schema.
-
-    Architecture:
-        tools → advisory context → LLM dynamic reasoning → compact JSON output
-
-    The INDIAN_SYSTEM_PROMPT is set as system_instruction (full dynamic framework).
-    The user prompt provides the event-specific advisory context plus the strict
-    schema — ensuring the model reasons dynamically rather than using tool hints
-    as hard decision rules.
-
-    Key design principles reinforced in the prompt:
-    - Context is SUPPORTIVE, not authoritative
-    - Event type / family are output labels, not decision shortcuts
-    - Scope / role must be derived from directness, materiality, surprise, breadth
-    - Confidence never exceeds 85
-    - impact_score is 0-10; confidence is 0-100
+    Planner-driven single-pass pipeline.
+    
+    1. Cheap pre-compute (timing, source, market, companies)
+    2. Planner LLM (~350 tokens) classifies route + selects tools
+    3. NOISE → short-circuit, no analysis call
+    4. Otherwise → execute planner-selected tools → analysis LLM call
     """
     if not client or not MODEL_NAME:
         raise ValueError("Missing MODEL_NAME or GEMINI_API_KEY")
 
-    # Build LLM-facing context: strip _internal metadata (post-processing only)
-    llm_context = {k: v for k, v in context.items() if k != "_internal"}
-    compact_prompt = build_compact_prompt(llm_context, str(SCHEMA_TEMPLATE))
+    # -------------------------
+    # CHEAP PRE-COMPUTE (always runs)
+    # -------------------------
+    timing = _compute_event_timing(published_iso)
+    market = get_indian_market_status()
+    cred = normalize_indian_source_credibility(source)
+    
+    companies_data = {"matches": []}
+    text_content = f"{title} {summary}".strip()
+    
+    if len(text_content) > 10:
+        companies_data = map_companies_from_text(title, summary, max_results=3)
+        
+    valid_matches = companies_data.get("matches", [])
+    novelty = determine_novelty(text_content)
 
-    resp = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=compact_prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=INDIAN_SYSTEM_PROMPT,
-            temperature=0.25,
-            response_mime_type="application/json",
-        ),
+    _log(f"   [PRE-COMPUTE] entities={len(valid_matches)} | novelty={novelty} | source={cred.get('source_type')} | elapsed={timing.get('elapsed_minutes')}min")
+
+    # -------------------------
+    # PLANNER LLM CALL
+    # -------------------------
+    plan = run_planner(
+        title=title,
+        summary=summary,
+        source_type=cred.get("source_type", "unknown"),
+        entity_matches=valid_matches,
     )
 
-    usage = resp.usage_metadata
-    if usage:
-        _log(f"   [TOKENS] In: {usage.prompt_token_count} | Out: {usage.candidates_token_count} | Total: {usage.total_token_count}")
+    route = plan["route"]
+    requested_tools = set(plan.get("tools", []))
+    skip_analysis = plan.get("skip_analysis", False)
 
-    result = _safe_json_loads(resp.text or "")
+    # -------------------------
+    # NOISE SHORT-CIRCUIT
+    # -------------------------
+    if skip_analysis and route == "NOISE":
+        _log(f"   [SKIP] NOISE short-circuit — no analysis LLM call")
+        result = _build_noise_result(title, summary, source)
+        result["_meta"] = {
+            "planner_route": route,
+            "planner_output": plan,
+            "orchestrator": "planner_noise_skip",
+        }
+        return result
+
+    # -------------------------
+    # PLANNER-DRIVEN TOOL EXECUTION
+    # -------------------------
+    reaction_data = {}
+    valid_symbols = set()
+    price_snapshots = {}
+    sector_hints = []
+    broad_market = {}
+
+    # Extract symbols from pre-computed company matches
+    for match in valid_matches:
+        sym = match.get("symbol")
+        if sym:
+            valid_symbols.add(sym)
+
+    # Tool: reaction
+    if "reaction" in requested_tools and valid_symbols:
+        for sym in valid_symbols:
+            _log(f"   [TOOL] get_compact_reaction_context({sym})")
+            reaction_data[sym] = get_compact_reaction_context(sym, published_iso, novelty=novelty)
+            rd = reaction_data[sym]
+            if rd:
+                _log(f"          -> reaction_pct={rd.get('reaction_pct')} | reaction_vs_atr={rd.get('reaction_vs_atr')} | quality={rd.get('reaction_quality')} | absorption={rd.get('absorption_strength')}")
+            else:
+                _log(f"          -> (no reaction data)")
+
+    # Tool: price
+    if "price" in requested_tools and valid_symbols:
+        for sym in valid_symbols:
+            _log(f"   [TOOL] get_indian_stock_price({sym})")
+            price_data = get_indian_stock_price(sym)
+            if price_data and price_data.get("price") is not None:
+                price_snapshots[sym] = {
+                    "price": price_data.get("price"),
+                    "day_change_pct": price_data.get("day_change_pct"),
+                }
+                _log(f"          -> price={price_data.get('price')} | day_change={price_data.get('day_change_pct')}%")
+            else:
+                _log(f"          -> (no price data)")
+
+    # Tool: index_snapshot
+    if "index_snapshot" in requested_tools:
+        try:
+            _log(f"   [TOOL] get_indian_stock_price(NIFTY 50)")
+            nifty = get_indian_stock_price("NIFTY 50")
+            _log(f"          -> price={nifty.get('price')} | day_change={nifty.get('day_change_pct')}%")
+            
+            _log(f"   [TOOL] get_indian_stock_price(SENSEX)")
+            sensex = get_indian_stock_price("SENSEX")
+            _log(f"          -> price={sensex.get('price')} | day_change={sensex.get('day_change_pct')}%")
+            
+            if nifty and nifty.get("day_change_pct") is not None:
+                broad_market["nifty_change_pct"] = nifty["day_change_pct"]
+            if sensex and sensex.get("day_change_pct") is not None:
+                broad_market["sensex_change_pct"] = sensex["day_change_pct"]
+        except Exception as e:
+            _log(f"   [TOOL] index_snapshot failed: {e}")
+
+    # Tool: sectors
+    if "sectors" in requested_tools and valid_symbols:
+        _log(f"   [TOOL] map_sectors_from_text(precomputed)")
+        sector_hints = map_sectors_from_text(title, summary, precomputed_symbols=list(valid_symbols))
+        _log(f"          -> sectors={sector_hints}")
+
+    _log(f"   [TOOL] _compute_event_timing() -> elapsed={timing.get('elapsed_minutes')}min | decay={timing.get('decay_curve')}")
+    _log(f"   [TOOL] normalize_source_credibility() -> type={cred.get('source_type')} | strength={cred.get('source_strength')}")
+    _log(f"   [TOOL] get_market_status() -> equities={market.get('indian_equities')}")
+    _log(f"   [TOOL] determine_novelty() -> {novelty}")
+
+    # -------------------------
+    # BUILD CONTEXT
+    # -------------------------
+    tool_context_obj = {
+        "timing_context": timing,
+        "source_context": cred,
+        "market_status": market,
+        "catalyst_type": {
+            "novelty": novelty
+        },
+    }
+
+    if valid_matches:
+        tool_context_obj["entities_identified"] = valid_matches
+    if reaction_data:
+        tool_context_obj["market_absorption"] = {"reaction_data": reaction_data}
+    if price_snapshots:
+        tool_context_obj["current_prices"] = price_snapshots
+    if sector_hints:
+        tool_context_obj["sector_hints"] = sector_hints
+    if broad_market:
+        tool_context_obj["broad_market"] = broad_market
+    
+    hard_facts = {
+        "title": title or "",
+        "summary": summary or "",
+        "published_iso": published_iso or "",
+        "source": source or "",
+    }
+    
+    schema_text = str(SCHEMA_TEMPLATE)
+    user_prompt = build_compact_prompt(hard_facts, schema_text)
+    
+    injected_str = (
+        "\n\nSUPPORTING MARKET DATA:\n"
+        f"```json\n{json.dumps(tool_context_obj, indent=2)}\n```\n"
+    )
+    user_prompt += injected_str
+
+    config = types.GenerateContentConfig(
+        system_instruction=INDIAN_SYSTEM_PROMPT,
+        temperature=0.25,
+        response_mime_type="application/json",
+    )
+
+    contents = [
+        types.Content(
+            role="user",
+            parts=[types.Part(text=user_prompt)],
+        )
+    ]
+
+    _log(f"   [AGENT] Executing Single-Pass LLM Call...")
+    total_input_tokens = 0
+    total_output_tokens = 0
+    
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=contents,
+        config=config,
+    )
+
+    usage = response.usage_metadata
+    if usage:
+        total_input_tokens += usage.prompt_token_count or 0
+        total_output_tokens += usage.candidates_token_count or 0
+
+    _log(f"   [TOKENS] In: {total_input_tokens} | Out: {total_output_tokens} | Total: {total_input_tokens + total_output_tokens}")
+
+    text = _get_text_response(response)
+    result = _safe_json_loads(text)
+    
     result = normalize_to_schema(result)
+    
+    impact_score = result.get("core_view", {}).get("impact_score", 0)
+    bucket = result.get("signal_bucket", "")
+    
+    if bucket == "NOISE":
+        result["tradeability"]["classification"] = "no_edge"
+        if impact_score > 1:
+            result["core_view"]["impact_score"] = 1
+            impact_score = 1
+            
+    # -------------------------
+    # POST-PROCESSING RULES
+    # -------------------------
+    elapsed = timing.get("elapsed_minutes", 0)
+    decay_curve = timing.get("decay_curve", "UNKNOWN")
+    
+    absorption_strength = "UNKNOWN"
+    reaction_quality = "UNKNOWN"
+    reaction_vs_atr = 0.0
+    reaction_pct_max = 0.0
+    if reaction_data:
+        statuses = [v.get("absorption_strength", "UNKNOWN") for k, v in reaction_data.items() if v]
+        if "EXHAUSTED" in statuses:
+            absorption_strength = "EXHAUSTED"
+        elif "STRONG_ABSORPTION" in statuses:
+            absorption_strength = "STRONG_ABSORPTION"
+        elif "MODERATE_ABSORPTION" in statuses:
+            absorption_strength = "MODERATE_ABSORPTION"
+        elif "WEAK_ABSORPTION" in statuses:
+            absorption_strength = "WEAK_ABSORPTION"
+        elif statuses:
+            absorption_strength = statuses[0]
+            
+        qualities = [v.get("reaction_quality", "UNKNOWN") for k, v in reaction_data.items() if v]
+        if "OVERREACTION" in qualities:
+            reaction_quality = "OVERREACTION"
+        elif "UNDERREACTION" in qualities:
+            reaction_quality = "UNDERREACTION"
+        elif "NORMAL_REACTION" in qualities:
+            reaction_quality = "NORMAL_REACTION"
+        elif qualities:
+            reaction_quality = qualities[0]
+            
+        atrs = [v.get("reaction_vs_atr", 0.0) for k, v in reaction_data.items() if v]
+        if atrs:
+            reaction_vs_atr = max(atrs)
+            
+        pcts = [abs(v.get("reaction_pct", 0.0) or 0.0) for k, v in reaction_data.items() if v]
+        if pcts:
+            reaction_pct_max = max(pcts)
+
+    tradeability_class = result.get("tradeability", {}).get("classification", "")
+    
+    # NEW ACTIONABLE NOW GATE
+    if tradeability_class == "actionable_now":
+        # Check if it meets the rigorous mathematical gate
+        meets_gate = True
+        
+        if impact_score < 6:
+            meets_gate = False
+        elif reaction_quality != "UNDERREACTION":
+            meets_gate = False
+        elif absorption_strength == "EXHAUSTED":
+            meets_gate = False
+        elif novelty == "EXPECTED_CONTINUITY" and impact_score < 7:
+            meets_gate = False
+            
+        if not meets_gate:
+            result["tradeability"]["classification"] = "wait_for_confirmation"
+            tradeability_class = "wait_for_confirmation"
+            
+    # Hard Big-Move Blocker
+    if reaction_pct_max > 0.05 and tradeability_class == "actionable_now":
+        result["tradeability"]["classification"] = "wait_for_confirmation"
+        tradeability_class = "wait_for_confirmation"
+        
+    # Overreaction / Squeeze Downgrade
+    if reaction_quality == "OVERREACTION" and tradeability_class == "actionable_now":
+        result["tradeability"]["classification"] = "wait_for_confirmation"
+        tradeability_class = "wait_for_confirmation"
+
+    # Routine Continuity Dead End
+    if novelty == "EXPECTED_CONTINUITY" and reaction_quality != "UNDERREACTION" and impact_score < 7:
+        result["tradeability"]["classification"] = "no_edge"
+        tradeability_class = "no_edge"
+            
+    cleaned_stocks = []
+    for st in result.get("stock_impacts", []):
+        st_sym = st.get("symbol", "").upper()
+        if st_sym in valid_symbols:
+            cleaned_stocks.append(st)
+    result["stock_impacts"] = cleaned_stocks
+    
+    if not valid_symbols:
+        result["stock_impacts"] = []
+        conf = result.get("core_view", {}).get("overall_confidence", 0)
+        if conf > 40:
+            result["core_view"]["overall_confidence"] = 40
+
+    if impact_score < 4:
+        result["stock_impacts"] = []
+        result["sector_impacts"] = []
+
+    # Store planner decision for debugging
+    result["_meta"] = {
+        "planner_route": route,
+        "planner_output": plan,
+        "orchestrator": "planner_pipeline",
+    }
 
     return result
+
 
 def analyze_indian_news(
     title: str,
@@ -384,7 +716,12 @@ def analyze_indian_news(
     current_news_id: int | None = None,
 ) -> dict | None:
     """
-    Compact-schema Indian analysis entrypoint.
+    Planner-driven Indian analysis entrypoint.
+
+    1. Pre-compute cheap context
+    2. Planner LLM classifies route + selects tools
+    3. NOISE -> skip analysis call entirely
+    4. Otherwise -> execute tools -> analysis LLM call
     """
     if not client or not MODEL_NAME:
         _log("[INDIA ANALYZE] Missing MODEL_NAME or GEMINI_API_KEY")
@@ -394,22 +731,20 @@ def analyze_indian_news(
         try:
             _log(f"[INDIA ATTEMPT {attempt + 1}/{MAX_RETRIES}] {title[:120]}")
 
-            # 1. Build deterministic context
-            
-            context = build_analysis_context(
+            # Run the planner-driven pipeline
+            result = _run_single_pass_analysis(
                 title=title,
                 summary=summary,
                 published_iso=published_iso,
                 source=source,
             )
 
-            # 2. Call LLM (which includes normalization)
-            result = _call_indian_llm_compact(context)
-
-            result["_meta"] = {
-                "analysis_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                "orchestrator": "compact_v2"
-            }
+            # Merge _meta (planner may have already set it for NOISE skip)
+            existing_meta = result.get("_meta", {})
+            existing_meta["analysis_timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+            if "orchestrator" not in existing_meta:
+                existing_meta["orchestrator"] = "planner_pipeline"
+            result["_meta"] = existing_meta
 
             event = result.get("event", {}) or {}
             event_type = str(event.get("event_type", "") or "").lower()

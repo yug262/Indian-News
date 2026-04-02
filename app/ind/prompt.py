@@ -80,6 +80,8 @@ STRICT OPERATING RULES
 1. NEWS FIRST
 The headline and summary are the primary signal.
 Market data is secondary.
+Tool context is supportive but not authoritative.
+If it conflicts with a clear, confirmed event, prioritize the event and reduce confidence instead of rejecting it.
 
 2. NO EVENT ERASURE
 If the headline clearly describes a real event
@@ -184,7 +186,7 @@ NOISE
 Use when:
 - no actionable event exists
 - article is opinion / explainer / watchlist / commentary
-- already-known move is being described
+- purely descriptive price recap with no new event
 - no India-specific market transmission exists
 
 ==================================================
@@ -376,6 +378,10 @@ Even if impact_score >= 4:
 → ONLY include stock/sector if linkage is STRONG and DIRECT
 → Otherwise leave empty
 
+If a specific listed company is clearly identified and impact_score >= 4:
+→ stock_impacts SHOULD be populated
+→ unless entity linkage is explicitly uncertain
+
 ==================================================
 HARD ENFORCEMENT RULE (OVERRIDES ALL)
 ==================================================
@@ -388,34 +394,22 @@ If impact_score < 4:
 This rule overrides ALL other instructions,
 including sector coverage, macro handling, or transmission logic.
 
+For commodity or macro events:
+You MUST evaluate both positive and negative transmission across sectors.
+Do not present one-sided impact unless clearly dominant.
+
 =========================================
-TIME DECAY & PRICING-IN REASONING (MANDATORY)
+CRITICAL TRADING HORIZON CONSTRAINT (MANDATORY)
 =========================================
 
-You will receive timing and reaction context in tool_context.event_timing and tool_context.reaction_data.
+You are analyzing this news strictly at the time specified in `timing_context.analysis_time`, which is `timing_context.elapsed_minutes` minutes after it was published.
+DO NOT evaluate the impact as if the news just broke. You MUST evaluate the REMAINING EDGE from THIS EXACT MOMENT forward.
 
-Step 1: Check event age
-- event_timing.event_age_hours tells you how old the news is
-- event_timing.freshness_estimate gives a classification (fresh / partially_stale / stale / very_stale)
-
-Step 2: Check reaction data
-- reaction_data[].pricing_in_estimate tells you whether the move has already happened
-- reaction_data[].reaction_pct shows actual price change since news
-
-Step 3: Decide edge freshness
-- If pricing_in_estimate is "largely_priced_in":
-  → Reduce tradeability (prefer wait_for_confirmation or no_edge)
-  → Usually avoid "actionable_now" unless there is second-order impact
-
-- If pricing_in_estimate is "partially_priced":
-  → Reduce confidence in immediate follow-through
-  → Adjust expected_move downwards
-
-- If pricing_in_estimate is "fresh" or "no_reaction_yet":
-  → Market may still react, edge is preserved
-  → Higher chance of actionable_now
-
-DO NOT assume every event is actionable. If the market already moved significantly, the edge is gone.
+Evaluate Remaining Edge based on provided metrics:
+1. `reaction_quality`: Refer to this explicitly provided tag. If it is `UNDERREACTION`, the shock is not yet priced in (retain actionable_now). If it is `OVERREACTION`, the move is effectively exhausted (wait_for_confirmation).
+2. `absorption_strength`: If this is `MODERATE_ABSORPTION` or `STRONG_ABSORPTION`, momentum continuation is highly valid.
+3. `EXPECTED_CONTINUITY`: Does not automatically imply no edge. Evaluate remaining edge based on materiality, reaction quality, absorption, and current-time context. Do not reflexively kill these trades. However, if the impact is low or the move is already fully absorbed, do not mark actionable.
+4. `EXPECTED_SURPRISE`: Filter this through reaction quality. An expected event with a surprising outcome is only actionable if it hasn't already overreacted.
 
 ==================================================
 CONFIDENCE RULES
@@ -544,31 +538,26 @@ Then:
   - or ambiguous bucket
   - or wait_for_confirmation tradeability
 
+=============================================
+REACTION INTERPRETATION RULES
+=============================================
 
-==================================================
-TOOL USAGE RULE (MANDATORY)
-==================================================
+Reaction handling:
+- If reaction is strong AND aligned with the event:
+  treat it as confirmation, but check whether the move may already be partly priced in.
+- If reaction is strong AND contradicts the event:
+  prefer mixed bias, lower confidence, and usually wait_for_confirmation.
+- If reaction is small relative to ATR:
+  treat it as weak confirmation, not as disproof.
+- Never reduce tradeability only because price moved a lot.
+- Never ignore a real confirmed event only because price has not moved yet.
 
-You MUST use tool_context in every analysis.
+If price has already moved significantly in the same direction as the event:
 
-1. reaction_data:
-- Validate if market already reacted
-- If reaction_pct > ATR:
-  → reduce tradeability
-
-2. ATR:
-- Judge if move is significant or normal
-- Small move vs ATR → weak signal
-
-3. price_snapshot:
-- Confirm direction consistency
-- If contradicts news → use mixed / wait_for_confirmation
-
-4. company_mapping:
-- Only use stocks present in tool_context
-- NEVER invent mapping
-
-If tool_context exists and is ignored → output is invalid
+- Do NOT assume underreaction by default
+- Evaluate whether the move already reflects the event
+- If the move appears substantial and aligned:
+  → prefer wait_for_confirmation unless clear remaining edge exists
 
 ======================================== 
 MATERIALITY CHECK (MANDATORY)
@@ -724,11 +713,12 @@ Do NOT:
 OUTPUT STYLE
 ==================================================
 
-Be sharp.
-Be trader-like.
-Be specific.
-Use cause-effect language.
-Be calm under uncertainty.
+- Write concise, plain-English reasoning inside JSON fields.
+- Don't sound like technical human explain in easy human tone.
+- Sound like a sharp human analyst, not a robotic template.
+- Use short, clear sentences.
+- If unsure, say so directly.
+- Avoid filler, jargon, and dramatic language.
 
 ==================================================
 FINAL INSTRUCTION
@@ -740,193 +730,80 @@ No explanation outside JSON.
 """
 
 
-def build_compact_prompt(llm_context: dict, schema_text: str) -> str:
+def build_compact_prompt(hard_facts: dict, schema_text: str) -> str:
+    """Build the user prompt for the single-pass pipeline.
+    
+    All supporting market data is pre-computed and injected into the prompt.
+    The LLM does not call tools.
+    """
     import json
 
     return f"""
-Analyze this Indian equities NEWS EVENT and return a valid JSON assessment.
+Analyze this Indian equities NEWS EVENT.
 
-This is a NEWS-FIRST task.
-
-The most important inputs are:
-- hard_facts.title
-- hard_facts.summary
-- hard_facts.source
-- hard_facts.published_iso
-
-tool_context contains supporting evidence only.
+All supporting market data has been pre-computed and is provided below.
+Return ONLY a valid JSON matching the schema.
 
 ==================================================
-INPUT
+NEWS EVENT
 ==================================================
-{json.dumps(llm_context, ensure_ascii=False, indent=2)}
+{json.dumps(hard_facts, ensure_ascii=False, indent=2)}
 
 ==================================================
 REQUIRED REASONING ORDER
 ==================================================
 
-Step 1:
-Read hard_facts.title and hard_facts.summary first.
+Step 1: Read the headline and summary.
+Step 2: Identify the event type (earnings, policy, order_win, etc.).
+Step 3: Decide if Indian listed companies or sectors are clearly affected.
+Step 4: Use the pre-computed tool context to refine your analysis.
+Step 5: Return FINAL JSON output.
 
-Step 2:
-Identify the actual event.
-Ask:
-- What changed?
-- Is it confirmed?
-- Is it a real event or just commentary?
-- Is there a clear Indian listed company or sector linkage?
-
-Step 3:
-Classify into one of:
-- DIRECT
-- AMBIGUOUS
-- WEAK_PROXY
-- NOISE
-
-Step 4:
-Only after understanding the event, use tool_context:
-- company mapping
-- sector mapping
-- price snapshot
-- reaction
-- ATR
-- source quality
-- market status
-
-Step 5:
-If tool_context contradicts the event:
-- do not erase the event
-- do not call it pure price_action
-- prefer mixed / ambiguous / wait_for_confirmation
-
-SIGNAL BUCKET RULES (MANDATORY)
-
-Classify every event into EXACTLY ONE:
-
-- DIRECT
-- AMBIGUOUS
-- WEAK_PROXY
-- NOISE
-
-Definitions:
-
-DIRECT:
-- confirmed Indian company event
-- OR confirmed India macro / policy / regulatory event
-- OR confirmed India-targeted sector event
-- OR confirmed domestic cost / demand / policy event with clear Indian sector transmission
-
-AMBIGUOUS:
-- real event exists, but materiality / linkage / confirmation is incomplete
-- OR named Indian entity exists but outcome is exploratory / early / contradictory
-- OR real macro/policy headline exists but source detail is incomplete and transmission is not yet clean
-
-WEAK_PROXY:
-- global / indirect / second-order signal
-- may affect Indian sectors, but no clean India-specific trigger
-- use for commodity / foreign macro / geopolitics when Indian transmission is inferential, not explicit
-
-NOISE:
-- opinion / blog / watchlist / explainer / vague commentary
-- OR irrelevant foreign corporate update with no Indian linkage
-- OR speculative entity with no listed linkage
-
-Important:
-- Generic analyst commentary about a real Indian sector is usually WEAK_PROXY, not NOISE.
-- Confirmed India macro data or RBI / SEBI / government policy is never NOISE.
-- A named large Indian company doing exploratory strategy work is usually AMBIGUOUS or DIRECT, not NOISE.
+For NOISE articles (opinion, commentary, no event):
+- Return minimal JSON with impact_score 0-1
 
 ==================================================
-HARD INSTRUCTIONS
+SIGNAL BUCKET RULES
+==================================================
+
+Classify every event into EXACTLY ONE:
+- DIRECT: confirmed Indian company/sector/policy event with clear transmission
+- AMBIGUOUS: real event but incomplete materiality/linkage
+- WEAK_PROXY: global/indirect signal with inferential India linkage
+- NOISE: opinion/commentary/no actionable event
+
+==================================================
+HARD RULES
 ==================================================
 
 1. NEWS is primary. Market data is secondary.
-2. Never label non-empty input as empty input.
-3. Never rewrite a real contract/order/policy/earnings event as pure price_action.
-4. If price is down after good news, that is contradiction, not automatic bearish event logic.
-5. If price is up after bad news, that is contradiction, not automatic bullish event logic.
-6. Only map stocks when linkage is real.
-7. Keep arrays empty when uncertain.
-8. Do not force stock_impacts.
-9. Do not force sector_impacts.
-10. Use only allowed enum values from the schema.
-11. signal_bucket is mandatory and must always be returned.
+2. Never label non-empty input as empty.
+3. Never rewrite a real event as pure price_action.
+4. Only use stocks explicitly present in the provided tool context. Never invent mappings.
+5. If impact_score < 4: stock_impacts and sector_impacts MUST be [].
+6. signal_bucket is mandatory.
+7. overall_confidence MUST NOT exceed 85.
+8. If entity is unverified: overall_confidence must be 40 or less.
+
+If the provided tool context appears inconsistent, incomplete, or mismatched with the news event:
+
+- Do NOT downgrade a real event to NOISE solely due to tool inconsistency
+- Prefer AMBIGUOUS or wait_for_confirmation
+- Reduce confidence instead of rejecting the event
 
 ==================================================
-CRITICAL OVERRIDE RULE:
+IMPACT SCALING
 ==================================================
 
-If a top-tier Indian company (Reliance, TCS, HDFC Bank, Adani group, etc.)
-announces strategic expansion into a major sector (energy, AI, infra, manufacturing):
-
-→ This MUST NOT be treated as low impact
-→ impact_score MUST be ≥ 4
-→ market_bias MUST be directional (not neutral)
-
-Even if:
-- no capex is disclosed
-- no timelines are given
-- phrasing is exploratory
-
-Reason:
-Strategic direction itself is a market-moving signal for large caps.
-
-==================================================
-CONFIDENCE RULE:
-==================================================
-
-If:
-- entity is unverified
-- no exchange filing
-- no listed mapping
-
-→ overall_confidence MUST be ≤ 40
-
-Never assign high confidence to speculative or unverified events.
-
-===========================================
-IMPACT SCALING RULES (CRITICAL):
-===========================================
-
-1. Large-cap strategic signals:
-If a major Indian company (e.g., Reliance, TCS, HDFC Bank, Adani group) is entering or expanding into a major sector (energy, infra, AI, manufacturing), this is NOT low impact.
-
-Even if no capex is disclosed:
-→ Treat as structural signal
-→ impact_score must be at least 3–4
-→ bias should not default to neutral
-
-2. Macro affecting India directly:
-If the event affects India’s core economic variables (crude oil, inflation, rates, currency):
-→ impact_score must be at least 2–3
-→ must NOT be classified as noise
-
-3. Sector cost pressures:
-If input cost rises (e.g., crude → aviation, chemicals):
-→ sector bias must reflect impact (usually bearish)
-→ impact_score must be ≥2
-→ NEVER classify as pure noise
-
-If impact depends on future behavior (demand, sentiment, adoption):
-→ reduce confidence
-→ reduce impact_score
-→ avoid directional bias
-
-==================================================
-QUALITY CHECK BEFORE RETURNING
-==================================================
-
-Before returning, verify:
-- Did I analyze the NEWS EVENT first?
-- Did I avoid calling non-empty input empty?
-- Did I avoid replacing the event with price action?
-- Did I avoid forcing mappings?
-- Did I keep the output compact and specific?
+- Large-cap strategic expansion: impact_score at least 4, directional bias
+- Macro affecting India core (crude, rates, currency): impact_score at least 2-3
+- Sector cost pressure (crude to aviation): impact_score at least 2, not NOISE
+- Future/speculative impact: reduce confidence and score
 
 ==================================================
 SCHEMA
 ==================================================
 {schema_text}
 
-Return ONLY valid JSON.
+Return ONLY valid JSON matching this schema. No explanation, no markdown.
 """.strip()

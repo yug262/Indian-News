@@ -709,27 +709,24 @@ def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter
     try:
         if symbol:
             clean_symbol = symbol.replace("NSE:", "").upper()
-            
             query = """
-            SELECT id, title, published, affected_stocks
+            SELECT id, title, published, symbols
             FROM indian_news
-            WHERE affected_stocks IS NOT NULL 
-              AND affected_stocks::text != '[]'
+            WHERE symbols IS NOT NULL 
+              AND array_length(symbols, 1) > 0
               AND (
-                affected_stocks @> %s::jsonb
+                symbols @> ARRAY[%s]
               )
             ORDER BY published DESC
             LIMIT 500
             """
-            
-            p1 = json.dumps([clean_symbol])
-            rows = fetch_all(query, (p1,))
+            rows = fetch_all(query, (clean_symbol,))
         else:
             query = """
-            SELECT id, title, published, affected_stocks
+            SELECT id, title, published, symbols
             FROM indian_news
-            WHERE affected_stocks IS NOT NULL 
-              AND affected_stocks::text != '[]'
+            WHERE symbols IS NOT NULL 
+              AND array_length(symbols, 1) > 0
             ORDER BY published DESC
             LIMIT 500
             """
@@ -737,12 +734,9 @@ def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter
         
         data = []
         for r in rows:
-            affected_stocks = r.get("affected_stocks", [])
-            if isinstance(affected_stocks, str):
-                try:
-                    affected_stocks = json.loads(affected_stocks)
-                except json.JSONDecodeError:
-                    affected_stocks = []            
+            # Column in DB is 'symbols' (text[])
+            syms = r.get("symbols", [])
+            
             p = r["published"]
             if hasattr(p, "isoformat"):
                 if p.tzinfo is None:
@@ -755,7 +749,7 @@ def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter
                 "id": r["id"],
                 "title": r["title"],
                 "published": p_str,
-                "affected_stocks": affected_stocks if isinstance(affected_stocks, list) else []
+                "affected_stocks": syms if isinstance(syms, list) else []
             })
         
         return {"status": "success", "symbol": symbol, "count": len(data), "data": data}

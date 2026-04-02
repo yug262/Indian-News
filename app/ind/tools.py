@@ -548,15 +548,21 @@ def map_companies_from_text(title: str, summary: str = "", max_results: int = 5)
 # SECTOR EXTRACTION (DYNAMIC, DB-FIRST)
 # =========================================================
 
-def map_sectors_from_text(title: str, summary: str = "", max_company_matches: int = 5) -> list[str]:
-    company_map = map_companies_from_text(title, summary, max_results=max_company_matches)
+def map_sectors_from_text(title: str, summary: str = "", max_company_matches: int = 5, precomputed_symbols: list[str] | None = None) -> list[str]:
+    """
+    Extract sector labels from DB for companies found in text.
+    If precomputed_symbols is provided, skip the company re-scan.
+    """
+    if precomputed_symbols is not None:
+        symbols = list(precomputed_symbols)
+    else:
+        company_map = map_companies_from_text(title, summary, max_results=max_company_matches)
+        strong_matches = [
+            m for m in company_map.get("matches", [])
+            if m.get("tier") in {"exact", "exact_symbol", "strong"} and m.get("symbol")
+        ]
+        symbols = [m["symbol"] for m in strong_matches]
 
-    strong_matches = [
-        m for m in company_map.get("matches", [])
-        if m.get("tier") in {"exact", "exact_symbol", "strong"} and m.get("symbol")
-    ]
-
-    symbols = [m["symbol"] for m in strong_matches]
     if not symbols:
         return []
 
@@ -680,10 +686,9 @@ def _compute_event_timing(published_iso: str) -> dict:
         now_dt = _to_utc(datetime.now(timezone.utc))
         if not published_iso:
             return {
-                "event_age_minutes": 0,
-                "event_age_hours": 0.0,
-                "freshness_estimate": "unknown",
-                "analysis_timestamp_utc": now_dt.isoformat()
+                "elapsed_minutes": 0,
+                "decay_curve": "UNKNOWN",
+                "analysis_time": now_dt.isoformat()
             }
         
         pub_dt = datetime.fromisoformat(published_iso.strip().replace("Z", "+00:00"))
@@ -691,145 +696,112 @@ def _compute_event_timing(published_iso: str) -> dict:
         
         delta = now_dt - pub_dt
         minutes = int(delta.total_seconds() / 60)
-        hours = round(minutes / 60.0, 2)
         
-        # Freshness rules
-        if minutes < 30:
-            freshness = "fresh"
-        elif hours <= 4.0:
-            freshness = "partially_stale"
-        elif hours <= 12.0:
-            freshness = "stale"
+        if minutes < 5:
+            decay_curve = "FRESH"
+        elif minutes <= 30:
+            decay_curve = "MATURING"
+        elif minutes <= 60:
+            decay_curve = "AGING"
         else:
-            freshness = "very_stale"
+            decay_curve = "STALE"
             
         return {
-            "event_age_minutes": minutes,
-            "event_age_hours": hours,
-            "freshness_estimate": freshness,
-            "analysis_timestamp_utc": now_dt.isoformat()
+            "elapsed_minutes": minutes,
+            "decay_curve": decay_curve,
+            "analysis_time": now_dt.isoformat()
         }
     except Exception:
+        now_dt = _to_utc(datetime.now(timezone.utc))
         return {
-            "event_age_minutes": 0,
-            "event_age_hours": 0.0,
-            "freshness_estimate": "unknown",
-            "analysis_timestamp_utc": _to_utc(datetime.now(timezone.utc)).isoformat()
+            "elapsed_minutes": 0,
+            "decay_curve": "UNKNOWN",
+            "analysis_time": now_dt.isoformat()
         }
+
 
 # =========================================================
 # MINIMAL AGENT CONTEXT BUILDER
 # =========================================================
 
-def build_minimal_tool_context(
-    title: str,
-    summary: str,
-    published_iso: str,
-    source: str,
-    max_companies: int = 3,
-) -> dict:
+def get_compact_reaction_context(symbol: str, published_iso: str, novelty: str = "UNKNOWN_NOVELTY") -> dict:
     """
-    Clean, minimal tool context for the agent.
-
-    This function does NOT decide bias, impact, or tradeability.
-    It only gathers supporting facts.
+    Returns a compact dict for the LLM exposing only decision-relevant fields.
+    Raw payloads remain internal to Python for logging/debugging.
     """
-    event_timing = _compute_event_timing(published_iso)
+    reaction = calculate_indian_reaction(symbol, published_iso)
+    if not reaction:
+        return {}
 
-    company_map = map_companies_from_text(title, summary, max_results=max_companies)
+    atr = get_indian_asset_atr(symbol)
+    reaction_status = "normal_reaction"
+    
+    reaction_pct = reaction.get("reaction_pct", 0.0)
+    atr_pct_reference = 0.0
+    if atr:
+        atr_pct_reference = atr.get("atr_pct_reference", 0.0)
+        reaction_status = classify_indian_reaction_status(
+            reaction_pct,
+            atr_pct_reference,
+        )
 
-    matched_companies = [
-        m for m in company_map.get("matches", [])
-        if m.get("tier") in {"exact", "exact_symbol", "strong"}
-        and float(m.get("confidence", 0) or 0) >= 0.88
-    ]
+    reaction_vs_atr = 0.0
+    if atr_pct_reference > 0:
+        reaction_vs_atr = round(abs(reaction_pct) / atr_pct_reference, 2)
 
-    sectors = map_sectors_from_text(title, summary, max_company_matches=max_companies)
+    # Expected Move Proxy
+    expected_move_proxy = 1.0 # Default fallback
+    if novelty == "TRUE_CATALYST":
+        expected_move_proxy = 1.5
+    elif novelty == "EXPECTED_SURPRISE":
+        expected_move_proxy = 1.2
+    elif novelty == "EXPECTED_ROUTINE":
+        expected_move_proxy = 0.6
 
-    price_data = []
-    reaction_data = []
+    # Reaction Quality Model
+    reaction_quality = "NORMAL_REACTION"
+    if reaction_vs_atr < (0.5 * expected_move_proxy):
+        reaction_quality = "UNDERREACTION"
+    elif reaction_vs_atr > (1.2 * expected_move_proxy):
+        reaction_quality = "OVERREACTION"
 
-    for match in matched_companies:
-        symbol = (match.get("symbol") or "").strip()
-        if not symbol:
-            continue
+    # Absorption Gradient Model
+    absorption_strength = "WEAK_ABSORPTION"
+    if reaction_vs_atr >= 1.2:
+        absorption_strength = "EXHAUSTED"
+    elif reaction_vs_atr >= 0.8:
+        absorption_strength = "STRONG_ABSORPTION"
+    elif reaction_vs_atr >= 0.3:
+        absorption_strength = "MODERATE_ABSORPTION"
 
-        price_block = get_indian_stock_price(symbol)
-        atr_block = get_indian_asset_atr(symbol)
-        reaction_block = calculate_indian_reaction(symbol, published_iso)
+    return {
+        "reaction_pct": round(reaction_pct, 2) if reaction_pct is not None else None,
+        "status": reaction_status,
+        "absorption_strength": absorption_strength,
+        "reaction_quality": reaction_quality,
+        "atr_pct_reference": round(atr_pct_reference, 4) if atr_pct_reference else None,
+        "reaction_vs_atr": reaction_vs_atr,
+    }
 
-        reaction_status = "normal_reaction"
-        if reaction_block and atr_block:
-            reaction_status = classify_indian_reaction_status(
-                reaction_block.get("reaction_pct", 0.0),
-                atr_block.get("atr_pct_reference", 0.0),
-            )
 
-        # Pricing-in logic
-        pricing_in_estimate = "no_reaction_data"
-        reaction_pct = reaction_block.get("reaction_pct") if reaction_block else None
+def determine_novelty(news_text: str, metadata: str = "") -> str:
+    """
+    Keyword heuristic catching anticipated events vs novel surprises.
+    """
+    text = f"{news_text} {metadata}".lower()
+    routine_keywords = ["in line with", "meets estimates", "as expected", "in-line"]
+    expected_keywords = ["updates", "q1", "q2", "q3", "q4", "results", "expected", "guidance", "continuity", "earnings"]
+    surprise_keywords = ["surprise", "sudden", "unexpected", "shock", "unforeseen", "breakout", "plunge", "unplanned", "beats", "misses", "unexpectedly"]
+
+    has_routine = any(word in text for word in routine_keywords)
+    has_expected = any(word in text for word in expected_keywords)
+    has_surprise = any(word in text for word in surprise_keywords)
+
+    if has_routine and not has_surprise:
+        return "EXPECTED_ROUTINE"
+    if has_expected and has_surprise:
+        return "EXPECTED_SURPRISE"
+    if has_expected and not has_surprise:
+        return "EXPECTED_ROUTINE"
         
-        if reaction_pct is not None:
-            if abs(reaction_pct) < 0.3:
-                pricing_in_estimate = "no_reaction_yet"
-            elif event_timing["freshness_estimate"] == "fresh" and abs(reaction_pct) < 1.0:
-                pricing_in_estimate = "fresh"
-            elif reaction_status in {"strong_reaction", "overreacted"}:
-                pricing_in_estimate = "largely_priced_in"
-            else:
-                pricing_in_estimate = "partially_priced"
-
-        price_data.append(
-            {
-                "symbol": symbol,
-                "company_name": match.get("company_name", ""),
-                "price_snapshot": price_block,
-            }
-        )
-
-        reaction_data.append(
-            {
-                "symbol": symbol,
-                "company_name": match.get("company_name", ""),
-                "reaction": reaction_block,
-                "atr": atr_block,
-                "reaction_status": reaction_status,
-                "pricing_in_estimate": pricing_in_estimate,
-            }
-        )
-
-
-    return {
-        "source_meta": normalize_indian_source_credibility(source),
-        "event_timing": event_timing,
-        "market_status": get_indian_market_status(),
-        "company_mapping": company_map,
-        "sector_mapping": sectors,
-        "price_data": price_data,
-        "reaction_data": reaction_data,
-    }
-
-def build_analysis_context(
-    title: str,
-    summary: str,
-    published_iso: str,
-    source: str,
-    max_companies: int = 3,
-) -> dict:
-    tool_context = build_minimal_tool_context(
-        title=title,
-        summary=summary,
-        published_iso=published_iso,
-        source=source,
-        max_companies=max_companies,
-    )
-
-    return {
-        "hard_facts": {
-            "title": title or "",
-            "summary": summary or "",
-            "published_iso": published_iso or "",
-            "source": source or "",
-        },
-        "tool_context": tool_context,
-    }
+    return "TRUE_CATALYST"

@@ -167,7 +167,13 @@ function renderAllSymbolsBadge(symbols) {
         try { symbolArr = JSON.parse(symbols); } catch { return ''; }
     }
     if (!Array.isArray(symbolArr) || symbolArr.length === 0) return '';
-    return symbolArr.map(sym => `<span class="category-badge" style="background: rgba(255, 193, 7, 0.2); color: #ffca28; border-color: rgba(255, 193, 7, 0.4); font-weight: bold; letter-spacing: 0.5px;">${escapeHtml(sym)}</span>`).join('');
+    return symbolArr.map(sym => `
+        <span class="category-badge clickable-symbol" 
+              style="background: rgba(255, 193, 7, 0.15); color: #ffca28; border-color: rgba(255, 193, 7, 0.3); font-weight: bold; letter-spacing: 0.5px; cursor: pointer; transition: all 0.2s;"
+              onclick="event.stopPropagation(); selectChartPair('${escapeHtml(sym)}')">
+            ${escapeHtml(sym)}
+        </span>
+    `).join('');
 }
 
 function getBiasInfo(bias) {
@@ -399,8 +405,8 @@ function renderImpactBadge(article) {
     if (isAnalyzed) {
         // Show Signal Bucket (High priority visual)
         if (analysis && analysis.signal_bucket) {
-            const bucket = analysis.signal_bucket.toUpperCase();
-            const bucketCls = `bucket-${analysis.signal_bucket.toLowerCase().replace('_', '-')}`;
+            const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
+            const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
             badges += `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px;">${bucket}</span>`;
         }
 
@@ -408,7 +414,7 @@ function renderImpactBadge(article) {
         if (article.impact_score != null) {
             const scoreClass = getScoreClass(article.impact_score);
             const scoreLabel = getScoreLabel(article.impact_score);
-            badges += `<span class="impact-score-badge ${scoreClass}">⚡ ${article.impact_score}/10 · ${scoreLabel}</span>`;
+            badges += `<span class="impact-score-badge ${scoreClass}">⚡ ${article.impact_score}/10</span>`;
         }
     } else {
         // Fallback or legacy impact displays
@@ -417,35 +423,26 @@ function renderImpactBadge(article) {
             let css = 'impact-neutral';
             if (imp === 'positive') css = 'impact-positive';
             if (imp === 'negative') css = 'impact-negative';
-            badges += `<span class="impact-tag ${css}" style="margin-right:6px">📊 ${article.news_impact_level} Impact</span>`;
+            badges += `<span class="impact-tag ${css}" style="margin-right:6px">📊 ${article.news_impact_level}</span>`;
         }
     }
+    return badges;
+}
 
-    // Always show Analyze Button if NOT analyzed
-    if (!isAnalyzed) {
-        const isAnalyzing = analyzingArticles.has(article.id);
-        const btnState = isAnalyzing ? 'disabled' : '';
-        const btnClass = isAnalyzing ? 'analyzing' : '';
-        const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : '✨ Analyze';
-        const symbolsHtml = renderAllSymbolsBadge(article.symbols);
+function renderAnalyzeButton(article) {
+    const isAnalyzed = article.impact_score != null;
+    if (isAnalyzed) return ''; // Already analyzed, don't show another button
 
-        const analyzeBtnHtml = `
-            <div style="display:flex; align-items:center; gap:8px; flex-wrap: wrap;">
-                <button class="analyze-btn analyze-btn-sm ${btnClass}" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
-                     ${btnText}
-                </button>
-                ${symbolsHtml ? `<div style="display:flex; gap:4px; flex-wrap:wrap;">${symbolsHtml}</div>` : ''}
-            </div>
-        `;
+    const isAnalyzing = analyzingArticles.has(article.id);
+    const btnState = isAnalyzing ? 'disabled' : '';
+    const btnClass = isAnalyzing ? 'analyzing' : '';
+    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : '✨ Analyze';
 
-        if (badges) {
-            return `<div class="card-impact-stack"><div class="card-badges-row">${badges}</div><div class="card-analyze-row">${analyzeBtnHtml}</div></div>`;
-        }
-        return analyzeBtnHtml;
-    }
-
-    const analyzedSymbolsHtml = renderAllSymbolsBadge(article.symbols);
-    return badges ? `<div class="card-impact-stack"><div class="card-badges-row">${badges}</div>${analyzedSymbolsHtml ? `<div style="display:flex; gap:4px; margin-top:8px; flex-wrap:wrap;">${analyzedSymbolsHtml}</div>` : ''}</div>` : '';
+    return `
+        <button class="analyze-btn analyze-btn-sm ${btnClass}" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
+             ${btnText}
+        </button>
+    `;
 }
 
 function renderPredictionBadge(article) {
@@ -618,10 +615,10 @@ function renderCardAnalysis(article) {
 
     const analysis = parseJsonField(article.analysis_data);
     const coreView = (analysis && analysis.core_view) ? analysis.core_view : {};
-    
+
     const scoreClass = getScoreClass(article.impact_score);
     const scoreLabel = getScoreLabel(article.impact_score);
-    
+
     // For Indian News, show signal bucket clearly
     const rawBucket = article.signal_bucket || (analysis && analysis.signal_bucket);
     let bucketHtml = '';
@@ -745,7 +742,7 @@ function renderIndianCompactModal(article, analysis) {
         const impactScore = coreView.impact_score || article.impact_score || 0;
         const scoreClass = getScoreClass(impactScore);
         const scoreLabel = getScoreLabel(impactScore);
-        
+
         const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
         const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
 
@@ -761,7 +758,7 @@ function renderIndianCompactModal(article, analysis) {
 
         // Render Entities
         const entityChips = [
-            ...(affected.stocks || []).map(s => `<span class="entity-tag stock">${escapeHtml(s)}</span>`),
+            ...(analysis.symbols || article.symbols || []).map(s => `<span class="entity-tag stock clickable-entity" onclick="event.stopPropagation(); closeModal(); selectChartPair('${escapeHtml(s)}')">${escapeHtml(s)}</span>`),
             ...(affected.sectors || []).map(s => `<span class="entity-tag sector">${escapeHtml(s)}</span>`),
             ...(affected.indices || []).map(s => `<span class="entity-tag index">${escapeHtml(s)}</span>`)
         ].join('');
@@ -827,20 +824,24 @@ function renderIndianCompactModal(article, analysis) {
                     </div>
                 </div>
 
-                <!-- TAB 2: Impacts -->
-                <div id="tab-ia-impacts" class="analysis-tab-panel">
-                    <div class="analysis-sub-section">
-                        <div class="analysis-bars-title">Stock Specific Potential</div>
-                        <div class="forex-pairs-grid">
-                            ${stocks.map(s => `
-                                <div class="forex-pair-card" style="border-left: 3px solid ${(s.bias||'').toLowerCase() === 'bullish' ? 'var(--accent-2)' : (s.bias||'').toLowerCase() === 'bearish' ? '#ff4757' : 'var(--text-muted)'}">
-                                    <div class="forex-pair-header">
-                                        <span class="forex-pair-name">${escapeHtml(s.symbol)}</span>
-                                        <span class="forex-pair-dir ${(s.bias||'').toLowerCase() === 'bullish' ? 'dir-bullish' : (s.bias||'').toLowerCase() === 'bearish' ? 'dir-bearish' : 'dir-neutral'}">${escapeHtml((s.bias||'').toUpperCase())}</span>
-                                        <span style="margin-left:auto; font-size:0.7rem; font-weight:700; color:var(--text-muted)">CONF: ${s.confidence}%</span>
-                                    </div>
-                                    <p style="font-size:0.85rem; color:var(--text-primary); font-weight:600; margin:8px 0;">${escapeHtml(s.company_name)}</p>
-                                    <div style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:8px;"><strong>Role:</strong> ${escapeHtml(s.role)}</div>
+        <!-- TAB 2: Impacts -->
+        <div id="tab-ia-impacts" class="analysis-tab-panel">
+            <div class="analysis-sub-section">
+                <div class="analysis-bars-title">Stock Specific Potential</div>
+                <div class="forex-pairs-grid">
+                    ${stocks.map(s => `
+                        <div class="forex-pair-card" style="border-left: 3px solid ${(s.bias || '').toLowerCase() === 'bullish' ? 'var(--accent-2)' : (s.bias || '').toLowerCase() === 'bearish' ? '#ff4757' : 'var(--text-muted)'}; position: relative;">
+                            <button class="chart-link-btn" onclick="event.stopPropagation(); closeModal(); selectChartPair('${escapeHtml(s.symbol)}')" title="View ${escapeHtml(s.symbol)} on Chart"
+                                    style="position: absolute; top: 12px; right: 12px; background: rgba(108, 99, 255, 0.15); border: none; border-radius: 6px; width: 28px; height: 28px; color: var(--accent-1); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                            </button>
+                            <div class="forex-pair-header">
+                                <span class="forex-pair-name">${escapeHtml(s.symbol)}</span>
+                                <span class="forex-pair-dir ${(s.bias || '').toLowerCase() === 'bullish' ? 'dir-bullish' : (s.bias || '').toLowerCase() === 'bearish' ? 'dir-bearish' : 'dir-neutral'}">${escapeHtml((s.bias || '').toUpperCase())}</span>
+                                <span style="margin-left:auto; font-size:0.7rem; font-weight:700; color:var(--text-muted); margin-right: 32px;">CONF: ${s.confidence}%</span>
+                            </div>
+                            <p style="font-size:0.85rem; color:var(--text-primary); font-weight:600; margin:8px 0;">${escapeHtml(s.company_name)}</p>
+                            <div style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:8px;"><strong>Role:</strong> ${escapeHtml(s.role)}</div>
                                     <p style="font-size:0.8rem; color:var(--text-secondary); line-height:1.4;">${escapeHtml(s.why)}</p>
                                     ${s.invalidation ? `<div style="margin-top:8px; font-size:0.7rem; color:#ff4757; font-style:italic;">🛑 ${escapeHtml(s.invalidation)}</div>` : ''}
                                 </div>
@@ -851,10 +852,10 @@ function renderIndianCompactModal(article, analysis) {
                         <div class="analysis-bars-title">Sector Wide Impacts</div>
                         <div class="forex-pairs-grid">
                             ${sectors.map(sec => `
-                                <div class="forex-pair-card" style="border-left: 3px solid ${(sec.bias||'').toLowerCase() === 'bullish' ? 'var(--accent-2)' : (sec.bias||'').toLowerCase() === 'bearish' ? '#ff4757' : 'var(--text-muted)'}">
+                                <div class="forex-pair-card" style="border-left: 3px solid ${(sec.bias || '').toLowerCase() === 'bullish' ? 'var(--accent-2)' : (sec.bias || '').toLowerCase() === 'bearish' ? '#ff4757' : 'var(--text-muted)'}">
                                     <div class="forex-pair-header">
                                         <span class="forex-pair-name">${escapeHtml(sec.sector)}</span>
-                                        <span class="forex-pair-dir ${(sec.bias||'').toLowerCase() === 'bullish' ? 'dir-bullish' : (sec.bias||'').toLowerCase() === 'bearish' ? 'dir-bearish' : 'dir-neutral'}">${escapeHtml((sec.bias||'').toUpperCase())}</span>
+                                        <span class="forex-pair-dir ${(sec.bias || '').toLowerCase() === 'bullish' ? 'dir-bullish' : (sec.bias || '').toLowerCase() === 'bearish' ? 'dir-bearish' : 'dir-neutral'}">${escapeHtml((sec.bias || '').toUpperCase())}</span>
                                     </div>
                                     <p style="font-size:0.8rem; color:var(--text-secondary); margin-top:8px; line-height:1.4;">${escapeHtml(sec.why)}</p>
                                     <div style="margin-top:8px; display:flex; justify-content:space-between; font-size:0.65rem; color:var(--text-muted);">
@@ -885,7 +886,7 @@ function renderIndianCompactModal(article, analysis) {
                                 <div style="padding:10px; background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
                                     <div style="font-size:0.8rem; color:var(--text-secondary); flex:1;">${escapeHtml(e.detail)}</div>
                                     <div style="display:flex; gap:8px; align-items:center; margin-left:12px;">
-                                        <span class="impact-pill ${(e.strength||'').toLowerCase() === 'high' ? 'impact-pos' : (e.strength||'').toLowerCase() === 'low' ? 'impact-neg' : 'impact-neu'}">${escapeHtml((e.strength||'').toUpperCase())}</span>
+                                        <span class="impact-pill ${(e.strength || '').toLowerCase() === 'high' ? 'impact-pos' : (e.strength || '').toLowerCase() === 'low' ? 'impact-neg' : 'impact-neu'}">${escapeHtml((e.strength || '').toUpperCase())}</span>
                                         <span style="font-size:0.65rem; color:var(--text-muted); font-weight:700;">${e.confidence}%</span>
                                     </div>
                                 </div>
@@ -1086,12 +1087,23 @@ function openModal(article) {
         </div>
 
         ${descriptionHtml}
+
+        ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
+                    <div class="modal-affected-stocks" style="display:flex; align-items:center; gap:10px; margin-bottom: 8px;">
+                        <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span>
+                        <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center;">
+                            ${renderAllSymbolsBadge(article.symbols)}
+                        </div>
+                    </div>
+                    ` : ''}
         
         ${classificationHtml}
         
+        
+
         <div class="modal-action-footer" style="margin-top:32px; display:flex; flex-direction:column; gap:16px;">
             <div class="modal-analyze-center" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:12px 0;">
-                ${article.symbols ? `<div style="display:flex; justify-content:center; gap:6px; flex-wrap:wrap;">${renderAllSymbolsBadge(article.symbols)}</div>` : ''}
+                
                 <button class="analyze-btn analyze-btn-sm ${btnClass}" style="padding:12px 40px; font-size:1rem; border-radius:99px; font-weight:700;" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
                     ${btnText}
                 </button>
@@ -1348,7 +1360,7 @@ document.addEventListener('keydown', (e) => {
 function renderCardTimestamps(article) {
     // Ensure logical display: Source Posted cannot be after Scraped
     const pubTime = article.published > article.created_at ? article.created_at : article.published;
-    
+
     return `
         <div class="card-timestamps">
             <span class="card-timestamp-line"><strong>Source Posted:</strong> ${timeAgo(pubTime)} · ${formatTime(pubTime)}</span>
@@ -1459,26 +1471,42 @@ function renderNews(articles) {
                 ${imageHtml}
                 <div class="card-header-row">
                     <div class="card-header-left">
+                        ${renderImpactBadge(article)}
                         ${renderRelevanceBadge(article.news_relevance)}
                         ${renderCategoryBadge(article.news_category)}
                         <span class="featured-type-badge">${article.featuredType}</span>
                     </div>
-                    <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
+                    <span class="card-source"><span style="color:var(--accent-1); margin-right:4px;">•</span> ${escapeHtml(article.source || 'Unknown')}</span>
                 </div>
+                
                 <h2 class="card-title">${escapeHtml(article.title)}</h2>
-                <div class="card-timestamps-premium">
-                    <div class="ts-row"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
-                    <div class="ts-row"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
-                </div>
                 ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
-                <div class="card-footer">
-                    <div class="card-footer-right">
-                        ${renderImpactBadge(article)}
+                
+                ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
+                <div class="card-affected-stocks" style="display:flex; align-items:center; gap:10px; margin: 16px 0 12px 0;">
+                    <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span>
+                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                        ${renderAllSymbolsBadge(article.symbols)}
                     </div>
                 </div>
-                <div class="card-action-row">
-                    <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
-                        Read Full Article →
+                ` : ''}
+
+                <hr style="border:0; border-top:1px solid var(--border-color); margin:12px 0; opacity:0.15;">
+                
+                <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                    <div class="card-timestamps-premium" style="margin:0;">
+                        <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
+                        <div class="ts-row" style="font-size:0.65rem;"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
+                    </div>
+                    <div class="card-footer-right">
+                        ${renderAnalyzeButton(article)}
+                    </div>
+                </div>
+                
+                <div class="card-action-row" style="margin-top:auto;">
+                    <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-now-btn-premium" onclick="event.stopPropagation()" 
+                       style="display:flex; align-items:center; justify-content:center; width:100%; padding:14px; border-radius:12px; background:linear-gradient(135deg, #6c63ff, #00d4aa); color:white; font-weight:800; text-decoration:none; transition:all 0.3s; box-shadow: 0 4px 15px rgba(108, 99, 255, 0.2);">
+                        Read Now →
                     </a>
                 </div>
             `;
@@ -1505,25 +1533,41 @@ function renderNews(articles) {
             ${imageHtml}
             <div class="card-header-row">
                 <div class="card-header-left">
+                    ${renderImpactBadge(article)}
                     ${renderRelevanceBadge(article.news_relevance)}
                     ${renderCategoryBadge(article.news_category)}
                 </div>
-                <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
+                <span class="card-source"><span style="color:var(--accent-1); margin-right:4px;">•</span> ${escapeHtml(article.source || 'Unknown')}</span>
             </div>
+            
             <h2 class="card-title">${escapeHtml(article.title)}</h2>
-            <div class="card-timestamps-premium">
-                <div class="ts-row"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
-                <div class="ts-row"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
-            </div>
             ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
-            <div class="card-footer">
-                <div class="card-footer-right">
-                    ${renderImpactBadge(article)}
+            
+            ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
+            <div class="card-affected-stocks" style="display:block; padding:10px; background-color:rgba(108, 99, 255, 0.08) align-items:center; gap:10px; margin: 16px 0 12px 0;">
+                <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span><br>
+                <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
+                    ${renderAllSymbolsBadge(article.symbols)}
                 </div>
             </div>
-            <div class="card-action-row">
-                <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
-                    Read Full Article →
+            ` : ''}
+
+            <hr style="border:0; border-top:1px solid var(--border-color); margin:12px 0; opacity:0.15;">
+            
+            <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <div class="card-timestamps-premium" style="margin:0;">
+                    <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
+                    <div class="ts-row" style="font-size:0.65rem;"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
+                </div>
+                <div class="card-footer-right">
+                    ${renderAnalyzeButton(article)}
+                </div>
+            </div>
+            
+            <div class="card-action-row" style="margin-top:auto;">
+                <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-now-btn-premium" onclick="event.stopPropagation()" 
+                   style="display:flex; align-items:center; justify-content:center; width:100%; padding:12px; border-radius:12px; background:linear-gradient(135deg, #6c63ff, #00d4aa); color:white; font-weight:800; text-decoration:none; transition:all 0.3s; box-shadow: 0 4px 15px rgba(108, 99, 255, 0.2);">
+                    Read Now →
                 </a>
             </div>
         `;
@@ -2001,26 +2045,24 @@ async function doChartSearch(query) {
 
 function selectChartPair(symbol) {
     if (!symbol) return;
-    
-    // Sanitize symbol: "USD/INR" -> "USDINR" (unless it has a prefix like "OANDA:")
-    let cleanSymbol = symbol;
-    if (!symbol.includes(':')) {
-        cleanSymbol = symbol.toUpperCase().replace(/[^A-Z0-9]/g, '');
-    }
-    
+
+    // Sanitize symbol: NSE stocks usually don't need "/" etc.
+    let cleanSymbol = symbol.split(':').pop().toUpperCase().replace(/[^A-Z0-9]/g, '');
+
     console.log('[CHART] Selecting pair:', symbol, '-> Clean:', cleanSymbol);
     currentChartSymbol = cleanSymbol;
-    
-    // Open the chart panel (which will call loadChart(currentChartSymbol))
-    if (typeof openChartPanel === 'function') {
-        openChartPanel();
-    }
-    
+
+    // Open the chart panel
+    openChartPanel();
+
     const drop = document.getElementById('chartSearchDrop');
     const input = document.getElementById('chartSearchInput');
     if (drop) drop.style.display = 'none';
-    if (input) input.value = symbol.split(':')[1] || symbol;
-    
+    if (input) input.value = cleanSymbol;
+
+    // Trigger loadChart directly to ensure immediate visual feedback
+    loadChart(cleanSymbol);
+
     // Scroll to chart container
     const chartContainer = document.getElementById('lwChartContainer');
     if (chartContainer) {
@@ -2069,8 +2111,9 @@ async function loadChart(symbol) {
 
 // Refresh only adds new candles to existing chart
 async function refreshChartData(symbol) {
+    if (!symbol || !lwCandleSeries) return;
     const data = await fetchCandleData(symbol);
-    if (!data || !lwCandleSeries) return;
+    if (!data) return;
     // Update all data (handles new candles at end)
     window.chartCandleData = data;
     lwCandleSeries.setData(data);
@@ -2079,6 +2122,47 @@ async function refreshChartData(symbol) {
 
     // Resync overlay if exists
     if (typeof syncNewsOverlay === 'function') syncNewsOverlay();
+}
+
+function startChartRefresh(symbol) {
+    stopChartRefresh();
+    chartRefreshTimer = setInterval(() => {
+        if (document.getElementById('chartOverlay').style.display === 'block') {
+            refreshChartData(symbol);
+        }
+    }, 180000); // 3 mins
+}
+
+function stopChartRefresh() {
+    if (chartRefreshTimer) {
+        clearInterval(chartRefreshTimer);
+        chartRefreshTimer = null;
+    }
+}
+
+function updateChartStats(symbol, data) {
+    const label = document.getElementById('chartSymbolLabel');
+    const price = document.getElementById('chartLastPrice');
+    const change = document.getElementById('chartPriceChange');
+    if (!label || !price || !change) return;
+
+    if (!data || data.length < 1) {
+        label.textContent = symbol;
+        price.textContent = '—';
+        change.textContent = '—';
+        return;
+    }
+
+    const last = data[data.length - 1];
+    const prev = data.length > 1 ? data[data.length - 2] : last;
+    const diff = last.close - prev.close;
+    const pct = ((diff / prev.close) * 100).toFixed(2);
+
+    label.textContent = symbol.toUpperCase();
+    price.textContent = last.close.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    change.textContent = (diff >= 0 ? '+' : '') + pct + '%';
+    change.style.color = diff >= 0 ? '#00d4aa' : '#ff4757';
 }
 
 // ---- Fetch news markers for overlay ----
@@ -2393,11 +2477,10 @@ function displayNewsPanel(newsMarkers) {
         panel = document.createElement('div');
         panel.id = 'chartNewsPanel';
         panel.style.cssText = `
-            margin-top: 0;
+            margin-top: 30px;
             background: var(--bg-card, rgba(18, 18, 28, 0.75));
             border: 1px solid rgba(108, 99, 255, 0.2);
-            border-top: none;
-            border-radius: 0 0 12px 12px;
+            border-radius:12px;
             padding: 16px;
             max-height: 280px;
             overflow-y: auto;
@@ -2798,25 +2881,25 @@ function updateMarketStatus() {
     const now = new Date();
     const istTimeString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
     const istTime = new Date(istTimeString);
-    
+
     const year = istTime.getFullYear();
     const month = String(istTime.getMonth() + 1).padStart(2, '0');
     const date = String(istTime.getDate()).padStart(2, '0');
     const dateStr = `${year}-${month}-${date}`;
-    
+
     const day = istTime.getDay(); // 0 is Sunday, 6 is Saturday
     const hours = istTime.getHours();
     const minutes = istTime.getMinutes();
-    
+
     // Convert to minutes since midnight for easy comparison
     const timeInMins = hours * 60 + minutes;
     const openInMins = 9 * 60 + 15; // 9:15 AM
     const closeInMins = 15 * 60 + 32; // 3:32 PM
-    
+
     const isWeekend = (day === 0 || day === 6);
     const isMarketHours = (timeInMins >= openInMins && timeInMins <= closeInMins);
     const holidayName = holidays[dateStr];
-    
+
     if (holidayName) {
         badge.innerHTML = `<span style="width:7px;height:7px;border-radius:50%;background:#ef5350;"></span>CLOSED (${holidayName})`;
         badge.style.color = '#ef5350';
