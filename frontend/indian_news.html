@@ -45,22 +45,23 @@
                         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
                     </svg>
                 </div>
-                <h1 class="logo-text">Indian Market</h1>
+                <h1 class="logo-text">Indian Wire</h1>
                 <span class="live-badge">
                     <span class="live-dot"></span>
                     LIVE
                 </span>
-                <a href="/predictions" class="nav-link" style="margin-left: 16px; font-weight: 600; color: var(--text-secondary); text-decoration: none; display: flex; align-items: center; transition: color 0.2s;">
-                    Predictions
-                </a>
-                <a href="/" class="nav-link" style="margin-left: 16px; font-weight: 600; color: var(--text-secondary); text-decoration: none; display: flex; align-items: center; transition: color 0.2s;">
-                    Global & Crypto
-                </a>
-                <button id="chartViewBtn" onclick="openChartPanel()" style="margin-left: 16px; display: flex; align-items: center; gap: 6px; padding: 7px 16px; border-radius: 8px; border: 1.5px solid rgba(108,99,255,0.6); background: rgba(108,99,255,0.12); color: #a89fff; font-size: 0.82rem; font-weight: 700; cursor: pointer; transition: all 0.2s; letter-spacing: 0.5px;" onmouseover="this.style.background='rgba(108,99,255,0.25)'" onmouseout="this.style.background='rgba(108,99,255,0.12)'">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
-                    Live Chart
-                </button>
+                
+                <!-- Desktop Nav Links -->
+                <div class="nav-links-desktop">
+                    <a href="/predictions" class="nav-link">Predictions</a>
+                    <a href="/" class="nav-link">Global & Crypto</a>
+                    <button class="btn-chart-header" onclick="openChartPanel()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                        Live Chart
+                    </button>
+                </div>
             </div>
+
             <div class="header-actions">
                 <div class="search-wrapper" role="search">
                     <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
@@ -68,7 +69,7 @@
                         <circle cx="11" cy="11" r="8" />
                         <line x1="21" y1="21" x2="16.65" y2="16.65" />
                     </svg>
-                    <input type="text" class="search-input" id="searchInput" placeholder="Search articles…"
+                    <input type="text" class="search-input" id="searchInput" placeholder="Search NSE/BSE articles…"
                         aria-label="Search articles" autocomplete="off" spellcheck="false">
                     <button class="search-clear" id="searchClear" aria-label="Clear search" style="display:none;">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -79,22 +80,10 @@
                     </button>
                 </div>
                 <button class="theme-toggle" id="themeToggle" aria-label="Toggle light/dark mode" title="Toggle theme">
-                    <!-- Sun icon (shown in dark mode → click to go light) -->
-                    <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                        stroke-linecap="round" stroke-linejoin="round">
-                        <circle cx="12" cy="12" r="5" />
-                        <line x1="12" y1="1" x2="12" y2="3" />
-                        <line x1="12" y1="21" x2="12" y2="23" />
-                        <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                        <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                        <line x1="1" y1="12" x2="3" y2="12" />
-                        <line x1="21" y1="12" x2="23" y2="12" />
-                        <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                        <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+                    <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" /><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" /><line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" /><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
                     </svg>
-                    <!-- Moon icon (shown in light mode → click to go dark) -->
-                    <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                        stroke-linecap="round" stroke-linejoin="round">
+                    <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
                     </svg>
                 </button>
@@ -102,9 +91,58 @@
                     <div class="clock" id="clock"></div>
                     <div class="article-count" id="articleCount">0 articles</div>
                 </div>
+                
+                <!-- Mobile Menu Trigger -->
+                <button id="mobileMenuTrigger" class="mobile-menu-trigger" aria-label="Open mobile menu">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </button>
             </div>
         </div>
     </header>
+
+    <!-- Mobile Drawer Overlay -->
+    <div id="drawerOverlay" class="drawer-overlay"></div>
+
+    <!-- Mobile Menu Drawer -->
+    <div id="mobileDrawer" class="mobile-drawer">
+        <div class="drawer-section">
+            <h3 class="drawer-section-title">Navigation</h3>
+            <nav class="drawer-nav">
+                <a href="/indian_news" class="drawer-link active">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                    Indian Dashboard
+                </a>
+                <a href="/predictions" class="drawer-link">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+                    Predictions
+                </a>
+                <a href="/" class="drawer-link">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                    Global News
+                </a>
+                <a href="#" onclick="openChartPanel(); toggleMobileMenu();" class="drawer-link">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                    Live Chart
+                </a>
+            </nav>
+        </div>
+        
+        <div class="drawer-section">
+            <h3 class="drawer-section-title">Status & Info</h3>
+            <div class="drawer-meta">
+                <div class="drawer-meta-item">
+                    <div class="drawer-meta-label">Current Time (IST)</div>
+                    <div class="drawer-meta-value" id="drawerClock">--:--:--</div>
+                </div>
+                <div class="drawer-meta-item">
+                    <div class="drawer-meta-label">Total News Monitored</div>
+                    <div class="drawer-meta-value" id="drawerCount">0 articles</div>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <!-- Filters -->
     <section class="filters-section">
@@ -115,7 +153,8 @@
                 <!-- Dynamically populated -->
             </div>
             <div class="filters-right">
-                <select class="relevance-filter-select" id="relevanceFilter" aria-label="Filter by trading relevance" autocomplete="off">
+                <select class="relevance-filter-select" id="relevanceFilter" aria-label="Filter by trading relevance"
+                    autocomplete="off">
                     <option value="all" selected>📊 All News</option>
                     <option value="very high useful">🔥 Very High Useful</option>
                     <option value="useful">🟢 Useful</option>
@@ -123,16 +162,50 @@
                     <option value="neutral">⚖️ Neutral</option>
                     <option value="noisy">🔴 Noisy</option>
                 </select>
-                <button class="filter-pill analyzed-toggle" id="analyzedToggle"
-                    aria-label="Show only analyzed articles">
-                    ✨ Analyzed Only
-                </button>
+                
+                <div class="analyzed-toggle-wrapper" id="analyzedToggle" title="Filter to show only AI-analyzed articles">
+                    <span class="analyzed-toggle-text">AI ANALYSIS</span>
+                    <div class="luxury-switch">
+                        <div class="switch-knob"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>
 
     <!-- Main Content -->
     <main class="main-content">
+        
+        <!-- Active Events Section -->
+        <section class="events-section" id="eventsSection" style="display: none; padding: 20px 5%; margin-bottom: 20px; background: rgba(108,99,255,0.03); border-bottom: 1px solid rgba(255,255,255,0.03);">
+            <div class="events-header" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div style="width: 32px; height: 32px; background: linear-gradient(135deg, rgba(108,99,255,0.2), rgba(0,200,180,0.1)); border-radius: 8px; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(108,99,255,0.3);">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6c63ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                    </div>
+                    <h2 style="font-size: 1.3rem; font-weight: 800; color: var(--text-main); margin:0; letter-spacing: -0.3px;">Active Market Events</h2>
+                </div>
+                <!-- Filter Badge -->
+                <div id="activeEventFilterPill" style="display:none; align-items:center; gap:8px; background: rgba(108,99,255,0.15); border: 1px solid rgba(108,99,255,0.4); padding: 5px 14px; border-radius: 20px; font-size: 0.85rem; font-weight: 700; color: #a89fff; box-shadow: 0 4px 12px rgba(108,99,255,0.15); transition: all 0.2s;">
+                    <span id="activeEventName">Filtered Event</span>
+                    <button onclick="clearEventFilter()" style="background:rgba(255,255,255,0.1); border:none; color:inherit; cursor:pointer; padding:3px; border-radius: 50%; display:flex; margin-left:4px;" onmouseover="this.style.background='rgba(255,71,87,0.3)'" onmouseout="this.style.background='rgba(255,255,255,0.1)'" title="Clear Event Filter">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="events-container-wrapper">
+                <button class="scroll-btn left" onclick="scrollEvents(-1)" aria-label="Scroll left">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+                </button>
+                <div class="events-scroll-container" id="eventsContainer">
+                    <!-- Events populated by indian_app.js -->
+                </div>
+                <button class="scroll-btn right" onclick="scrollEvents(1)" aria-label="Scroll right">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+                </button>
+            </div>
+        </section>
+
 
         <!-- Featured Section -->
         <section class="featured-section" id="featuredSection" style="display: none;">
@@ -171,10 +244,10 @@
     </main>
 
     <!-- Live Trade View Panel -->
-    <div id="chartOverlay" style="display:none; position:fixed; inset:0; z-index:9000; background:rgba(0,0,0,0.85); backdrop-filter:blur(6px); overflow-y:auto;">
-        <div id="chartPanel" style="max-width:1200px; margin:40px auto; background:var(--bg-card,#141827); border:1px solid rgba(108,99,255,0.3); border-radius:20px; overflow:hidden; box-shadow: 0 40px 120px rgba(0,0,0,0.7);">
+    <div id="chartOverlay" class="chart-overlay">
+        <div id="chartPanel" class="chart-panel">
             <!-- Panel Header -->
-            <div style="display:flex; align-items:center; justify-content:space-between; padding:20px 28px; border-bottom:1px solid rgba(255,255,255,0.06); background:linear-gradient(135deg,rgba(108,99,255,0.15),rgba(0,200,180,0.08));">
+            <div class="chart-header">
                 <div style="display:flex; align-items:center; gap:12px;">
                     <div style="width:36px;height:36px; background:linear-gradient(135deg,#6c63ff,#00c8b4); border-radius:10px; display:flex;align-items:center;justify-content:center;">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -193,10 +266,10 @@
                 </button>
             </div>
             <!-- Search + Stats Row -->
-            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:16px 28px; border-bottom:1px solid rgba(255,255,255,0.05);">
-                <div style="position:relative; flex:1; min-width:240px;">
+            <div class="chart-controls">
+                <div class="chart-search-container">
                     <svg style="position:absolute;left:12px;top:50%;transform:translateY(-50%);" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    <input id="chartSearchInput" type="text" placeholder="Search NSE pair (e.g. TCS, RELIANCE)…" autocomplete="off" oninput="onChartSearch(this.value)" style="width:100%;padding:10px 12px 10px 36px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:var(--text-main,#f0f0f0);font-size:0.87rem;outline:none;box-sizing:border-box;transition:border 0.2s;" onfocus="this.style.borderColor='rgba(108,99,255,0.6)'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
+                    <input id="chartSearchInput" class="chart-search-input" type="text" placeholder="Search NSE pair (e.g. TCS, RELIANCE)…" autocomplete="off" oninput="onChartSearch(this.value)">
                     <div id="chartSearchDrop" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);background:var(--bg-card,#141827);border:1px solid rgba(108,99,255,0.3);border-radius:10px;z-index:100;max-height:220px;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,0.5);"></div>
                 </div>
                 <div id="chartSymbolInfo" style="display:flex;align-items:center;gap:8px;">
@@ -207,9 +280,9 @@
                 <button onclick="loadChart(currentChartSymbol)" style="padding:9px 18px;background:linear-gradient(135deg,#6c63ff,#5a52d5);border:none;border-radius:9px;color:#fff;font-size:0.82rem;font-weight:700;cursor:pointer;transition:opacity 0.2s;" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">↻ Refresh</button>
             </div>
             <!-- Chart Container -->
-            <div style="padding:20px 28px 28px;">
+            <div class="chart-container-root">
                 <div id="chartLoadingMsg" style="text-align:center;padding:60px 20px;color:var(--text-muted,#888);font-size:0.9rem;">🔍 Search or select a pair above to view its 3-minute candle chart.</div>
-                <div id="lwChartContainer" style="width:100%;height:480px;display:none;border-radius:12px;overflow:hidden;background:#0d1117;position:relative;"></div>
+                <div id="lwChartContainer" class="lw-chart-container"></div>
             </div>
         </div>
     </div>
@@ -284,7 +357,7 @@
     </footer>
 
     <!-- UI and Display Logic -->
-    <script src="/static/indian_app.js?v=4"></script>
+    <script src="/static/indian_app.js?v=5"></script>
 </body>
 
 </html>

@@ -7,4 +7,7 @@ app/scrap_news/__pycache__
 /news.zip
 /project.zip
 /tmp
-/test.py
+/test
+/reassign_all_events.py
+/verify_events.py
+/fix_script2.py

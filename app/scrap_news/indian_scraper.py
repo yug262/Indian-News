@@ -11,12 +11,17 @@ from bs4 import BeautifulSoup
 import socket
 from typing import List, Dict, Any
 
+import sys
+import os
 # Add the project root to sys.path so we can import app.core.db
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
+
 from app.core.db import execute_query, fetch_one
 from app.core.india_agent import analyze_indian_news
+from app.core.event_engine import process_event_grouping
 
 # ══════════════════════════════════════════════════════
+
 #  LOGGING
 # ══════════════════════════════════════════════════════
 logger = logging.getLogger("indian_scraper")
@@ -186,18 +191,40 @@ async def save_article(article):
         else:
             symbols = []
 
-        # 4. Insert into DB with analysis data
-        await asyncio.to_thread(
-            execute_query,
-            """INSERT INTO indian_news 
-               (title, link, title_hash, published, source, description, image_url, 
-                news_category, news_relevance, news_reason, symbols, analyzed, analyzed_at)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
-               ON CONFLICT (title_hash) DO NOTHING""",
-            (article['title'], article['link'], article['title_hash'], 
-             article['published'], article['source'], article['description'], article['image_url'],
-             news_category, news_relevance, news_reason, symbols)
+        # 4. Insert into DB (no event yet)
+        new_row = await asyncio.to_thread(
+            fetch_one,
+            "SELECT id FROM indian_news WHERE title_hash = %s",
+            (article['title_hash'],)
         )
+        if not new_row:
+            await asyncio.to_thread(
+                execute_query,
+                """INSERT INTO indian_news 
+                   (title, link, title_hash, published, source, description, image_url, 
+                    news_category, news_relevance, news_reason, symbols, analyzed, analyzed_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
+                   ON CONFLICT (title_hash) DO NOTHING""",
+                (article['title'], article['link'], article['title_hash'], 
+                 article['published'], article['source'], article['description'], article['image_url'],
+                 news_category, news_relevance, news_reason, symbols)
+            )
+
+        # 5. Trigger stateful event grouping AFTER insert
+        try:
+            saved_row = await asyncio.to_thread(
+                fetch_one,
+                "SELECT id FROM indian_news WHERE title_hash = %s",
+                (article['title_hash'],)
+            )
+            if saved_row:
+                await asyncio.to_thread(
+                    process_event_grouping,
+                    saved_row['id'], article['title'], "INDIA", 'indian_news'
+                )
+        except Exception as ge:
+            logger.warning(f"Event grouping error: {ge}")
+
         return 1  # New article added
         
     except Exception as e:

@@ -32,7 +32,8 @@ def get_news(source: str = Query(None, description="Filter news by source name")
              limit: int = Query(1000, description="Max number of articles to return"),
              today_only: bool = Query(False, description="Only fetch today's news"),
              relevance: str = Query(None, description="Filter news by relevance"),
-             analyzed_only: bool = Query(False, description="Only fetch analyzed news")):
+             analyzed_only: bool = Query(False, description="Only fetch analyzed news"),
+             event_id: str = Query(None, description="Filter news by exact event ID")):
     """Get news articles, sorted by newest first."""
     
     query = """SELECT id, title, link, published, source, description, image_url,
@@ -41,7 +42,7 @@ def get_news(source: str = Query(None, description="Filter news by source name")
         execution_window, confidence, forex_pairs, affected_forex_pairs, conviction_score, volatility_regime,
         dollar_liquidity_state, position_size_percent, safe_haven_flow, research_text,
         is_new_information, tools_used, analysis_data, news_relevance, news_category,
-        news_impact_level, news_reason
+        news_impact_level, news_reason, event_id, event_title
     FROM news WHERE 1=1"""
     params: List[Any] = []
     
@@ -60,6 +61,10 @@ def get_news(source: str = Query(None, description="Filter news by source name")
         
     if analyzed_only:
         query += " AND analyzed = TRUE"
+        
+    if event_id:
+        query += " AND event_id = %s"
+        params.append(event_id)
         
     query += " ORDER BY published DESC LIMIT %s"
     params.append(limit)
@@ -119,12 +124,53 @@ def get_news(source: str = Query(None, description="Filter news by source name")
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@app.get("/api/events/global")
+def get_global_events():
+    """Get active global events from the news."""
+    query = """
+    SELECT event_id, MIN(event_title) as event_title, COUNT(*) as article_count, MAX(published) as latest_update
+    FROM news
+    WHERE event_id IS NOT NULL AND event_id != 'GENERAL_GENERAL'
+    GROUP BY event_id
+    ORDER BY latest_update DESC
+    LIMIT 50
+    """
+    try:
+        events = fetch_all(query)
+        for ev in events:
+            if isinstance(ev['latest_update'], datetime):
+                ev['latest_update'] = ev['latest_update'].isoformat()
+        return {"status": "success", "data": events}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/events/india")
+def get_indian_events():
+    """Get active Indian market events from the indian_news."""
+    query = """
+    SELECT event_id, MIN(event_title) as event_title, COUNT(*) as article_count, MAX(published) as latest_update
+    FROM indian_news
+    WHERE event_id IS NOT NULL AND event_id != 'GENERAL_GENERAL'
+    GROUP BY event_id
+    ORDER BY latest_update DESC
+    LIMIT 50
+    """
+    try:
+        events = fetch_all(query)
+        for ev in events:
+            if isinstance(ev['latest_update'], datetime):
+                ev['latest_update'] = ev['latest_update'].isoformat()
+        return {"status": "success", "data": events}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/indian_news")
 def get_indian_news(source: str = Query(None, description="Filter news by source name"), 
              limit: int = Query(1000, description="Max number of articles to return"),
              today_only: bool = Query(False, description="Only fetch today's news"),
              relevance: str = Query(None, description="Filter news by relevance"),
-             analyzed_only: bool = Query(False, description="Only fetch analyzed news")):
+             analyzed_only: bool = Query(False, description="Only fetch analyzed news"),
+             event_id: str = Query(None, description="Filter news by exact event ID")):
     """Get Indian news articles, sorted by newest first."""
     
     query = """SELECT id, title, link, published, source, description, image_url,
@@ -134,8 +180,7 @@ def get_indian_news(source: str = Query(None, description="Filter news by source
         dollar_liquidity_state, position_size_percent, safe_haven_flow, research_text,
         is_new_information, tools_used, analysis_data, news_relevance, news_category,
         news_impact_level, news_reason, symbols,
-        -- Institutional V4 Consistent Fields
-        market_bias, signal_bucket, primary_symbol, executive_summary, decision_trace
+        market_bias, signal_bucket, primary_symbol, executive_summary, event_id, event_title
     FROM indian_news WHERE 1=1"""
     params: List[Any] = []
     
@@ -154,6 +199,10 @@ def get_indian_news(source: str = Query(None, description="Filter news by source
         
     if analyzed_only:
         query += " AND analyzed = TRUE"
+        
+    if event_id:
+        query += " AND event_id = %s"
+        params.append(event_id)
         
     query += " ORDER BY published DESC LIMIT %s"
     params.append(limit)
