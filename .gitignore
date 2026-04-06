@@ -4,3 +4,7 @@ logs/
 __pycache__
 image_generate_temp/
 app/scrap_news/__pycache__
+/news.zip
+/project.zip
+/tmp
+/test.py

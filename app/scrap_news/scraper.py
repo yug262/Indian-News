@@ -150,12 +150,19 @@ def parse_relative_time(time_str):
 def extract_time(element):
     if not element:
         return None
+    
+    now = datetime.now(timezone.utc)
+    
     for time_tag in element.find_all('time'):
         if time_tag.has_attr('datetime'):
             try:
                 dt = date_parser.parse(time_tag['datetime'])
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
+                # Cap future dates at now
+                if dt > now:
+                    logger.debug(f"Cap future date: {dt} -> {now}")
+                    return now
                 return dt
             except:
                 pass
@@ -163,13 +170,13 @@ def extract_time(element):
         if 'ago' in text:
             parsed = parse_relative_time(text)
             if parsed:
-                return parsed
+                return min(parsed, now)
     for span in element.find_all(['span', 'div', 'p']):
         text = span.get_text(strip=True).lower()
         if 'ago' in text and len(text) < 30:
             parsed = parse_relative_time(text)
             if parsed:
-                return parsed
+                return min(parsed, now)
     return None
 
 # ══════════════════════════════════════════════════════
@@ -211,6 +218,7 @@ def fetch_article_details(link, source):
             result['image_url'] = og_img['content'].strip()
 
         # Published time — priority: meta tags > JSON-LD > <time> tags
+        now = datetime.now(timezone.utc)
         for prop in ['article:published_time', 'og:article:published_time', 'datePublished', 'parsely-pub-date', 'pubdate']:
             meta_time = soup.find('meta', attrs={'property': prop}) or soup.find('meta', attrs={'name': prop})
             if meta_time and meta_time.get('content'):
@@ -218,6 +226,8 @@ def fetch_article_details(link, source):
                     dt = date_parser.parse(meta_time['content'])
                     if dt.tzinfo is None:
                         dt = dt.replace(tzinfo=timezone.utc)
+                    if dt > now:
+                        dt = now
                     result['published'] = dt
                     break
                 except:
@@ -229,10 +239,12 @@ def fetch_article_details(link, source):
                     data = json.loads(script.string)
                     if isinstance(data, list):
                         data = data[0]
-                    if 'datePublished' in data:
+                    if isinstance(data, dict) and 'datePublished' in data:
                         dt = date_parser.parse(data['datePublished'])
                         if dt.tzinfo is None:
                             dt = dt.replace(tzinfo=timezone.utc)
+                        if dt > now:
+                            dt = now
                         result['published'] = dt
                         break
                 except:
@@ -245,6 +257,8 @@ def fetch_article_details(link, source):
                         dt = date_parser.parse(time_tag['datetime'])
                         if dt.tzinfo is None:
                             dt = dt.replace(tzinfo=timezone.utc)
+                        if dt > now:
+                            dt = now
                         result['published'] = dt
                         break
                     except:
@@ -342,81 +356,81 @@ def scrape_yahoo(scraper):
                     })
     return articles
 
-def scrape_reuters_playwright():
-    """Scrape Reuters via Playwright (requires display)."""
-    articles = []
-    browser = get_reuters_browser()
-    if browser is None:
-        return None  # Signal to use fallback
+# def scrape_reuters_playwright():
+#     """Scrape Reuters via Playwright (requires display)."""
+#     articles = []
+#     browser = get_reuters_browser()
+#     if browser is None:
+#         return None  # Signal to use fallback
 
-    context = browser.new_context(
-        viewport={"width": 1920, "height": 1080}, locale="en-US",
-    )
-    page = context.new_page()
-    stealth = getattr(_pw_local, 'stealth', None)
-    if stealth:
-        stealth.apply_stealth_sync(page)
+#     context = browser.new_context(
+#         viewport={"width": 1920, "height": 1080}, locale="en-US",
+#     )
+#     page = context.new_page()
+#     stealth = getattr(_pw_local, 'stealth', None)
+#     if stealth:
+#         stealth.apply_stealth_sync(page)
 
-    page.goto("https://www.reuters.com/business/finance/", wait_until="domcontentloaded", timeout=30000)
-    page.wait_for_timeout(10000)
-    html = page.content()
-    context.close()
+#     page.goto("https://www.reuters.com/business/finance/", wait_until="domcontentloaded", timeout=30000)
+#     page.wait_for_timeout(10000)
+#     html = page.content()
+#     context.close()
 
-    if len(html) < 5000:
-        logger.warning(f"Reuters Playwright: blocked ({len(html)} bytes)")
-        return None  # Signal to use fallback
+#     if len(html) < 5000:
+#         logger.warning(f"Reuters Playwright: blocked ({len(html)} bytes)")
+#         return None  # Signal to use fallback
 
-    soup = BeautifulSoup(html, 'lxml')
-    for a in soup.find_all('a', href=True):
-        href = a['href']
-        if '/business/' in href or '/markets/' in href:
-            text = extract_clean_title(a)
-            if len(text) > 25:
-                link = urljoin("https://www.reuters.com", href)
-                published = extract_time(a.parent) if a.parent else None
-                articles.append({
-                    "title": text, "link": link,
-                    "published": published, "source": "Reuters"
-                })
-    unique = {a['title']: a for a in articles}.values()
-    return list(unique)
+#     soup = BeautifulSoup(html, 'lxml')
+#     for a in soup.find_all('a', href=True):
+#         href = a['href']
+#         if '/business/' in href or '/markets/' in href:
+#             text = extract_clean_title(a)
+#             if len(text) > 25:
+#                 link = urljoin("https://www.reuters.com", href)
+#                 published = extract_time(a.parent) if a.parent else None
+#                 articles.append({
+#                     "title": text, "link": link,
+#                     "published": published, "source": "Reuters"
+#                 })
+#     unique = {a['title']: a for a in articles}.values()
+#     return list(unique)
 
-def scrape_reuters_sitemap():
-    """Fallback: Reuters official news sitemap (works on any server)."""
-    articles = []
-    url = "https://www.reuters.com/arc/outboundfeeds/news-sitemap/?outputType=xml"
-    resp = cffi_requests.get(url, impersonate="chrome120", timeout=15)
-    soup = BeautifulSoup(resp.text, 'xml')
-    for url_tag in soup.find_all('url'):
-        loc = url_tag.find('loc')
-        if not loc:
-            continue
-        link = loc.text.strip()
-        news_tag = url_tag.find('news')
-        title, published = None, None
-        if news_tag:
-            title_tag = news_tag.find('title')
-            if title_tag:
-                title = title_tag.text.strip()
-            pub_tag = news_tag.find('publication_date')
-            if pub_tag and pub_tag.text:
-                try:
-                    published = date_parser.parse(pub_tag.text)
-                    if published.tzinfo is None:
-                        published = published.replace(tzinfo=timezone.utc)
-                except:
-                    pass
-        if title and len(title) > 25:
-            articles.append({
-                "title": title, "link": link,
-                "published": published, "source": "Reuters"
-            })
-    unique = {a['title']: a for a in articles}.values()
-    return list(unique)
+# def scrape_reuters_sitemap():
+#     """Fallback: Reuters official news sitemap (works on any server)."""
+#     articles = []
+#     url = "https://www.reuters.com/arc/outboundfeeds/news-sitemap/?outputType=xml"
+#     resp = cffi_requests.get(url, impersonate="chrome120", timeout=15)
+#     soup = BeautifulSoup(resp.text, 'xml')
+#     for url_tag in soup.find_all('url'):
+#         loc = url_tag.find('loc')
+#         if not loc:
+#             continue
+#         link = loc.text.strip()
+#         news_tag = url_tag.find('news')
+#         title, published = None, None
+#         if news_tag:
+#             title_tag = news_tag.find('title')
+#             if title_tag:
+#                 title = title_tag.text.strip()
+#             pub_tag = news_tag.find('publication_date')
+#             if pub_tag and pub_tag.text:
+#                 try:
+#                     published = date_parser.parse(pub_tag.text)
+#                     if published.tzinfo is None:
+#                         published = published.replace(tzinfo=timezone.utc)
+#                 except:
+#                     pass
+#         if title and len(title) > 25:
+#             articles.append({
+#                 "title": title, "link": link,
+#                 "published": published, "source": "Reuters"
+#             })
+#     unique = {a['title']: a for a in articles}.values()
+#     return list(unique)
 
-def scrape_reuters(scraper):
-    """Scrape Reuters directly from reuters.com/business/finance/ via Playwright."""
-    return scrape_reuters_playwright() or []
+# def scrape_reuters(scraper):
+#     """Scrape Reuters directly from reuters.com/business/finance/ via Playwright."""
+#     return scrape_reuters_playwright() or []
 
 def scrape_bloomberg(scraper):
     articles = []
@@ -716,14 +730,15 @@ def fetch_and_store_single(fn):
 
         try:
             title_hash = get_hash(article['title'])
+            affected_pairs = c_res.get("affected_forex_pairs") or []
             execute_query(
                 """INSERT INTO news (title, link, title_hash, published, source, description, image_url,
-                                    news_relevance, news_category, news_reason)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    news_relevance, news_category, news_reason, affected_forex_pairs)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    ON CONFLICT (title_hash) DO NOTHING""",
                 (article['title'], article['link'], title_hash, actual_published,
                  article['source'], description, image_url,
-                 relevance, category, reason)
+                 relevance, category, reason, json.dumps(affected_pairs))
             )
             new_count += 1
             
@@ -756,7 +771,7 @@ FAST_SOURCES = [
 SLOW_SOURCES = [
     scrape_bbc, scrape_aljazeera, scrape_france24, scrape_skynews, scrape_guardian
 ]
-HEAVY_SOURCES = [scrape_reuters]
+# HEAVY_SOURCES = [scrape_reuters]
 
 async def _async_sleep(interval):
     slept = 0.0
@@ -774,128 +789,128 @@ async def run_scraper_loop(fn, interval):
             logger.error(f"{fn.__name__} loop error: {e}")
         await _async_sleep(interval)
 
-def run_heavy_scrape():
-    """Scrape Reuters continuously on a dedicated thread — Playwright MUST stay on this thread."""
-    while not _shutdown.is_set():
-        try:
-            ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-            scraper = get_scraper()
+# def run_heavy_scrape():
+#     """Scrape Reuters continuously on a dedicated thread — Playwright MUST stay on this thread."""
+#     while not _shutdown.is_set():
+#         try:
+#             ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+#             scraper = get_scraper()
             
-            # Call Reuters directly on THIS thread (no ThreadPoolExecutor!)
-            articles = with_retry(scrape_reuters, scraper, retries=MAX_RETRIES, label="scrape_reuters") or []
+#             # Call Reuters directly on THIS thread (no ThreadPoolExecutor!)
+#             articles = with_retry(scrape_reuters, scraper, retries=MAX_RETRIES, label="scrape_reuters") or []
             
-            # Filter & deduplicate memory fast check
-            new_articles = []
-            dup_count = 0
-            for article in articles:
-                if len(article['title']) < 15:
-                    continue
+#             # Filter & deduplicate memory fast check
+#             new_articles = []
+#             dup_count = 0
+#             for article in articles:
+#                 if len(article['title']) < 15:
+#                     continue
                     
-                is_dup = False
-                with _cache_lock:
-                    if article['link'] in _seen_urls or article['title'] in _seen_titles:
-                        is_dup = True
+#                 is_dup = False
+#                 with _cache_lock:
+#                     if article['link'] in _seen_urls or article['title'] in _seen_titles:
+#                         is_dup = True
                 
-                if is_dup:
-                    dup_count += 1
-                    continue
+#                 if is_dup:
+#                     dup_count += 1
+#                     continue
                     
-                try:
-                    existing = fetch_one(
-                        "SELECT id FROM news WHERE link = %s OR title = %s",
-                        (article['link'], article['title'])
-                    )
-                    if existing:
-                        dup_count += 1
-                        with _cache_lock:
-                            _seen_urls.add(article['link'])
-                            _seen_titles.add(article['title'])
-                    else:
-                        new_articles.append(article)
-                except Exception as e:
-                    logger.error(f"DB check error: {e}")
+#                 try:
+#                     existing = fetch_one(
+#                         "SELECT id FROM news WHERE link = %s OR title = %s",
+#                         (article['link'], article['title'])
+#                     )
+#                     if existing:
+#                         dup_count += 1
+#                         with _cache_lock:
+#                             _seen_urls.add(article['link'])
+#                             _seen_titles.add(article['title'])
+#                     else:
+#                         new_articles.append(article)
+#                 except Exception as e:
+#                     logger.error(f"DB check error: {e}")
             
-            # Fetch details (inline, same thread)
-            details_map = {}  # cache details by title
-            for article in new_articles:
-                if _shutdown.is_set():
-                    break
-                details = fetch_article_details(article['link'], article['source'])
-                details_map[article['title']] = details
+#             # Fetch details (inline, same thread)
+#             details_map = {}  # cache details by title
+#             for article in new_articles:
+#                 if _shutdown.is_set():
+#                     break
+#                 details = fetch_article_details(article['link'], article['source'])
+#                 details_map[article['title']] = details
 
-            # Filter to keep only news from the last 24 hours
-            now = datetime.now(timezone.utc)
-            filtered_articles = []
-            for a in new_articles:
-                details = details_map.get(a['title'], {"description": None, "image_url": None, "published": None})
-                actual_published = details.get('published') or a.get('published')
-                if actual_published and actual_published >= now - timedelta(hours=24):
-                    filtered_articles.append(a)
-            new_articles = filtered_articles
+#             # Filter to keep only news from the last 24 hours
+#             now = datetime.now(timezone.utc)
+#             filtered_articles = []
+#             for a in new_articles:
+#                 details = details_map.get(a['title'], {"description": None, "image_url": None, "published": None})
+#                 actual_published = details.get('published') or a.get('published')
+#                 if actual_published and actual_published >= now - timedelta(hours=24):
+#                     filtered_articles.append(a)
+#             new_articles = filtered_articles
 
-            # Classify before insert
-            if new_articles:
-                classification_results = []
-                with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as pool:
-                    futures = []
-                    for a in new_articles:
-                        desc = details_map.get(a['title'], {}).get('description') or a['title']
-                        futures.append(pool.submit(classify_news_relevance, a['title'], desc))
+#             # Classify before insert
+#             if new_articles:
+#                 classification_results = []
+#                 with ThreadPoolExecutor(max_workers=DETAIL_WORKERS) as pool:
+#                     futures = []
+#                     for a in new_articles:
+#                         desc = details_map.get(a['title'], {}).get('description') or a['title']
+#                         futures.append(pool.submit(classify_news_relevance, a['title'], desc))
                     
-                    for future in futures:
-                        try:
-                            classification_results.append(future.result())
-                        except Exception as e:
-                            logger.error(f"Reuters classification failed: {e}")
-                            classification_results.append({"category": "error", "relevance": "none", "reason": str(e)})
+#                     for future in futures:
+#                         try:
+#                             classification_results.append(future.result())
+#                         except Exception as e:
+#                             logger.error(f"Reuters classification failed: {e}")
+#                             classification_results.append({"category": "error", "relevance": "none", "reason": str(e)})
 
-                for c_res, a in zip(classification_results, new_articles):
-                    rel = str(c_res.get("relevance", "none"))
-                    logger.info(f"  [{rel.upper():12s}] {a['title'][:80]}")
-            else:
-                classification_results = []
+#                 for c_res, a in zip(classification_results, new_articles):
+#                     rel = str(c_res.get("relevance", "none"))
+#                     logger.info(f"  [{rel.upper():12s}] {a['title'][:80]}")
+#             else:
+#                 classification_results = []
 
-            # Insert new articles
-            new_count = 0
+#             # Insert new articles
+#             new_count = 0
 
-            for idx, article in enumerate(new_articles):
-                if _shutdown.is_set():
-                    break
-                details = details_map.get(article['title'], {"description": None, "image_url": None, "published": None})
-                description = details['description'] or article['title']
-                image_url = details['image_url']
-                actual_published = details.get('published') or article.get('published')
+#             for idx, article in enumerate(new_articles):
+#                 if _shutdown.is_set():
+#                     break
+#                 details = details_map.get(article['title'], {"description": None, "image_url": None, "published": None})
+#                 description = details['description'] or article['title']
+#                 image_url = details['image_url']
+#                 actual_published = details.get('published') or article.get('published')
 
-                c_res = classification_results[idx] if idx < len(classification_results) else {}
-                category = str(c_res.get("category", ""))[:50]
-                relevance = str(c_res.get("relevance", "Neutral"))[:20]
-                reason = str(c_res.get("reason", ""))[:500]
+#                 c_res = classification_results[idx] if idx < len(classification_results) else {}
+#                 category = str(c_res.get("category", ""))[:50]
+#                 relevance = str(c_res.get("relevance", "Neutral"))[:20]
+#                 reason = str(c_res.get("reason", ""))[:500]
 
-                try:
-                    title_hash = get_hash(article['title'])
-                    execute_query(
-                        """INSERT INTO news (title, link, title_hash, published, source, description, image_url,
-                                            news_relevance, news_category, news_reason)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                           ON CONFLICT (title_hash) DO NOTHING""",
-                        (article['title'], article['link'], title_hash, actual_published,
-                         article['source'], description, image_url,
-                         relevance, category, reason)
-                    )
-                    new_count += 1
-                    with _cache_lock:
-                        _seen_urls.add(article['link'])
-                        _seen_titles.add(article['title'])
-                    logger.info(f"[+] Reuters - {article['title'][:70]}")
-                    logger.info(f"     Classified: {relevance} | {category} ")
-                except Exception as e:
-                    if "duplicate key value" not in str(e).lower():
-                        logger.error(f"DB insert error: {e}")
+#                 try:
+#                     title_hash = get_hash(article['title'])
+#                     execute_query(
+#                         """INSERT INTO news (title, link, title_hash, published, source, description, image_url,
+#                                             news_relevance, news_category, news_reason)
+#                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+#                            ON CONFLICT (title_hash) DO NOTHING""",
+#                         (article['title'], article['link'], title_hash, actual_published,
+#                          article['source'], description, image_url,
+#                          relevance, category, reason)
+#                     )
+#                     new_count += 1
+#                     with _cache_lock:
+#                         _seen_urls.add(article['link'])
+#                         _seen_titles.add(article['title'])
+#                     logger.info(f"[+] Reuters - {article['title'][:70]}")
+#                     logger.info(f"     Classified: {relevance} | {category} ")
+#                 except Exception as e:
+#                     if "duplicate key value" not in str(e).lower():
+#                         logger.error(f"DB insert error: {e}")
             
-            logger.info(f"[{ts}] REUTERS → Total: {len(articles)} | Dup: {dup_count} | New: {new_count}")
-        except Exception as e:
-            logger.error(f"Reuters scrape error: {e}")
-        _shutdown.wait(REUTERS_INTERVAL)
+#             logger.info(f"[{ts}] REUTERS → Total: {len(articles)} | Dup: {dup_count} | New: {new_count}")
+#         except Exception as e:
+#             logger.error(f"Reuters scrape error: {e}")
+#         _shutdown.wait(REUTERS_INTERVAL)
 
 def cleanup():
     """Clean up Playwright browser on exit."""
@@ -918,16 +933,19 @@ def shutdown_handler(signum, frame):
 async def async_main():
     tasks = []
     
+    stagger_delay = 2  # seconds between each scraper start
+    
     for source in FAST_SOURCES:
         tasks.append(asyncio.create_task(run_scraper_loop(source, FAST_INTERVAL)))
+        await asyncio.sleep(stagger_delay)
         
     for source in SLOW_SOURCES:
         tasks.append(asyncio.create_task(run_scraper_loop(source, SLOW_INTERVAL)))
-        
-    tasks.append(asyncio.create_task(asyncio.to_thread(run_heavy_scrape)))
+        await asyncio.sleep(stagger_delay)
+
+    # tasks.append(asyncio.create_task(asyncio.to_thread(run_heavy_scrape)))
 
     await asyncio.gather(*tasks, return_exceptions=True)
-
 def main():
     # Signal handlers only work on the main thread
     if threading.current_thread() is threading.main_thread():

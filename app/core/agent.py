@@ -228,7 +228,7 @@ def remove_empty_objects(arr: list) -> list:
     for item in arr:
         if not isinstance(item, dict):
             continue
-        if any(v not in ("", 0, None, [], {}) for v in item.values()):
+        if any(v not in ("", None, [], {}) for v in item.values()):
             cleaned.append(item)
     return cleaned
 
@@ -437,16 +437,21 @@ repetition_pressure: {filter_ctx.get("repetition_pressure", 0)}
         category = str(data.get("category") or "None").strip()
         relevance = str(data.get("relevance") or "None").strip()
         reason = str(data.get("reason") or "").strip()
+        affected_pairs = data.get("affected_forex_pairs") or []
+        if not isinstance(affected_pairs, list):
+            affected_pairs = []
 
         # Safety normalization
         allowed_categories = {
-            "Very High Useful",
-            "Crypto Useful",
-            "Forex Useful",
-            "Useful",
-            "Medium",
-            "Neutral",
-            "Noisy",
+            "macro_data_release", "central_bank_policy", "central_bank_guidance",
+            "institutional_research", "regulatory_policy", "crypto_ecosystem_event",
+            "liquidity_flows", "geopolitical_event", "systemic_risk_event",
+            "commodity_supply_shock", "market_structure_event", "sector_trend_analysis",
+            "sentiment_indicator", "routine_market_update", "price_action_noise"
+        }
+        allowed_relevance = {
+            "Very High Useful", "Crypto Useful", "Forex Useful", "Useful",
+            "Medium", "Neutral", "Noisy"
         }
 
         if category not in allowed_categories and category != "None":
@@ -463,6 +468,7 @@ repetition_pressure: {filter_ctx.get("repetition_pressure", 0)}
             "category": category,
             "relevance": relevance,
             "reason": reason,
+            "affected_forex_pairs": affected_pairs,
         }
 
     except Exception as e:
@@ -816,9 +822,19 @@ def save_analysis(news_id: int, analysis: dict):
             news_priced_in         = %s,
             suggestions_data       = %s,
             suggestions_status     = %s,
-            suggestions_summary    = %s
+            suggestions_summary    = %s,
+            affected_forex_pairs   = %s
         WHERE id = %s
     """
+
+    # Ensure affected_forex_pairs is populated (classifier vs deep analyzer schema mismatch)
+    final_pairs = analysis.get("affected_forex_pairs", []) or []
+    if not final_pairs:
+        # Fallback: extract pairs from the deep analysis directional_bias
+        for item in forex_items:
+            pair = item.get("pair") or item.get("asset")
+            if pair and pair not in final_pairs:
+                final_pairs.append(pair)
 
     params = (
         json.dumps(analysis),
@@ -840,6 +856,7 @@ def save_analysis(news_id: int, analysis: dict):
         json.dumps(suggestions),
         (suggestions.get("status", "") or "")[:30],
         (suggestions.get("summary", "") or "")[:500],
+        json.dumps(final_pairs),
         news_id,
     )
 
@@ -1104,8 +1121,10 @@ def create_suggestions(news_id: int, analysis: dict):
         return
 
     # prevent duplicates on re-analysis
-    _exec("DELETE FROM suggestions WHERE news_id = %s", (news_id,))
-
+    try:
+        _exec("DELETE FROM suggestions WHERE news_id = %s", (news_id,))
+    except Exception:
+        pass
     created = 0
 
     for suggestion_type in ("buy", "sell", "watch", "avoid"):

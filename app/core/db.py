@@ -13,14 +13,20 @@ DB_CONFIG = {
     "password": os.getenv("DB_PASSWORD", "your_password"),
 }
 
-# Connection pool (min 1, max 10 connections)
+import threading
+
+# Connection pool (min 1, max 50 connections)
 _pool = None
+_pool_lock = threading.Lock()
 
 
 def get_pool():
     global _pool
     if _pool is None:
-        _pool = pool.SimpleConnectionPool(1, 10, **DB_CONFIG)
+        with _pool_lock:
+            if _pool is None:
+                # Use ThreadedConnectionPool instead of SimpleConnectionPool for thread safety
+                _pool = pool.ThreadedConnectionPool(1, 50, **DB_CONFIG)
     return _pool
 
 

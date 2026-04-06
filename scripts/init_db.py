@@ -9,10 +9,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import os
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+import psycopg2
 import psycopg2
 from app.core.db import DB_CONFIG
 
@@ -32,6 +29,24 @@ CREATE_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_news_published ON news(published DESC);",
     "CREATE INDEX IF NOT EXISTS idx_news_hash ON news(title_hash);",
     "CREATE INDEX IF NOT EXISTS idx_news_source ON news(source);",
+]
+
+CREATE_INDIAN_NEWS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS indian_news (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    link TEXT NOT NULL,
+    title_hash VARCHAR(255) UNIQUE NOT NULL,
+    published TIMESTAMPTZ NOT NULL,
+    source VARCHAR(255),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+"""
+
+CREATE_INDIAN_NEWS_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_inews_published ON indian_news(published DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_inews_hash ON indian_news(title_hash);",
+    "CREATE INDEX IF NOT EXISTS idx_inews_source ON indian_news(source);",
 ]
 
 
@@ -112,11 +127,12 @@ MIGRATE_ANALYSIS_COLUMNS = [
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_impact_level VARCHAR(50);",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_reason TEXT;",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS news_relevance VARCHAR(100) DEFAULT 'unclassified';",
-"ALTER TABLE news ALTER COLUMN news_relevance TYPE VARCHAR(100);",
+    "ALTER TABLE news ALTER COLUMN news_relevance TYPE VARCHAR(100);",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMPTZ;",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS suggestions_data JSONB;",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS suggestions_status VARCHAR(30);",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS suggestions_summary TEXT;",
+    "ALTER TABLE news ADD COLUMN IF NOT EXISTS affected_forex_pairs JSONB DEFAULT '[]';",
 ]
 
 
@@ -127,15 +143,89 @@ def migrate_schema():
         cur = conn.cursor()
         for sql in MIGRATE_ANALYSIS_COLUMNS:
             cur.execute(sql)
-
-        for sql in MIGRATE_SUGGESTIONS_COLUMNS:
-            cur.execute(sql)
         conn.commit()
         print("✅ Analysis columns migrated successfully")
         cur.close()
     except Exception as e:
         conn.rollback()
         print(f"❌ Error migrating news schema: {e}")
+        raise
+    finally:
+        conn.close()
+
+
+def create_indian_news_table():
+    """Create the indian_news table and indexes, and apply migrations."""
+    conn = psycopg2.connect(**DB_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(CREATE_INDIAN_NEWS_TABLE_SQL)
+        for idx_sql in CREATE_INDIAN_NEWS_INDEXES_SQL:
+            cur.execute(idx_sql)
+            
+        for sql in MIGRATE_ANALYSIS_COLUMNS:
+            cur.execute(sql.replace("ALTER TABLE news ", "ALTER TABLE indian_news "))
+            
+        cur.execute("ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS affected_stocks JSONB DEFAULT '[]';")
+        
+        conn.commit()
+        print("✅ Table 'indian_news' and schema created successfully")
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error creating indian_news table: {e}")
+        raise
+    finally:
+        conn.close()
+
+MIGRATE_INDIAN_AGENT_COLUMNS = [
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS event_type VARCHAR(50);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS event_status VARCHAR(30);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS event_scope VARCHAR(30);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS market_bias VARCHAR(20);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS analysis_confidence INTEGER;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS horizon VARCHAR(30);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS surprise VARCHAR(20);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS primary_symbol VARCHAR(50);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS primary_company_name VARCHAR(255);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS executive_summary TEXT;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS stock_impacts JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS sector_impacts JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS scenarios JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS priority_ranking JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS tradeability_classification VARCHAR(30);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS tradeability_data JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS confidence_breakdown JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS agent_output JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS signal_bucket VARCHAR(20);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS news_summary JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS affected_entities JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS evidence JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS symbols TEXT[];"
+]
+
+def create_indian_news_table():
+    """Create the indian_news table and indexes, and apply migrations."""
+    conn = psycopg2.connect(**DB_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(CREATE_INDIAN_NEWS_TABLE_SQL)
+
+        for idx_sql in CREATE_INDIAN_NEWS_INDEXES_SQL:
+            cur.execute(idx_sql)
+
+        for sql in MIGRATE_ANALYSIS_COLUMNS:
+            cur.execute(sql.replace("ALTER TABLE news ", "ALTER TABLE indian_news "))
+
+        for sql in MIGRATE_INDIAN_AGENT_COLUMNS:
+            cur.execute(sql)
+
+        conn.commit()
+        print("✅ Table 'indian_news' and schema created successfully")
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error creating indian_news table: {e}")
         raise
     finally:
         conn.close()
@@ -149,7 +239,6 @@ CREATE TABLE IF NOT EXISTS predictions (
     asset TEXT NOT NULL,
     asset_display_name TEXT,
     asset_class TEXT NOT NULL,
-    asset_display_name TEXT,
     direction TEXT NOT NULL,
 
     predicted_move_pct NUMERIC NOT NULL,
@@ -181,11 +270,6 @@ CREATE TABLE IF NOT EXISTS predictions (
 CREATE_PREDICTIONS_INDEXES_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_predictions_pending ON predictions(finalized, status);",
     "CREATE INDEX IF NOT EXISTS idx_predictions_news_id ON predictions(news_id);",
-    "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS asset_display_name TEXT;",
-]
-
-MIGRATE_SUGGESTIONS_COLUMNS = [
-    "ALTER TABLE suggestions ALTER COLUMN expected_move_pct TYPE VARCHAR(50);",
 ]
 
 def create_predictions_table():
@@ -266,11 +350,124 @@ def create_suggestions_table():
         conn.close()
 
 
+
+CREATE_FOREX_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS forex_pairs (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+
+CREATE_FOREX_CANDLES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS forex_candles_3m (
+            symbol TEXT,
+            time TIMESTAMP,
+            open DOUBLE PRECISION,
+            high DOUBLE PRECISION,
+            low DOUBLE PRECISION,
+            close DOUBLE PRECISION,
+            PRIMARY KEY(symbol, time)
+        );
+"""
+
+CREATE_FOREX_CANDLES_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_candle_symbol_time ON forex_candles_3m(symbol, time DESC);"
+]
+
+def create_forex_table():
+    """Create the forex table."""
+    conn = psycopg2.connect(**DB_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(CREATE_FOREX_TABLE_SQL)
+        conn.commit()
+        print("✅ Symbols table created successfully")
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error creating symbols table: {e}")
+        raise
+    finally:
+        conn.close()
+
+
+def create_forex_candles_table():
+    """Create the candles table."""
+    conn = psycopg2.connect(**DB_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(CREATE_FOREX_CANDLES_TABLE_SQL)
+        for idx_sql in CREATE_FOREX_CANDLES_INDEXES_SQL:
+            cur.execute(idx_sql)
+        conn.commit()
+        print("✅ Candles table created successfully")
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print("❌ Error creating candles table:", e)
+        raise
+    finally:
+        conn.close()
+
+
+CREATE_NSE_COMPANIES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS nse_companies (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(50) UNIQUE NOT NULL,
+    company_name VARCHAR(255),
+    series VARCHAR(10),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+CREATE_NSE_CANDLES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS nse_candles_3m (
+    symbol TEXT,
+    time TIMESTAMP,
+    open DOUBLE PRECISION,
+    high DOUBLE PRECISION,
+    low DOUBLE PRECISION,
+    close DOUBLE PRECISION,
+    PRIMARY KEY(symbol, time)
+);
+"""
+
+CREATE_NSE_CANDLES_INDEXES_SQL = [
+    "CREATE INDEX IF NOT EXISTS idx_nse_candle_symbol_time ON nse_candles_3m(symbol, time DESC);"
+]
+
+def create_nse_tables():
+    """Create the nse_companies and nse_candles_3m tables."""
+    conn = psycopg2.connect(**DB_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(CREATE_NSE_COMPANIES_TABLE_SQL)
+        cur.execute(CREATE_NSE_CANDLES_TABLE_SQL)
+        for idx_sql in CREATE_NSE_CANDLES_INDEXES_SQL:
+            cur.execute(idx_sql)
+        conn.commit()
+        print("✅ NSE tables created successfully")
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print("❌ Error creating NSE tables:", e)
+        raise
+    finally:
+        conn.close()
+
+
+
 if __name__ == "__main__":
     print("🔧 Initializing database...")
     create_database()
     create_tables()
     create_predictions_table()
     create_suggestions_table()
+    create_forex_table()
+    create_forex_candles_table()
+    create_nse_tables()
     migrate_schema()
+    create_indian_news_table()
     print("🎉 Database initialization complete!")

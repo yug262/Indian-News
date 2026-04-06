@@ -179,7 +179,7 @@ def _finalize_prediction(pred: dict, final_price: float, now: datetime):
         # Bearish target check — MFE stored as positive (abs favorable move)
         if mfe >= predicted_move - EPS:
             # It hit the target at least once (downwards)
-            if abs(final_move) > predicted_move + EPS:
+            if final_move < 0 and abs(final_move) > predicted_move + EPS:
                 status = "overperformed"
             else:
                 status = "hit"
@@ -188,8 +188,7 @@ def _finalize_prediction(pred: dict, final_price: float, now: datetime):
             if final_move < 0:
                 status = "missed"
             else:
-                status = "wrong"
-                
+                status = "wrong"                
     elif direction.lower() == "neutral":
         if abs(final_move) <= 0.2:
             status = "hit"

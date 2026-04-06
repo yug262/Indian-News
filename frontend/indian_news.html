@@ -6,10 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description"
         content="Live Crypto & Finance News — auto-refreshing feed from top sources with AI-powered market impact analysis.">
-    <meta property="og:title" content="CryptoWire — Live News Feed">
-    <meta property="og:description" content="Real-time crypto & finance news with AI market impact analysis.">
+    <meta property="og:title" content="Indian Market — Live News Feed">
+    <meta property="og:description" content="Real-time Indian market news with AI market impact analysis.">
     <meta property="og:type" content="website">
-    <title>CryptoWire — Live News Feed</title>
+    <title>Indian Market — Live News Feed</title>
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236c63ff' stroke-width='2'><path d='M13 2L3 14h9l-1 8 10-12h-9l1-8z'/></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -45,18 +45,16 @@
                         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
                     </svg>
                 </div>
-                <h1 class="logo-text">CryptoWire</h1>
+                <h1 class="logo-text">Indian Market</h1>
                 <span class="live-badge">
                     <span class="live-dot"></span>
                     LIVE
                 </span>
-                <a href="/predictions" class="nav-link"
-                    style="margin-left: 16px; font-weight: 600; color: var(--text-secondary); text-decoration: none; display: flex; align-items: center; transition: color 0.2s;">
+                <a href="/predictions" class="nav-link" style="margin-left: 16px; font-weight: 600; color: var(--text-secondary); text-decoration: none; display: flex; align-items: center; transition: color 0.2s;">
                     Predictions
                 </a>
-                <a href="/indian_news" class="nav-link"
-                    style="margin-left: 16px; font-weight: 600; color: var(--text-secondary); text-decoration: none; display: flex; align-items: center; transition: color 0.2s;">
-                    Indian Market
+                <a href="/" class="nav-link" style="margin-left: 16px; font-weight: 600; color: var(--text-secondary); text-decoration: none; display: flex; align-items: center; transition: color 0.2s;">
+                    Global & Crypto
                 </a>
                 <button id="chartViewBtn" onclick="openChartPanel()" style="margin-left: 16px; display: flex; align-items: center; gap: 6px; padding: 7px 16px; border-radius: 8px; border: 1.5px solid rgba(108,99,255,0.6); background: rgba(108,99,255,0.12); color: #a89fff; font-size: 0.82rem; font-weight: 700; cursor: pointer; transition: all 0.2s; letter-spacing: 0.5px;" onmouseover="this.style.background='rgba(108,99,255,0.25)'" onmouseout="this.style.background='rgba(108,99,255,0.12)'">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
@@ -117,12 +115,9 @@
                 <!-- Dynamically populated -->
             </div>
             <div class="filters-right">
-                <select class="relevance-filter-select" id="relevanceFilter" aria-label="Filter by trading relevance"
-                    autocomplete="off">
+                <select class="relevance-filter-select" id="relevanceFilter" aria-label="Filter by trading relevance" autocomplete="off">
                     <option value="all" selected>📊 All News</option>
                     <option value="very high useful">🔥 Very High Useful</option>
-                    <option value="crypto useful">₿ Crypto Useful</option>
-                    <option value="forex useful">💱 Forex Useful</option>
                     <option value="useful">🟢 Useful</option>
                     <option value="medium">🟡 Medium</option>
                     <option value="neutral">⚖️ Neutral</option>
@@ -201,7 +196,7 @@
             <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:16px 28px; border-bottom:1px solid rgba(255,255,255,0.05);">
                 <div style="position:relative; flex:1; min-width:240px;">
                     <svg style="position:absolute;left:12px;top:50%;transform:translateY(-50%);" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-                    <input id="chartSearchInput" type="text" placeholder="Search pair (e.g. EURUSD, GBPUSD)…" autocomplete="off" oninput="onChartSearch(this.value)" style="width:100%;padding:10px 12px 10px 36px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:var(--text-main,#f0f0f0);font-size:0.87rem;outline:none;box-sizing:border-box;transition:border 0.2s;" onfocus="this.style.borderColor='rgba(108,99,255,0.6)'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
+                    <input id="chartSearchInput" type="text" placeholder="Search NSE pair (e.g. TCS, RELIANCE)…" autocomplete="off" oninput="onChartSearch(this.value)" style="width:100%;padding:10px 12px 10px 36px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:10px;color:var(--text-main,#f0f0f0);font-size:0.87rem;outline:none;box-sizing:border-box;transition:border 0.2s;" onfocus="this.style.borderColor='rgba(108,99,255,0.6)'" onblur="this.style.borderColor='rgba(255,255,255,0.1)'">
                     <div id="chartSearchDrop" style="display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);background:var(--bg-card,#141827);border:1px solid rgba(108,99,255,0.3);border-radius:10px;z-index:100;max-height:220px;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,0.5);"></div>
                 </div>
                 <div id="chartSymbolInfo" style="display:flex;align-items:center;gap:8px;">
@@ -261,9 +256,9 @@
                         stroke-linecap="round" stroke-linejoin="round">
                         <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
                     </svg>
-                    <span>CryptoWire</span>
+                    <span>Indian Market</span>
                 </div>
-                <p class="footer-tagline">Real-time crypto &amp; finance news with AI-powered market impact analysis.
+                <p class="footer-tagline">Real-time Indian market news with AI-powered market impact analysis.
                 </p>
             </div>
             <div class="footer-stats">
@@ -289,7 +284,7 @@
     </footer>
 
     <!-- UI and Display Logic -->
-    <script src="/static/app.js?v=4"></script>
+    <script src="/static/indian_app.js?v=4"></script>
 </body>
 
 </html>

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import aiohttp
 import re
 import feedparser
@@ -54,9 +55,8 @@ RSS_FEEDS = [
     "https://finance.yahoo.com/news/rssindex",
     "https://cointelegraph.com/rss",
     "https://www.investing.com/rss/news.rss",
-    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"
+    "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
     # "https://feeds.bloomberg.com/markets/news.rss",
-    "https://www.ecb.europa.eu/rss/press.html",
     "https://www.france24.com/en/business/rss",
     "https://www.france24.com/en/business-tech/rss",
     "https://www.france24.com/en/france/rss",
@@ -64,8 +64,7 @@ RSS_FEEDS = [
     "https://www.france24.com/en/africa/rss",
     "https://www.france24.com/en/americas/rss",
     "https://www.france24.com/en/asia-pacific/rss",
-    "https://www.france24.com/en/middle-east/rss"
-]
+    "https://www.france24.com/en/middle-east/rss"]
 FETCH_INTERVAL = 30  # second
 
 # ==============================
@@ -321,12 +320,12 @@ async def fetch_all_feeds(session, semaphore):
             reason = str(c_res.get("reason", ""))[:500]
 
             final_params.append(
-                (*params, relevance, category, reason)
+                (*params, relevance, category, reason, json.dumps(c_res.get("affected_forex_pairs", [])))
             )
 
         insert_query = """
-            INSERT INTO news (title, link, title_hash, published, source, description, image_url, news_relevance, news_category, news_reason)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO news (title, link, title_hash, published, source, description, image_url, news_relevance, news_category, news_reason, affected_forex_pairs)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (title_hash) DO NOTHING
             RETURNING id
         """
