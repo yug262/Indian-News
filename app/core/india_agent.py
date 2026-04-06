@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-from app.core.prompt import INDIAN_MARKET_CLASSIFY_PROMPT
+INDIAN_MARKET_CLASSIFY_PROMPT
 load_dotenv()
 
 logger = logging.getLogger("india_agent")

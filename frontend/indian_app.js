@@ -641,7 +641,7 @@ function renderCardAnalysis(article) {
 
     const bias = (coreView.market_bias || article.usd_bias || 'Neutral').toLowerCase();
     const biasInfo = getBiasInfo(bias);
-    const horizon = coreView.primary_horizon || article.execution_window || article.impact_duration || 'N/A';
+    const horizon = coreView.horizon || article.execution_window || article.impact_duration || 'N/A';
 
     return `
         <div class="card-analysis">
@@ -742,13 +742,12 @@ function renderIndianCompactModal(article, analysis) {
     try {
         if (!analysis) throw new Error("No analysis data available");
 
-        const newsSummary = analysis.news_summary || {};
         const coreView = analysis.core_view || {};
-        const affected = analysis.affected_entities || {};
+        const evidenceQuality = analysis.evidence_quality || {};
         const stocks = analysis.stock_impacts || [];
         const sectors = analysis.sector_impacts || [];
-        const evidence = analysis.evidence || [];
         const tradeability = analysis.tradeability || {};
+        const impactTriggers = analysis.impact_triggers || {};
 
         const impactScore = coreView.impact_score || article.impact_score || 0;
         const scoreClass = getScoreClass(impactScore);
@@ -764,14 +763,14 @@ function renderIndianCompactModal(article, analysis) {
         // Tradeability Badge
         let tradeCls = 'trade-no-edge';
         let tradeIcon = '⚖️';
-        if (tradeability.classification === 'actionable_now') { tradeCls = 'trade-actionable'; tradeIcon = '⚡'; }
-        else if (tradeability.classification === 'potential_opportunity') { tradeCls = 'trade-potential'; tradeIcon = '🔍'; }
+        const tradeClass = tradeability.classification || 'no_edge';
+        if (tradeClass === 'actionable_now') { tradeCls = 'trade-actionable'; tradeIcon = '⚡'; }
+        else if (tradeClass === 'wait_for_confirmation') { tradeCls = 'trade-potential'; tradeIcon = '🔍'; }
 
         // Render Entities
         const entityChips = [
-            ...(analysis.symbols || article.symbols || []).map(s => `<span class="entity-tag stock clickable-entity" onclick="event.stopPropagation(); closeModal(); selectChartPair('${escapeHtml(s)}')">${escapeHtml(s)}</span>`),
-            ...(affected.sectors || []).map(s => `<span class="entity-tag sector">${escapeHtml(s)}</span>`),
-            ...(affected.indices || []).map(s => `<span class="entity-tag index">${escapeHtml(s)}</span>`)
+            ...stocks.map(s => `<span class="entity-tag stock clickable-entity" onclick="event.stopPropagation(); closeModal(); selectChartPair('${escapeHtml(s.symbol)}')">${escapeHtml(s.symbol)}</span>`),
+            ...sectors.map(s => `<span class="entity-tag sector">${escapeHtml(s.sector)}</span>`)
         ].join('');
 
         const modalBodyHtml = `
@@ -783,7 +782,7 @@ function renderIndianCompactModal(article, analysis) {
                     </div>
                     <div class="analysis-panel-badges">
                         <span class="signal-bucket-badge ${bucketCls}">${bucket}</span>
-                        <span class="tradeability-badge ${tradeCls}" style="margin-left:8px;">${tradeIcon} ${escapeHtml((tradeability.classification || 'Researching').replace('_', ' ').toUpperCase())}</span>
+                        <span class="tradeability-badge ${tradeCls}" style="margin-left:8px;">${tradeIcon} ${escapeHtml((tradeClass).replace(/_/g, ' ').toUpperCase())}</span>
                     </div>
                 </div>
 
@@ -797,7 +796,7 @@ function renderIndianCompactModal(article, analysis) {
                     </div>
                     <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
                         <span class="bias-pill ${biasCls}">${biasArrow} ${coreView.market_bias || 'Neutral'} Bias</span>
-                        <span style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">HORIZON: ${escapeHtml(coreView.primary_horizon || 'Short Term').toUpperCase()}</span>
+                        <span style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">HORIZON: ${escapeHtml(coreView.horizon || 'short_term').replace(/_/g, ' ').toUpperCase()}</span>
                     </div>
                 </div>
 
@@ -806,6 +805,7 @@ function renderIndianCompactModal(article, analysis) {
                     <button class="analysis-tab" onclick="switchTab(this, 'tab-ia-impacts')">MARKET IMPACTS</button>
                     <button class="analysis-tab" onclick="switchTab(this, 'tab-ia-setup')">TRADE SETUP</button>
                     <button class="analysis-tab" onclick="switchTab(this, 'tab-ia-invalidations')">INVALIDATIONS</button>
+                    <button class="analysis-tab" onclick="switchTab(this, 'tab-ia-reasoning')">REASONING</button>
                 </div>
 
                 <!-- TAB 1: Overview -->
@@ -818,13 +818,13 @@ function renderIndianCompactModal(article, analysis) {
                         <div class="summary-split-box confirmed">
                             <div class="summary-split-title confirmed">✓ Confirmed</div>
                             <ul class="summary-list">
-                                ${(newsSummary.what_is_confirmed || []).map(item => `<li class="summary-item">${escapeHtml(item)}</li>`).join('') || '<li class="summary-item">No specific confirmations.</li>'}
+                                ${(evidenceQuality.confirmed || []).map(item => `<li class="summary-item">${escapeHtml(item)}</li>`).join('') || '<li class="summary-item">No specific confirmations.</li>'}
                             </ul>
                         </div>
                         <div class="summary-split-box unknown">
                             <div class="summary-split-title unknown">? Unknown / Risk</div>
                             <ul class="summary-list">
-                                ${(newsSummary.what_is_unknown || []).map(item => `<li class="summary-item">${escapeHtml(item)}</li>`).join('') || '<li class="summary-item">No major unknowns identified.</li>'}
+                                ${(evidenceQuality.unknowns_risks || []).map(item => `<li class="summary-item">${escapeHtml(item)}</li>`).join('') || '<li class="summary-item">No major unknowns identified.</li>'}
                             </ul>
                         </div>
                     </div>
@@ -852,9 +852,11 @@ function renderIndianCompactModal(article, analysis) {
                                 <span style="margin-left:auto; font-size:0.7rem; font-weight:700; color:var(--text-muted); margin-right: 32px;">CONF: ${s.confidence}%</span>
                             </div>
                             <p style="font-size:0.85rem; color:var(--text-primary); font-weight:600; margin:8px 0;">${escapeHtml(s.company_name)}</p>
-                            <div style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:8px;"><strong>Role:</strong> ${escapeHtml(s.role)}</div>
-                                    <p style="font-size:0.8rem; color:var(--text-secondary); line-height:1.4;">${escapeHtml(s.why)}</p>
-                                    ${s.invalidation ? `<div style="margin-top:8px; font-size:0.7rem; color:#ff4757; font-style:italic;">🛑 ${escapeHtml(s.invalidation)}</div>` : ''}
+                            <div style="display:flex; gap:12px; font-size:0.75rem; color:var(--text-secondary); margin-bottom:8px;">
+                                <span><strong>Reaction:</strong> ${escapeHtml(s.reaction || 'uncertain')}</span>
+                                <span><strong>Timing:</strong> ${escapeHtml(s.timing || 'short_term')}</span>
+                            </div>
+                            <p style="font-size:0.8rem; color:var(--text-secondary); line-height:1.4;">${escapeHtml(s.why || '')}</p>
                                 </div>
                             `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No direct stock impacts.</p>'}
                         </div>
@@ -869,10 +871,7 @@ function renderIndianCompactModal(article, analysis) {
                                         <span class="forex-pair-dir ${(sec.bias || '').toLowerCase() === 'bullish' ? 'dir-bullish' : (sec.bias || '').toLowerCase() === 'bearish' ? 'dir-bearish' : 'dir-neutral'}">${escapeHtml((sec.bias || '').toUpperCase())}</span>
                                     </div>
                                     <p style="font-size:0.8rem; color:var(--text-secondary); margin-top:8px; line-height:1.4;">${escapeHtml(sec.why)}</p>
-                                    <div style="margin-top:8px; display:flex; justify-content:space-between; font-size:0.65rem; color:var(--text-muted);">
-                                        <span>Horizon: ${escapeHtml(sec.time_horizon)}</span>
-                                        <span>Conf: ${sec.confidence}%</span>
-                                    </div>
+
                                 </div>
                             `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No sector impacts.</p>'}
                         </div>
@@ -882,26 +881,41 @@ function renderIndianCompactModal(article, analysis) {
                 <!-- TAB 3: Setup -->
                 <div id="tab-ia-setup" class="analysis-tab-panel">
                     <div class="analysis-sub-section">
-                        <div class="analysis-bars-title">Tradeability & Triggers</div>
-                        <div class="trade-trigger-container">
-                            ${(tradeability.action_triggers || []).map(t => `<div class="trade-trigger-item">⚡ ${escapeHtml(t)}</div>`).join('') || '<div class="trade-trigger-item">No immediate triggers identified.</div>'}
-                        </div>
-                        <p style="font-size:0.85rem; color:var(--text-secondary); margin-top:12px; line-height:1.5;">
-                            <strong>Reasoning:</strong> ${escapeHtml(tradeability.reasoning || 'Awaiting further data for trade entry.')}
-                        </p>
-                    </div>
-                    <div class="analysis-sub-section" style="margin-top:24px;">
-                        <div class="analysis-bars-title">Insights & Evidence</div>
-                        <div style="display:flex; flex-direction:column; gap:8px;">
-                            ${evidence.map(e => `
-                                <div style="padding:10px; background:rgba(255,255,255,0.02); border:1px solid var(--border); border-radius:8px; display:flex; justify-content:space-between; align-items:center;">
-                                    <div style="font-size:0.8rem; color:var(--text-secondary); flex:1;">${escapeHtml(e.detail)}</div>
-                                    <div style="display:flex; gap:8px; align-items:center; margin-left:12px;">
-                                        <span class="impact-pill ${(e.strength || '').toLowerCase() === 'high' ? 'impact-pos' : (e.strength || '').toLowerCase() === 'low' ? 'impact-neg' : 'impact-neu'}">${escapeHtml((e.strength || '').toUpperCase())}</span>
-                                        <span style="font-size:0.65rem; color:var(--text-muted); font-weight:700;">${e.confidence}%</span>
-                                    </div>
+                        <div class="analysis-bars-title">Tradeability</div>
+
+                        <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:10px; padding:16px; margin-top:8px;">
+                            
+                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                                <span class="tradeability-badge ${tradeCls}" style="font-size:0.8rem;">
+                                    ${tradeIcon} ${tradeClass.replace(/_/g, ' ').toUpperCase()}
+                                </span>
+
+                                ${tradeability.remaining_impact_state ? `
+                                    <span class="impact-state-badge state-${tradeability.remaining_impact_state.replace(/_/g, '-')}" 
+                                        style="font-size:0.65rem; padding:4px 10px; border-radius:99px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; background:rgba(255,255,255,0.05); border:1px solid var(--border-color);">
+                                        🎯 ${tradeability.remaining_impact_state.replace(/_/g, ' ')}
+                                    </span>
+                                ` : ''}
+                            </div>
+
+                            ${tradeability.priced_in_assessment ? `
+                            <div style="background:linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.05)); border:1px solid rgba(99,102,241,0.25); border-radius:10px; padding:14px 16px; margin-bottom:14px;">
+                                <div style="font-size:0.7rem; color:#818cf8; font-weight:700; text-transform:uppercase; margin-bottom:6px; letter-spacing:0.5px;">
+                                    ⏱️ Remaining Impact Assessment
                                 </div>
-                            `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No recorded evidence points.</p>'}
+                                <div style="font-size:0.88rem; color:var(--text-primary); line-height:1.55;">
+                                    ${escapeHtml(tradeability.priced_in_assessment)}
+                                </div>
+                            </div>` : ''}
+
+                            <p style="font-size:0.9rem; color:var(--text-primary); line-height:1.5; margin-bottom:12px;">
+                                <strong>What to do:</strong> ${escapeHtml(tradeability.what_to_do || 'No trade.')}
+                            </p>
+
+                            <p style="font-size:0.85rem; color:var(--text-secondary); line-height:1.5;">
+                                <strong>Reason:</strong> ${escapeHtml(tradeability.reason || 'Awaiting further data.')}
+                            </p>
+
                         </div>
                     </div>
                 </div>
@@ -911,45 +925,58 @@ function renderIndianCompactModal(article, analysis) {
                     <div class="analysis-sub-section">
                         <div class="analysis-bars-title" style="color:#ff6b7a;">Impact Killers (Negate Thesis)</div>
                         <div class="forex-pairs-grid" style="margin-top:12px;">
-                            ${(analysis.impact_triggers?.impact_killers || []).map(k => `
+                            ${(impactTriggers.impact_killers || []).map(k => `
                                 <div class="forex-pair-card" style="border-left: 3px solid #ff4757; background: rgba(255, 71, 87, 0.03);">
                                     <div class="forex-pair-header">
                                         <span class="forex-pair-name" style="color:#ff6b7a;">${escapeHtml(k.trigger)}</span>
-                                        <span style="margin-left:auto; font-size:0.7rem; font-weight:700; color:var(--text-muted)">CONF: ${k.confidence}%</span>
                                     </div>
                                     <div style="font-size:0.85rem; color:var(--text-primary); margin:8px 0; line-height:1.4;">
-                                        <strong>Why it kills:</strong> ${escapeHtml(k.why_it_kills_the_impact)}
-                                    </div>
-                                    <div style="font-size:0.8rem; color:var(--text-secondary); line-height:1.4;">
-                                        <strong>Market Effect:</strong> ${escapeHtml(k.resulting_market_effect)}
-                                    </div>
-                                    <div style="margin-top:8px; font-size:0.7rem; color:var(--text-muted); font-style:italic;">
-                                        ⏱ Sensitivity: ${escapeHtml(k.time_sensitivity)}
+                                        ${escapeHtml(k.why || '')}
                                     </div>
                                 </div>
-                            `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No immediate impact killers identified.</p>'}
+                            `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No impact killers identified.</p>'}
                         </div>
                     </div>
                     <div class="analysis-sub-section" style="margin-top:24px;">
                         <div class="analysis-bars-title" style="color:var(--accent-2);">Impact Amplifiers (Strengthen Thesis)</div>
                         <div class="forex-pairs-grid" style="margin-top:12px;">
-                            ${(analysis.impact_triggers?.impact_amplifiers || []).map(a => `
+                            ${(impactTriggers.impact_amplifiers || []).map(a => `
                                 <div class="forex-pair-card" style="border-left: 3px solid var(--accent-2); background: rgba(0, 212, 170, 0.03);">
                                     <div class="forex-pair-header">
                                         <span class="forex-pair-name" style="color:var(--accent-2);">${escapeHtml(a.trigger)}</span>
-                                        <span style="margin-left:auto; font-size:0.7rem; font-weight:700; color:var(--text-muted)">CONF: ${a.confidence}%</span>
                                     </div>
                                     <div style="font-size:0.85rem; color:var(--text-primary); margin:8px 0; line-height:1.4;">
-                                        <strong>Why it amplifies:</strong> ${escapeHtml(a.why_it_amplifies_the_impact)}
-                                    </div>
-                                    <div style="font-size:0.8rem; color:var(--text-secondary); line-height:1.4;">
-                                        <strong>Market Effect:</strong> ${escapeHtml(a.resulting_market_effect)}
-                                    </div>
-                                    <div style="margin-top:8px; font-size:0.7rem; color:var(--text-muted); font-style:italic;">
-                                        ⏱ Sensitivity: ${escapeHtml(a.time_sensitivity)}
+                                        ${escapeHtml(a.why || '')}
                                     </div>
                                 </div>
-                            `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No major amplifiers identified.</p>'}
+                            `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No amplifiers identified.</p>'}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- TAB 5: Reasoning -->
+                <div id="tab-ia-reasoning" class="analysis-tab-panel">
+                    <div class="analysis-sub-section">
+                        <div class="analysis-bars-title" style="color:var(--accent-1);">Agent Decision Trace</div>
+                        <div class="reasoning-trace-container" style="margin-top:12px; display:flex; flex-direction:column; gap:12px;">
+                            ${(() => {
+                                const dt = parseJsonField(article.decision_trace) || analysis.decision_trace || {};
+                                const steps = [
+                                    { key: 'event_identification', label: '1. Event Identification', icon: '🔍' },
+                                    { key: 'entity_mapping', label: '2. Entity Mapping', icon: '🎯' },
+                                    { key: 'impact_scoring', label: '3. Impact Scoring', icon: '⚡' },
+                                    { key: 'remaining_impact', label: '4. Remaining Impact', icon: '⏱️' },
+                                    { key: 'tradeability_reasoning', label: '5. Tradeability Reasoning', icon: '⚖️' }
+                                ];
+                                return steps.map(step => `
+                                    <div class="reasoning-step-card" style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:8px; padding:12px;">
+                                        <div style="font-size:0.75rem; color:var(--accent-1); font-weight:700; margin-bottom:6px; display:flex; align-items:center; gap:6px;">
+                                            <span>${step.icon}</span> ${step.label.toUpperCase()}
+                                        </div>
+                                        <div style="font-size:0.88rem; color:var(--text-secondary); line-height:1.5;">${escapeHtml(dt[step.key] || 'No log for this step.')}</div>
+                                    </div>
+                                `).join('');
+                            })()}
                         </div>
                     </div>
                 </div>
