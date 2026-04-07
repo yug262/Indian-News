@@ -21,6 +21,13 @@ let isFetching = false;
 let consecutiveFailures = 0;
 let searchDebounceTimer = null;
 
+// ---- Pagination & Smart Refresh ----
+let currentPage = 0;
+const articlesPerPage = 20;
+let hasMoreArticles = true;
+let isLoadingMore = false;
+const seenArticleIds = new Set();
+
 // ---- DOM Elements ----
 const newsGrid = document.getElementById('newsGrid');
 const emptyState = document.getElementById('emptyState');
@@ -1407,56 +1414,99 @@ function renderCardTimestamps(article) {
     `;
 }
 
-// ---- Render News Cards ----
-function renderNews(articles) {
-    newsGrid.innerHTML = '';
-    const featuredSection = document.getElementById('featuredSection');
-    const featuredGrid = document.getElementById('featuredGrid');
-    const allNewsHeader = document.getElementById('allNewsHeader');
-    featuredGrid.innerHTML = '';
 
-    // Filter by Analyzed Status
-    if (showOnlyAnalyzed) {
-        articles = articles.filter(a => a.impact_score != null);
-    }
+// ---- Render News Card ----
+function createNewsCard(article, index, isFeatured = false) {
+    const card = document.createElement('div');
+    card.className = isFeatured ? 'news-card featured-card' : 'news-card';
+    card.style.animationDelay = `${index * 0.05}s`;
 
-    // Filter by Search Query
-    if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        articles = articles.filter(a =>
-            (a.title && a.title.toLowerCase().includes(q)) ||
-            (a.source && a.source.toLowerCase().includes(q)) ||
-            (a.description && a.description.toLowerCase().includes(q))
-        );
-    }
+    const imageHtml = article.image_url ?
+        `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
+    if (!article.image_url) card.classList.add('no-image');
 
-    if (articles.length === 0) {
+    const featuredBadge = isFeatured ? `<span class="featured-type-badge">${article.featuredType}</span>` : '';
+
+    card.innerHTML = `
+        ${imageHtml}
+        <div class="card-header-row">
+            <div class="card-header-left">
+                ${renderImpactBadge(article)}
+                ${renderRelevanceBadge(article.news_relevance)}
+                ${renderCategoryBadge(article.news_category)}
+                ${featuredBadge}
+            </div>
+            <span class="card-source"><span style="color:var(--accent-1); margin-right:4px;">•</span> ${escapeHtml(article.source || 'Unknown')}</span>
+        </div>
+        
+        <h2 class="card-title">${escapeHtml(article.title)}</h2>
+        ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
+        
+        ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
+        <div class="card-affected-stocks" style="display:block; padding:10px; background-color:rgba(108, 99, 255, 0.08); align-items:center; gap:10px; margin: 16px 0 12px 0;">
+            <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span><br>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
+                ${renderAllSymbolsBadge(article.symbols)}
+            </div>
+        </div>
+        ` : ''}
+
+        <hr style="border:0; border-top:1px solid var(--border-color); margin:12px 0; opacity:0.15;">
+        
+        <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div class="card-timestamps-premium" style="margin:0;">
+                <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
+                <div class="ts-row" style="font-size:0.65rem;"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
+            </div>
+            <div class="card-footer-right">
+                ${renderAnalyzeButton(article)}
+            </div>
+        </div>
+        
+        <div class="card-action-row" style="margin-top:auto;">
+            <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-now-btn-premium" onclick="event.stopPropagation()" 
+               style="display:flex; align-items:center; justify-content:center; width:100%; padding:12px; border-radius:12px; background:linear-gradient(135deg, #6c63ff, #00d4aa); color:white; font-weight:800; text-decoration:none; transition:all 0.3s; box-shadow: 0 4px 15px rgba(108, 99, 255, 0.2);">
+                Read Now →
+            </a>
+        </div>
+    `;
+
+    card.addEventListener('click', () => openModal(article));
+    return card;
+}
+
+// ---- Render News (supports Prepend, Append, and Full Refresh) ----
+function renderNews(articles, prepend = false, append = false) {
+    if (!prepend && !append) {
+        newsGrid.innerHTML = '';
+        featuredGrid.innerHTML = '';
         featuredSection.style.display = 'none';
         allNewsHeader.style.display = 'none';
-        newsGrid.style.display = 'none';
-        emptyState.style.display = 'block';
-
-        if (searchQuery) {
-            emptyStateTitle.textContent = `No results for "${searchQuery}"`;
-            emptyStateMsg.textContent = 'Try a different search term or clear the filter.';
-        } else {
-            emptyStateTitle.textContent = 'No articles yet';
-            emptyStateMsg.textContent = 'The monitor is fetching news. Articles will appear here automatically.';
+        
+        if (!articles || articles.length === 0) {
+            emptyState.style.display = 'flex';
+            newsGrid.style.display = 'none';
+            if (searchQuery) {
+                emptyStateTitle.textContent = `No results for "${searchQuery}"`;
+                emptyStateMsg.textContent = 'Try a different search term or clear the filter.';
+            } else {
+                emptyStateTitle.textContent = 'No articles yet';
+                emptyStateMsg.textContent = 'The monitor is fetching news. Articles will appear here automatically.';
+            }
+            return;
         }
-
-        articleCount.textContent = '0 articles';
-        return;
     }
+
+    if (!articles || articles.length === 0) return;
 
     emptyState.style.display = 'none';
     newsGrid.style.display = 'grid';
-    articleCount.textContent = `${articles.length} article${articles.length !== 1 ? 's' : ''}`;
 
-    // Separate featured articles (only when NOT searching)
-    let regularArticles = [...articles];
-    let featured = [];
+    // Handle Featured Articles (ONLY on the first page/initial load/refresh)
+    if (!prepend && !append && !searchQuery) {
+        let regularArticles = [...articles];
+        let featured = [];
 
-    if (!searchQuery) {
         // 1. Find Latest (Scraped within last 20 minutes)
         const TWENTY_MINS_MS = 20 * 60 * 1000;
         const now = Date.now();
@@ -1475,7 +1525,7 @@ function renderNews(articles) {
 
         // 2. Find Most Impacted from remaining
         let mostImpactedIdx = -1;
-        let highestScore = 3; // Must be at least 4 to be featured
+        let highestScore = 3; 
 
         regularArticles.forEach((a, idx) => {
             if (a.impact_score && a.impact_score > highestScore) {
@@ -1489,130 +1539,30 @@ function renderNews(articles) {
             mostImpacted.featuredType = '🔥 Most Impacted';
             featured.unshift(mostImpacted);
         }
-    }
 
-    // Render Featured
-    if (featured.length > 0) {
-        featuredSection.style.display = 'block';
-        allNewsHeader.style.display = 'block';
-
-        featured.forEach((article, index) => {
-            const card = document.createElement('div');
-            card.className = 'news-card featured-card';
-            card.style.animationDelay = `${index * 0.1}s`;
-
-            const imageHtml = article.image_url ?
-                `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
-            if (!article.image_url) card.classList.add('no-image');
-
-            card.innerHTML = `
-                ${imageHtml}
-                <div class="card-header-row">
-                    <div class="card-header-left">
-                        ${renderImpactBadge(article)}
-                        ${renderRelevanceBadge(article.news_relevance)}
-                        ${renderCategoryBadge(article.news_category)}
-                        <span class="featured-type-badge">${article.featuredType}</span>
-                    </div>
-                    <span class="card-source"><span style="color:var(--accent-1); margin-right:4px;">•</span> ${escapeHtml(article.source || 'Unknown')}</span>
-                </div>
-                
-                <h2 class="card-title">${escapeHtml(article.title)}</h2>
-                ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
-                
-                ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
-                <div class="card-affected-stocks" style="display:flex; align-items:center; gap:10px; margin: 16px 0 12px 0;">
-                    <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span>
-                    <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                        ${renderAllSymbolsBadge(article.symbols)}
-                    </div>
-                </div>
-                ` : ''}
-
-                <hr style="border:0; border-top:1px solid var(--border-color); margin:12px 0; opacity:0.15;">
-                
-                <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                    <div class="card-timestamps-premium" style="margin:0;">
-                        <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
-                        <div class="ts-row" style="font-size:0.65rem;"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
-                    </div>
-                    <div class="card-footer-right">
-                        ${renderAnalyzeButton(article)}
-                    </div>
-                </div>
-                
-                <div class="card-action-row" style="margin-top:auto;">
-                    <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-now-btn-premium" onclick="event.stopPropagation()" 
-                       style="display:flex; align-items:center; justify-content:center; width:100%; padding:14px; border-radius:12px; background:linear-gradient(135deg, #6c63ff, #00d4aa); color:white; font-weight:800; text-decoration:none; transition:all 0.3s; box-shadow: 0 4px 15px rgba(108, 99, 255, 0.2);">
-                        Read Now →
-                    </a>
-                </div>
-            `;
-
-            card.addEventListener('click', () => openModal(article));
-            featuredGrid.appendChild(card);
+        if (featured.length > 0) {
+            featuredSection.style.display = 'block';
+            allNewsHeader.style.display = 'block';
+            featured.forEach((art, idx) => {
+                featuredGrid.appendChild(createNewsCard(art, idx, true));
+            });
+        }
+        
+        // Render the remaining regular articles
+        regularArticles.forEach((article, index) => {
+            newsGrid.appendChild(createNewsCard(article, index));
         });
     } else {
-        featuredSection.style.display = 'none';
-        allNewsHeader.style.display = 'none';
+        // Standard Prepended or Appended rendering
+        articles.forEach((article, index) => {
+            const card = createNewsCard(article, index);
+            if (prepend) {
+                newsGrid.insertBefore(card, newsGrid.firstChild);
+            } else {
+                newsGrid.appendChild(card);
+            }
+        });
     }
-
-    // Render Regular
-    regularArticles.forEach((article, index) => {
-        const card = document.createElement('div');
-        card.className = 'news-card';
-        card.style.animationDelay = `${index * 0.05}s`;
-
-        const imageHtml = article.image_url ?
-            `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
-        if (!article.image_url) card.classList.add('no-image');
-
-        card.innerHTML = `
-            ${imageHtml}
-            <div class="card-header-row">
-                <div class="card-header-left">
-                    ${renderImpactBadge(article)}
-                    ${renderRelevanceBadge(article.news_relevance)}
-                    ${renderCategoryBadge(article.news_category)}
-                </div>
-                <span class="card-source"><span style="color:var(--accent-1); margin-right:4px;">•</span> ${escapeHtml(article.source || 'Unknown')}</span>
-            </div>
-            
-            <h2 class="card-title">${escapeHtml(article.title)}</h2>
-            ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
-            
-            ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
-            <div class="card-affected-stocks" style="display:block; padding:10px; background-color:rgba(108, 99, 255, 0.08) align-items:center; gap:10px; margin: 16px 0 12px 0;">
-                <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span><br>
-                <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
-                    ${renderAllSymbolsBadge(article.symbols)}
-                </div>
-            </div>
-            ` : ''}
-
-            <hr style="border:0; border-top:1px solid var(--border-color); margin:12px 0; opacity:0.15;">
-            
-            <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                <div class="card-timestamps-premium" style="margin:0;">
-                    <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
-                    <div class="ts-row" style="font-size:0.65rem;"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
-                </div>
-                <div class="card-footer-right">
-                    ${renderAnalyzeButton(article)}
-                </div>
-            </div>
-            
-            <div class="card-action-row" style="margin-top:auto;">
-                <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-now-btn-premium" onclick="event.stopPropagation()" 
-                   style="display:flex; align-items:center; justify-content:center; width:100%; padding:12px; border-radius:12px; background:linear-gradient(135deg, #6c63ff, #00d4aa); color:white; font-weight:800; text-decoration:none; transition:all 0.3s; box-shadow: 0 4px 15px rgba(108, 99, 255, 0.2);">
-                    Read Now →
-                </a>
-            </div>
-        `;
-
-        card.addEventListener('click', () => openModal(article));
-        newsGrid.appendChild(card);
-    });
 }
 
 // ---- Fetch Sources ----
@@ -1704,14 +1654,31 @@ function formatSymbol(sym) {
     return sym;
 }
 
-// ---- Fetch News ----
-async function fetchNews() {
-    if (isFetching) return;
+// ---- Fetch News (with Pagination & Smart Refresh) ----
+async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
+    if (isFetching || (isLoadMore && !hasMoreArticles)) return;
+    
+    // If it's a background refresh, we don't show the full-page loader
+    if (!isBackgroundRefresh && !isLoadMore) {
+        showRefreshIndicator();
+    }
+    
+    if (isLoadMore) {
+        isLoadingMore = true;
+        const indicator = document.getElementById('loadMoreIndicator');
+        if (indicator) indicator.style.display = 'flex';
+    }
+
     isFetching = true;
-    showRefreshIndicator();
 
     try {
-        let url = `${API_BASE}/api/indian_news?today_only=false`;
+        const offset = isLoadMore ? (currentPage + 1) * articlesPerPage : 0;
+        // background refresh always checks page 0
+        const fetchOffset = isBackgroundRefresh ? 0 : offset;
+        const fetchLimit = isBackgroundRefresh ? 50 : articlesPerPage;
+
+        let url = `${API_BASE}/api/indian_news?today_only=false&limit=${fetchLimit}&offset=${fetchOffset}`;
+        
         if (currentSource && currentSource !== 'all') {
             url += `&source=${encodeURIComponent(currentSource)}`;
         }
@@ -1729,22 +1696,51 @@ async function fetchNews() {
         const json = await res.json();
 
         if (json.status === 'success') {
-            newsData = json.data;
-            if (articleCount) articleCount.textContent = `${json.data.length} articles`;
-            if (drawerCount) drawerCount.textContent = `${json.data.length} articles`;
+            const newArticles = json.data || [];
+            
+            if (isBackgroundRefresh) {
+                // Smart Refresh: Only add articles we haven't seen yet
+                const trulyNew = newArticles.filter(a => !seenArticleIds.has(a.id));
+                if (trulyNew.length > 0) {
+                    console.log(`[Smart Refresh] Found ${trulyNew.length} new articles`);
+                    // Prepend new articles to the global newsData
+                    newsData = [...trulyNew, ...newsData];
+                    trulyNew.forEach(a => seenArticleIds.add(a.id));
+                    // Render ONLY the new ones at the top
+                    renderNews(trulyNew, true); // true = prepend
+                }
+            } else if (isLoadMore) {
+                // Infinite Scroll: Append new articles
+                if (newArticles.length < articlesPerPage) {
+                    hasMoreArticles = false;
+                }
+                currentPage++;
+                
+                // Filter out duplicates just in case
+                const uniqueNew = newArticles.filter(a => !seenArticleIds.has(a.id));
+                newsData = [...newsData, ...uniqueNew];
+                uniqueNew.forEach(a => seenArticleIds.add(a.id));
+                
+                renderNews(uniqueNew, false, true); // append = true
+            } else {
+                // Initial load or Filter change
+                newsData = newArticles;
+                seenArticleIds.clear();
+                newArticles.forEach(a => seenArticleIds.add(a.id));
+                currentPage = 0;
+                hasMoreArticles = newArticles.length >= articlesPerPage;
+                renderNews(newsData);
+            }
 
-            // The backend handles the `analyzed_only` filter, but we filter client-side just in case
-            let displayData = [...newsData];
-            if (showOnlyAnalyzed) displayData = displayData.filter(a => a.impact_score != null);
-            renderNews(displayData);
-            // Reset connection failures on success
+            // Update counts
+            if (articleCount) articleCount.textContent = `${newsData.length} articles`;
+            if (drawerCount) drawerCount.textContent = `${newsData.length} articles`;
+
             if (consecutiveFailures > 0) {
                 hideConnectionBanner();
                 showToast('Connection restored', 'success');
             }
             consecutiveFailures = 0;
-        } else {
-            console.error('API error:', json.message);
         }
     } catch (err) {
         consecutiveFailures++;
@@ -1754,7 +1750,14 @@ async function fetchNews() {
         }
     } finally {
         isFetching = false;
+        isLoadingMore = false;
         hideRefreshIndicator();
+        const indicator = document.getElementById('loadMoreIndicator');
+        if (indicator) indicator.style.display = 'none';
+        
+        // Hide/Show sentinel based on hasMoreArticles
+        const sentinel = document.getElementById('infiniteScrollSentinel');
+        if (sentinel) sentinel.style.display = hasMoreArticles ? 'block' : 'none';
     }
 }
 
@@ -1888,15 +1891,28 @@ async function init() {
     if (relevanceFilter) {
         relevanceFilter.value = 'all';
     }
+    
+    // Setup Infinite Scroll (IntersectionObserver)
+    const sentinel = document.getElementById('infiniteScrollSentinel');
+    if (sentinel) {
+        const observer = new IntersectionObserver((entries) => {
+            if (entries[0].isIntersecting && hasMoreArticles && !isFetching && !isLoadingMore) {
+                console.log('[Infinite Scroll] Sentinel hit, loading more...');
+                fetchNews(true); // isLoadMore = true
+            }
+        }, { threshold: 0.1 });
+        observer.observe(sentinel);
+    }
+    
     await Promise.all([fetchSources(), fetchNews(), fetchStats(), fetchHolidays(), fetchEvents()]);
 }
 
 init();
 
-// ---- Auto-refresh ----
+// ---- Auto-refresh (Smart Refresh) ----
 setInterval(() => {
     fetchSources();
-    fetchNews();
+    fetchNews(false, true); // isLoadMore=false, isBackgroundRefresh=true
     fetchStats();
     fetchEvents();
 }, REFRESH_INTERVAL);

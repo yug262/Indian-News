@@ -33,7 +33,8 @@ def get_news(source: str = Query(None, description="Filter news by source name")
              today_only: bool = Query(False, description="Only fetch today's news"),
              relevance: str = Query(None, description="Filter news by relevance"),
              analyzed_only: bool = Query(False, description="Only fetch analyzed news"),
-             event_id: str = Query(None, description="Filter news by exact event ID")):
+             event_id: str = Query(None, description="Filter news by exact event ID"),
+             offset: int = Query(0, description="Number of items to skip for pagination")):
     """Get news articles, sorted by newest first."""
     
     query = """SELECT id, title, link, published, source, description, image_url,
@@ -66,8 +67,8 @@ def get_news(source: str = Query(None, description="Filter news by source name")
         query += " AND event_id = %s"
         params.append(event_id)
         
-    query += " ORDER BY published DESC LIMIT %s"
-    params.append(limit)
+    query += " ORDER BY published DESC LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
     
     try:
         articles = fetch_all(query, params)
@@ -170,7 +171,8 @@ def get_indian_news(source: str = Query(None, description="Filter news by source
              today_only: bool = Query(False, description="Only fetch today's news"),
              relevance: str = Query(None, description="Filter news by relevance"),
              analyzed_only: bool = Query(False, description="Only fetch analyzed news"),
-             event_id: str = Query(None, description="Filter news by exact event ID")):
+             event_id: str = Query(None, description="Filter news by exact event ID"),
+             offset: int = Query(0, description="Number of items to skip for pagination")):
     """Get Indian news articles, sorted by newest first."""
     
     query = """SELECT id, title, link, published, source, description, image_url,
@@ -204,8 +206,8 @@ def get_indian_news(source: str = Query(None, description="Filter news by source
         query += " AND event_id = %s"
         params.append(event_id)
         
-    query += " ORDER BY published DESC LIMIT %s"
-    params.append(limit)
+    query += " ORDER BY published DESC LIMIT %s OFFSET %s"
+    params.extend([limit, offset])
     
     try:
         articles = fetch_all(query, params)
@@ -220,6 +222,7 @@ def get_indian_news(source: str = Query(None, description="Filter news by source
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
 @app.get("/api/sources")
 def get_sources():
     """Get list of distinct news sources available."""
@@ -230,15 +233,18 @@ def get_sources():
     except Exception as e:
          return {"status": "error", "message": str(e)}
 
+
 @app.get("/api/indian_sources")
 def get_indian_sources():
-    """Get list of distinct Indian news sources available."""
-    query = "SELECT DISTINCT source FROM indian_news ORDER BY source"
+    """Get list of distinct Indian news sources available (with NULL check)."""
     try:
-         sources = fetch_all(query)
-         return {"status": "success", "data": [s['source'] for s in sources]}
+        rows = fetch_all(
+            "SELECT DISTINCT source FROM indian_news WHERE source IS NOT NULL ORDER BY source"
+        )
+        sources = [r["source"] for r in rows if r.get("source")]
+        return {"status": "success", "data": sources}
     except Exception as e:
-         return {"status": "error", "message": str(e)}
+        return {"status": "error", "message": str(e)}
 
 
 @app.post("/api/analyze/{news_id}")
@@ -794,65 +800,65 @@ def read_predictions():
         return FileResponse(pred_path)
     return {"message": "Frontend not found. Please create frontend/predictions.html"}
 
-@app.get("/api/indian_news")
-def get_indian_news(source: str = Query(None), limit: int = Query(1000),
-                    today_only: bool = Query(False), relevance: str = Query(None),
-                    analyzed_only: bool = Query(False)):
-    """Get Indian news articles, sorted by newest first."""
-    query = """SELECT id, title, link, published, source, description, image_url,
-        impact_score, impact_summary, analyzed, created_at, analysis_data,
-        news_relevance, news_category, market_bias, signal_bucket,
-        primary_symbol, executive_summary, analyzed_at
-    FROM indian_news WHERE 1=1"""
-    params: List[Any] = []
+# @app.get("/api/indian_news")
+# def get_indian_news(source: str = Query(None), limit: int = Query(1000),
+#                     today_only: bool = Query(False), relevance: str = Query(None),
+#                     analyzed_only: bool = Query(False)):
+#     """Get Indian news articles, sorted by newest first."""
+#     query = """SELECT id, title, link, published, source, description, image_url,
+#         impact_score, impact_summary, analyzed, created_at, analysis_data,
+#         news_relevance, news_category, market_bias, signal_bucket,
+#         primary_symbol, executive_summary, analyzed_at
+#     FROM indian_news WHERE 1=1"""
+#     params: List[Any] = []
 
-    if today_only:
-        today = datetime.now(timezone.utc).date()
-        query += " AND DATE(published) = %s"
-        params.append(today)
+#     if today_only:
+#         today = datetime.now(timezone.utc).date()
+#         query += " AND DATE(published) = %s"
+#         params.append(today)
 
-    if source and source.lower() != "all":
-        query += " AND source = %s"
-        params.append(source)
+#     if source and source.lower() != "all":
+#         query += " AND source = %s"
+#         params.append(source)
 
-    if relevance and relevance.lower() != "all":
-        query += " AND LOWER(news_relevance) = %s"
-        params.append(relevance.lower())
+#     if relevance and relevance.lower() != "all":
+#         query += " AND LOWER(news_relevance) = %s"
+#         params.append(relevance.lower())
 
-    if analyzed_only:
-        query += " AND analyzed = TRUE"
+#     if analyzed_only:
+#         query += " AND analyzed = TRUE"
 
-    query += " ORDER BY published DESC LIMIT %s"
-    params.append(limit)
+#     query += " ORDER BY published DESC LIMIT %s"
+#     params.append(limit)
 
-    try:
-        articles = fetch_all(query, params)
-        for article in articles:
-            if isinstance(article.get('published'), datetime):
-                article['published'] = article['published'].isoformat()
-            if isinstance(article.get('created_at'), datetime):
-                article['created_at'] = article['created_at'].isoformat()
-            if isinstance(article.get('analyzed_at'), datetime):
-                article['analyzed_at'] = article['analyzed_at'].isoformat()
+#     try:
+#         articles = fetch_all(query, params)
+#         for article in articles:
+#             if isinstance(article.get('published'), datetime):
+#                 article['published'] = article['published'].isoformat()
+#             if isinstance(article.get('created_at'), datetime):
+#                 article['created_at'] = article['created_at'].isoformat()
+#             if isinstance(article.get('analyzed_at'), datetime):
+#                 article['analyzed_at'] = article['analyzed_at'].isoformat()
 
-        return {"status": "success", "data": articles}
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {"status": "error", "message": str(e)}
+#         return {"status": "success", "data": articles}
+#     except Exception as e:
+#         import traceback
+#         traceback.print_exc()
+#         return {"status": "error", "message": str(e)}
 
 
-@app.get("/api/indian_sources")
-def get_indian_sources():
-    """Get a list of distinct sources from indian_news."""
-    try:
-        rows = fetch_all(
-            "SELECT DISTINCT source FROM indian_news WHERE source IS NOT NULL ORDER BY source"
-        )
-        sources = [r["source"] for r in rows if r.get("source")]
-        return {"status": "success", "data": sources}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+# @app.get("/api/indian_sources")
+# def get_indian_sources():
+#     """Get a list of distinct sources from indian_news."""
+#     try:
+#         rows = fetch_all(
+#             "SELECT DISTINCT source FROM indian_news WHERE source IS NOT NULL ORDER BY source"
+#         )
+#         sources = [r["source"] for r in rows if r.get("source")]
+#         return {"status": "success", "data": sources}
+#     except Exception as e:
+#         return {"status": "error", "message": str(e)}
 
 
 @app.get("/api/indian_stats")

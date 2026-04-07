@@ -231,6 +231,15 @@
             <div class="skeleton-card"></div>
         </div>
 
+        <!-- Infinite Scroll Load More Indicator -->
+        <div id="loadMoreIndicator" class="load-more-indicator" style="display: none;">
+            <div class="loading-spinner-small"></div>
+            <span>Loading older news...</span>
+        </div>
+        
+        <!-- Sentinel for IntersectionObserver -->
+        <div id="infiniteScrollSentinel" style="height: 20px; margin-top: 10px;"></div>
+
         <!-- Empty state -->
         <div class="empty-state" id="emptyState" style="display: none;">
             <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
