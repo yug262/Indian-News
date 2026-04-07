@@ -10,7 +10,10 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import psycopg2
-import psycopg2
+import psycopg2.extras
+import csv
+import os
+from datetime import datetime
 from app.core.db import DB_CONFIG
 
 CREATE_TABLE_SQL = """
@@ -136,10 +139,6 @@ MIGRATE_ANALYSIS_COLUMNS = [
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS event_id VARCHAR(100);",
     "ALTER TABLE news ADD COLUMN IF NOT EXISTS event_title VARCHAR(255);",
 ]
-MIGRATE_INDIAN_ANALYSIS_COLUMNS = [
-
-]
-
 
 def migrate_schema():
     """Add analysis columns to the existing news table."""
@@ -168,8 +167,8 @@ def create_indian_news_table():
         for idx_sql in CREATE_INDIAN_NEWS_INDEXES_SQL:
             cur.execute(idx_sql)
             
-        for sql in MIGRATE_ANALYSIS_COLUMNS:
-            cur.execute(sql.replace("ALTER TABLE news ", "ALTER TABLE indian_news "))
+        # for sql in MIGRATE_ANALYSIS_COLUMNS:
+        #     cur.execute(sql.replace("ALTER TABLE news ", "ALTER TABLE indian_news "))
             
         cur.execute("ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS affected_stocks JSONB DEFAULT '[]';")
         
@@ -184,6 +183,15 @@ def create_indian_news_table():
         conn.close()
 
 MIGRATE_INDIAN_AGENT_COLUMNS = [
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS analyzed BOOLEAN DEFAULT FALSE;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS description TEXT;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS image_url TEXT;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS analysis_data JSONB;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS news_category VARCHAR(100);",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS news_relevance VARCHAR(100) DEFAULT 'unclassified';",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS news_reason TEXT;",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS symbols TEXT[];",
+    "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMPTZ;",
     "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS event_type VARCHAR(50);",
     "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS event_status VARCHAR(30);",
     "ALTER TABLE indian_news ADD COLUMN IF NOT EXISTS event_scope VARCHAR(30);",
@@ -464,6 +472,98 @@ def create_nse_tables():
         conn.close()
 
 
+CREATE_COMPANIES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS companies (
+    isin VARCHAR(20) PRIMARY KEY,
+    nse_symbol VARCHAR(50) UNIQUE NOT NULL,
+    company_name TEXT,
+    nse_company_name TEXT,
+    series VARCHAR(10),
+    sector VARCHAR(255),
+    industry VARCHAR(255),
+    macro VARCHAR(255),
+    basic_industry VARCHAR(255),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+"""
+
+def create_companies_table():
+    """Create the companies table."""
+    conn = psycopg2.connect(**DB_CONFIG)
+    try:
+        cur = conn.cursor()
+        cur.execute(CREATE_COMPANIES_TABLE_SQL)
+        conn.commit()
+        print("✅ Table 'companies' created successfully")
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error creating companies table: {e}")
+        raise
+    finally:
+        conn.close()
+
+def populate_companies_table():
+    """Populate the companies table from companies.csv."""
+    csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "companies.csv")
+    if not os.path.exists(csv_path):
+        print(f"⚠️  CSV file not found at {csv_path}, skipping population")
+        return
+
+    conn = psycopg2.connect(**DB_CONFIG)
+    try:
+        with open(csv_path, mode='r', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            # company_name,isin,nse_symbol,nse_company_name,series,sector,industry,macro,basic_industry
+            rows = []
+            for row in reader:
+                rows.append((
+                    row['isin'],
+                    row['nse_symbol'],
+                    row['company_name'],
+                    row['nse_company_name'],
+                    row['series'],
+                    row['sector'],
+                    row['industry'],
+                    row['macro'],
+                    row['basic_industry'],
+                    datetime.now()
+                ))
+
+        cur = conn.cursor()
+        
+        # Using UPSERT logic (ON CONFLICT) to update existing records
+        upsert_query = """
+        INSERT INTO companies (
+            isin, nse_symbol, company_name, nse_company_name, 
+            series, sector, industry, macro, basic_industry, updated_at
+        ) VALUES %s
+        ON CONFLICT (isin) DO UPDATE SET
+            nse_symbol = EXCLUDED.nse_symbol,
+            company_name = EXCLUDED.company_name,
+            nse_company_name = EXCLUDED.nse_company_name,
+            series = EXCLUDED.series,
+            sector = EXCLUDED.sector,
+            industry = EXCLUDED.industry,
+            macro = EXCLUDED.macro,
+            basic_industry = EXCLUDED.basic_industry,
+            updated_at = NOW();
+        """
+        
+        psycopg2.extras.execute_values(cur, upsert_query, rows)
+        
+        conn.commit()
+        print(f"✅ Companies table populated/updated with {len(rows)} rows")
+        cur.close()
+    except Exception as e:
+        conn.rollback()
+        print(f"❌ Error populating companies table: {e}")
+        raise
+    finally:
+        conn.close()
+
+
 
 if __name__ == "__main__":
     print("🔧 Initializing database...")
@@ -474,6 +574,8 @@ if __name__ == "__main__":
     create_forex_table()
     create_forex_candles_table()
     create_nse_tables()
+    create_companies_table()
+    populate_companies_table()
     migrate_schema()
     create_indian_news_table()
     print("🎉 Database initialization complete!")

@@ -177,8 +177,8 @@ async def save_article(article):
         analysis = await analyze_indian_news(article['title'], article['description'])
         
         # 3. Extract analysis fields or set defaults
-        news_category = "routine_market_update"
-        news_relevance = "Noisy"
+        news_category = "None"
+        news_relevance = "None"
         news_impact_level = "None"
         affected_sectors = []
         news_reason = "No analysis available."
@@ -202,8 +202,8 @@ async def save_article(article):
                 execute_query,
                 """INSERT INTO indian_news 
                    (title, link, title_hash, published, source, description, image_url, 
-                    news_category, news_relevance, news_reason, symbols, analyzed, analyzed_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, NOW())
+                    news_category, news_relevance, news_reason, symbols, analyzed)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, false)
                    ON CONFLICT (title_hash) DO NOTHING""",
                 (article['title'], article['link'], article['title_hash'], 
                  article['published'], article['source'], article['description'], article['image_url'],
@@ -290,16 +290,6 @@ async def cleanup_old_news():
     except Exception as e:
         logger.error(f"Cleanup Error: {e}")
 
-async def cleanup_old_news():
-    """Deletes articles older than 24 hours from the database."""
-    try:
-        await asyncio.to_thread(
-            execute_query,
-            "DELETE FROM indian_news WHERE published < (NOW() - INTERVAL '24 hours')"
-        )
-        logger.info("Background cleanup: Deleted Indian news articles older than 24h.")
-    except Exception as e:
-        logger.error(f"Cleanup Error: {e}")
 
 async def main():
     logger.info("Starting Async Indian Market Scraper (20s interval)...")

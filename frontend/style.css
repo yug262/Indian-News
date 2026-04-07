@@ -2004,7 +2004,7 @@ body {
 .modal-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1000;
+    z-index: 10000;
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
@@ -2146,7 +2146,7 @@ body {
 .event-detail-overlay {
     position: fixed;
     inset: 0;
-    z-index: 1001;
+    z-index: 9500;
     background: rgba(0, 0, 0, 0.7);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
@@ -2486,6 +2486,7 @@ body {
     line-height: 1.35;
     word-break: break-word;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2498,6 +2499,7 @@ body {
     line-height: 1.4;
     margin: 0;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -5914,6 +5916,7 @@ body {
 /* Force full description display - remove line clamping */
 .event-news-card-desc {
     -webkit-line-clamp: unset !important;
+    line-clamp: unset !important;
     -webkit-box-orient: unset !important;
     overflow: visible !important;
     text-overflow: unset !important;
@@ -6060,6 +6063,7 @@ body {
         max-height: 200px !important;
         overflow-y: auto !important;
         -webkit-line-clamp: unset !important;
+        line-clamp: unset !important;
         -webkit-box-orient: unset !important;
         overflow: auto !important;
         text-overflow: unset !important;
