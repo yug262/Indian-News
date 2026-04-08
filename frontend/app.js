@@ -1847,20 +1847,20 @@ async function doChartSearch(query) {
 
 function selectChartPair(symbol) {
     console.log('[CHART] Selecting pair:', symbol);
-    
+
     // Update global state first to prevent race condition
     currentChartSymbol = symbol;
-    
+
     // Open the chart panel (which will call loadChart(currentChartSymbol))
     if (typeof openChartPanel === 'function') {
         openChartPanel();
     }
-    
+
     const drop = document.getElementById('chartSearchDrop');
     const input = document.getElementById('chartSearchInput');
     if (drop) drop.style.display = 'none';
     if (input) input.value = symbol.split(':')[1] || symbol;
-    
+
     // Scroll to chart container
     const chartContainer = document.getElementById('lwChartContainer');
     if (chartContainer) {

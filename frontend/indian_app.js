@@ -3,7 +3,7 @@
 // =========================================
 
 const API_BASE = '';  // Same origin
-const REFRESH_INTERVAL = 30_000; // 30 seconds
+const REFRESH_INTERVAL = 5_000; // 5 seconds
 const SEARCH_DEBOUNCE = 300;
 const SCROLL_TOP_THRESHOLD = 400;
 const CONNECTION_FAIL_THRESHOLD = 2;
@@ -22,6 +22,8 @@ let consecutiveFailures = 0;
 let searchDebounceTimer = null;
 
 // ---- Pagination & Smart Refresh ----
+let pendingNewArticles = [];
+let totalDbArticles = 0;
 let currentPage = 0;
 const articlesPerPage = 20;
 let hasMoreArticles = true;
@@ -157,7 +159,261 @@ function getMarketModeInfo(mode) {
     return { label: 'Neutral', cssClass: 'mode-neutral', icon: '⚖️' };
 }
 
-function renderRelevanceBadge(relevance) {
+// ═══════════════════════════════════════════════
+// AI ANALYSIS TOOLTIP SYSTEM
+// ═══════════════════════════════════════════════
+const AI_TOOLTIPS = {
+    signal_bucket: {
+        _title: 'Signal Strength',
+        _desc: 'How directly this news affects Indian markets.',
+        DIRECT: { color: '#00d4aa', desc: 'A named Indian company or sector is the direct subject of a confirmed event. Strongest signal.' },
+        AMBIGUOUS: { color: '#f0c040', desc: 'A real event exists, but the direction, impact size, or which company is affected is unclear.' },
+        WEAK_PROXY: { color: '#ff9f43', desc: 'The event is real but the connection to India is indirect — like a global event that may ripple into Indian markets.' },
+        NOISE: { color: '#888', desc: 'No meaningful market signal. Opinion pieces, recaps, lifestyle news, or daily wraps with nothing new.' }
+    },
+    market_bias: {
+        _title: 'Market Direction',
+        _desc: 'Which way the AI thinks this news pushes the market.',
+        bullish: { color: '#00d4aa', desc: 'The news is positive — likely to push prices up for the affected stocks or sectors.' },
+        bearish: { color: '#ff4757', desc: 'The news is negative — likely to push prices down for the affected stocks or sectors.' },
+        mixed: { color: '#f0c040', desc: 'The news has both positive and negative elements, or the price is moving opposite to the event.' },
+        neutral: { color: '#888', desc: 'No clear directional push. The news is either too weak or already reflected in prices.' },
+        unclear: { color: '#666', desc: 'Not enough information to determine a direction. More data needed.' }
+    },
+    tradeability: {
+        _title: 'Can You Trade This?',
+        _desc: 'Whether this news creates a tradeable opportunity right now.',
+        actionable_now: { color: '#00d4aa', desc: 'Strong signal, market is open, price hasn\'t fully reacted yet. There may be an opportunity to act on this right now.' },
+        wait_for_confirmation: { color: '#f0c040', desc: 'Real event, but either the market is closed, the price already moved a lot, or more clarity is needed before trading.' },
+        no_edge: { color: '#888', desc: 'No trading opportunity. The signal is too weak, already priced in, or there\'s no clear connection to any tradeable asset.' }
+    },
+    horizon: {
+        _title: 'Time Horizon',
+        _desc: 'How long the AI expects this news to influence the market.',
+        intraday: { color: '#6C63FF', desc: 'Impact expected within today\'s trading session only. Fast-moving, short-lived effect.' },
+        short_term: { color: '#00c8b4', desc: 'Impact expected over the next few days to a week. The market will digest this over multiple sessions.' },
+        medium_term: { color: '#f0c040', desc: 'Impact expected over weeks to a couple of months. A structural shift that takes time to play out.' },
+        long_term: { color: '#ff9f43', desc: 'Impact over months or longer. Significant economic or policy change with lasting effects.' }
+    },
+    category: {
+        _title: 'News Category',
+        _desc: 'What type of event this news represents.',
+        corporate_event: { desc: 'Company-specific action — earnings, deals, orders, management changes, plant events, or filings.' },
+        government_policy: { desc: 'Government or regulator decision — new rules, tax changes, policy announcements, or compliance actions.' },
+        macro_data: { desc: 'Economic data release — inflation (CPI), GDP, PMI, industrial production, or RBI data.' },
+        global_macro_impact: { desc: 'A global event that clearly affects India through trade, capital flows, risk sentiment, or interest rates.' },
+        commodity_macro: { desc: 'Oil, gas, metals, or commodity price/supply changes with meaningful impact on Indian companies.' },
+        sector_trend: { desc: 'A real shift affecting multiple companies across an entire industry — not just one stock.' },
+        institutional_activity: { desc: 'Large money movements — FII/DII flows, big stake sales/purchases, or institutional allocation changes.' },
+        sentiment_indicator: { desc: 'Market mood signals — surveys, positioning data, confidence indicators, or sentiment metrics.' },
+        price_action_noise: { desc: 'Headline mainly describes a stock or index moving without any real new trigger behind it.' },
+        routine_market_update: { desc: 'Daily wrap, recap, or summary of already-known information. Nothing new here.' },
+        other: { desc: 'Doesn\'t fit neatly into any category. A catch-all for unusual or rare event types.' }
+    },
+    relevance: {
+        _title: 'Trading Relevance',
+        _desc: 'How useful is this news for making trading decisions.',
+        'high useful': { color: '#ff6b6b', desc: 'Confirmed, new, directly relevant — the strongest signal. Think: major earnings surprise, RBI rate decision, big policy change.' },
+        useful: { color: '#00d4aa', desc: 'Confirmed event with clear economic relevance. Worth paying attention to and may present trading ideas.' },
+        medium: { color: '#f0c040', desc: 'Market-relevant but indirect, partial, or routine. Good context but not a strong standalone trade signal.' },
+        neutral: { color: '#888', desc: 'Market-related but weak. Informational only — no strong economic change expected.' },
+        noisy: { color: '#ff4757', desc: 'Speculation, commentary, recap, or price-only movement. Safe to ignore for trading purposes.' }
+    },
+    event_type: {
+        _title: 'Event Type',
+        _desc: 'What kind of business event triggered this news.',
+        earnings: { desc: 'Quarterly or annual results, profit/loss reports, revenue figures, or guidance updates.' },
+        policy: { desc: 'Government or central bank policy action — rates, regulation, taxes, subsidies, or approvals.' },
+        order_win: { desc: 'A company won a new contract, order, or deal that affects its future revenue.' },
+        macro: { desc: 'Macroeconomic data or event — GDP, inflation, trade data, employment, or fiscal numbers.' },
+        regulation: { desc: 'New rules, compliance requirements, bans, or regulatory approvals affecting industries.' },
+        disruption: { desc: 'Supply chain disruption, natural disaster, plant shutdown, or logistics interruption.' },
+        corporate_action: { desc: 'Mergers, acquisitions, buybacks, stock splits, delistings, or major restructuring.' },
+        other: { desc: 'An event that doesn\'t fit standard categories.' }
+    },
+    event_status: {
+        _title: 'Confirmation Status',
+        _desc: 'How confirmed is this event.',
+        confirmed: { color: '#00d4aa', desc: 'Officially announced, verified data, or published by a reliable source. You can trust this happened.' },
+        developing: { color: '#f0c040', desc: 'Partially confirmed — details are still emerging. The story might change as more information comes in.' },
+        rumor: { color: '#ff9f43', desc: 'Unverified, unnamed sources, or speculative language. Take with a grain of salt.' },
+        noise: { color: '#888', desc: 'No real event. Opinion, commentary, or recap of old information.' }
+    },
+    event_scope: {
+        _title: 'Impact Scope',
+        _desc: 'How wide is the impact of this event.',
+        single_stock: { color: '#6C63FF', desc: 'Affects only one specific company. The stock moved independently from its peers.' },
+        sector: { color: '#00c8b4', desc: 'Affects an entire sector or industry. Multiple companies in the same space are impacted.' },
+        broad_market: { color: '#ff9f43', desc: 'Affects the overall market — indices, broad sentiment, or macro conditions for all stocks.' }
+    },
+    impact_score: {
+        _title: 'Impact Score (0-10)',
+        _desc: 'How strong is the actual economic change from this news.',
+        '0-1': { color: '#555', desc: 'No meaningful economic change. Noise.' },
+        '2-3': { color: '#888', desc: 'Minor change — only one of: revenue, confirmation, scale, or timing is present.' },
+        '4-5': { color: '#f0c040', desc: 'Moderate — two factors confirmed. Starts becoming potentially tradeable.' },
+        '6-7': { color: '#ff9f43', desc: 'Significant — three factors confirmed. Clear company/sector affected, near-term impact expected.' },
+        '8-10': { color: '#ff4757', desc: 'Major — all four factors present: changes economics, confirmed, significant scale, near-term effect.' }
+    },
+    remaining_impact: {
+        _title: 'Remaining Edge',
+        _desc: 'How much of this news is already reflected in the stock price.',
+        untouched: { color: '#00d4aa', desc: 'Market barely reacted yet. Most of the potential price move is still ahead.' },
+        early: { color: '#26a69a', desc: 'Reaction just started. Price moved a little, but there\'s likely more to come.' },
+        partially_absorbed: { color: '#f0c040', desc: 'Some move happened already. There might be follow-through, but the easy part is done.' },
+        mostly_absorbed: { color: '#ff9f43', desc: 'Most of the obvious reaction is over. Limited upside from chasing this now.' },
+        exhausted: { color: '#ff4757', desc: 'Fully reflected in price. The market already digested this news completely. No edge left.' }
+    }
+};
+
+/**
+ * Wraps badge HTML with a data-ai-tip attribute for the floating tooltip system.
+ * No inline tooltip HTML is embedded — the single floating tooltip reads these attributes.
+ * @param {string} innerHtml - The visible badge HTML
+ * @param {string} field - Key into AI_TOOLTIPS (e.g. 'signal_bucket')
+ * @param {string} [currentValue] - The current value to highlight
+ * @returns {string} HTML string with data attributes
+ */
+function wrapTooltip(innerHtml, field, currentValue) {
+    const fieldData = AI_TOOLTIPS[field];
+    if (!fieldData) return innerHtml;
+    const safeVal = (currentValue || '').replace(/"/g, '&quot;');
+    return `<span data-ai-tip="${field}" data-ai-val="${safeVal}">${innerHtml}</span>`;
+}
+
+// ---- Floating Tooltip Engine ----
+(function initAiTooltip() {
+    // Create the single floating tooltip container
+    const tip = document.createElement('div');
+    tip.id = 'aiTooltipFloat';
+    document.body.appendChild(tip);
+
+    let hideTimer = null;
+    let activeTrigger = null;
+    const isMobile = () => window.innerWidth <= 768;
+
+    function buildTooltipContent(field, currentValue) {
+        const data = AI_TOOLTIPS[field];
+        if (!data) return '';
+
+        const title = data._title || field;
+        const desc = data._desc || '';
+        const valueKeys = Object.keys(data).filter(k => !k.startsWith('_'));
+
+        let html = `<div class="tt-title">\u2139\uFE0F ${title}</div>`;
+        html += `<div class="tt-desc">${desc}</div>`;
+
+        if (valueKeys.length > 0) {
+            html += '<div class="tt-divider"></div><div class="tt-values">';
+            valueKeys.forEach(key => {
+                const v = data[key];
+                const isActive = currentValue && key.toLowerCase() === currentValue.toLowerCase();
+                const dotColor = v.color || '#6C63FF';
+                const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                html += `<div class="tt-row">
+                    <span class="tt-dot${isActive ? ' active' : ''}" style="background:${dotColor};${isActive ? 'color:' + dotColor : ''}"></span>
+                    <span><span class="tt-vlabel${isActive ? ' active' : ''}">${label}:</span> <span class="tt-vdesc">${v.desc}</span></span>
+                </div>`;
+            });
+            html += '</div>';
+        }
+        return html;
+    }
+
+    function showTooltip(trigger) {
+        clearTimeout(hideTimer);
+        const field = trigger.getAttribute('data-ai-tip');
+        const val = trigger.getAttribute('data-ai-val') || '';
+        const content = buildTooltipContent(field, val);
+        if (!content) return;
+
+        tip.innerHTML = content;
+        activeTrigger = trigger;
+
+        if (isMobile()) {
+            // Mobile: bottom sheet — no positioning needed, CSS handles it
+            tip.style.top = '';
+            tip.style.left = '';
+            tip.classList.add('visible');
+            // Add a close-on-tap-outside handler
+            setTimeout(() => {
+                document.addEventListener('touchstart', closeMobileTooltip, { once: true });
+            }, 50);
+        } else {
+            // Desktop: position near the trigger element
+            tip.classList.add('visible');
+            const rect = trigger.getBoundingClientRect();
+            const tipRect = tip.getBoundingClientRect();
+
+            // Try to show above
+            let top = rect.top - tipRect.height - 10;
+            let left = rect.left + rect.width / 2 - tipRect.width / 2;
+
+            // If it overflows the top, show below
+            if (top < 8) {
+                top = rect.bottom + 10;
+            }
+            // Clamp horizontal position
+            if (left < 8) left = 8;
+            if (left + tipRect.width > window.innerWidth - 8) {
+                left = window.innerWidth - tipRect.width - 8;
+            }
+
+            tip.style.top = top + 'px';
+            tip.style.left = left + 'px';
+        }
+    }
+
+    function hideTooltip() {
+        hideTimer = setTimeout(() => {
+            tip.classList.remove('visible');
+            activeTrigger = null;
+        }, 120);
+    }
+
+    function closeMobileTooltip(e) {
+        if (!tip.contains(e.target)) {
+            tip.classList.remove('visible');
+            activeTrigger = null;
+        }
+    }
+
+    // Event delegation on the entire document
+    document.addEventListener('mouseenter', (e) => {
+        const trigger = e.target.closest('[data-ai-tip]');
+        if (trigger) showTooltip(trigger);
+    }, true);
+
+    document.addEventListener('mouseleave', (e) => {
+        const trigger = e.target.closest('[data-ai-tip]');
+        if (trigger) hideTooltip();
+    }, true);
+
+    // Keep tooltip visible when hovering over the tooltip itself (desktop)
+    tip.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+    tip.addEventListener('mouseleave', () => hideTooltip());
+
+    // Touch support (mobile)
+    document.addEventListener('touchstart', (e) => {
+        const trigger = e.target.closest('[data-ai-tip]');
+        if (trigger) {
+            e.preventDefault();
+            if (activeTrigger === trigger && tip.classList.contains('visible')) {
+                tip.classList.remove('visible');
+                activeTrigger = null;
+            } else {
+                showTooltip(trigger);
+            }
+        }
+    }, { passive: false });
+
+    // Close tooltip on scroll (prevents stale position)
+    document.addEventListener('scroll', () => {
+        if (!isMobile()) hideTooltip();
+    }, true);
+})();
+
+function renderRelevanceBadge(relevance, useRichTooltip = false) {
     if (!relevance) return '';
     const rel = relevance.toLowerCase();
     let cssClass = 'rel-neutral';
@@ -169,13 +425,33 @@ function renderRelevanceBadge(relevance) {
     else if (rel.includes('noisy')) cssClass = 'rel-noisy';
 
     const label = relevance.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-    return `<span class="relevance-badge ${cssClass}">${escapeHtml(label)}</span>`;
+    
+    // Get short description for title attribute
+    const tipData = AI_TOOLTIPS.relevance[rel] || {};
+    const titleAttr = tipData.desc ? ` title="${label}: ${tipData.desc}"` : '';
+    
+    const badgeHtml = `<span class="relevance-badge ${cssClass}"${titleAttr}>${escapeHtml(label)}</span>`;
+    
+    if (useRichTooltip) {
+        return wrapTooltip(badgeHtml, 'relevance', rel);
+    }
+    return badgeHtml;
 }
 
-function renderCategoryBadge(category) {
+function renderCategoryBadge(category, useRichTooltip = false) {
     if (!category || category.toLowerCase() === 'none') return '';
     const label = category.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-    return `<span class="category-badge">${escapeHtml(label)}</span>`;
+    
+    // Get short description for title attribute
+    const tipData = AI_TOOLTIPS.category[category.toLowerCase()] || {};
+    const titleAttr = tipData.desc ? ` title="${label}: ${tipData.desc}"` : '';
+    
+    const badgeHtml = `<span class="category-badge"${titleAttr}>${escapeHtml(label)}</span>`;
+    
+    if (useRichTooltip) {
+        return wrapTooltip(badgeHtml, 'category', category.toLowerCase());
+    }
+    return badgeHtml;
 }
 
 function renderAllSymbolsBadge(symbols) {
@@ -425,14 +701,19 @@ function renderImpactBadge(article) {
         if (analysis && analysis.signal_bucket) {
             const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
             const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
-            badges += `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px;">${bucket}</span>`;
+            const bucketTip = AI_TOOLTIPS.signal_bucket[bucket] || {};
+            const bucketTitle = bucketTip.desc ? ` title="Signal: ${bucket} — ${bucketTip.desc}"` : '';
+            badges += `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px; cursor:help;"${bucketTitle}>${bucket}</span>`;
         }
 
         // Show Impact Score
         if (article.impact_score != null) {
             const scoreClass = getScoreClass(article.impact_score);
             const scoreLabel = getScoreLabel(article.impact_score);
-            badges += `<span class="impact-score-badge ${scoreClass}">⚡ ${article.impact_score}/10</span>`;
+            const scoreRange = article.impact_score <= 1 ? '0-1' : article.impact_score <= 3 ? '2-3' : article.impact_score <= 5 ? '4-5' : article.impact_score <= 7 ? '6-7' : '8-10';
+            const scoreTip = AI_TOOLTIPS.impact_score[scoreRange] || {};
+            const scoreTitle = scoreTip.desc ? ` title="Impact ${article.impact_score}/10 (${scoreRange}): ${scoreTip.desc}"` : '';
+            badges += `<span class="impact-score-badge ${scoreClass}" style="cursor:help;"${scoreTitle}>⚡ ${article.impact_score}/10</span>`;
         }
     } else {
         // Fallback or legacy impact displays
@@ -711,12 +992,29 @@ async function analyzeArticle(newsId, btnEl) {
 
         if (json.status === 'success') {
             showToast('Analysis complete — impact score assigned', 'success');
-            await fetchNews();
-            // Re-open modal with updated article if modal was open
+            
+            // Instantly patch the local DOM and state so the user sees results immediately
             const updatedArticle = newsData.find(a => a.id === newsId);
-            if (updatedArticle && modalOverlay.classList.contains('active')) {
-                openModal(updatedArticle);
+            if (updatedArticle && json.data) {
+                updatedArticle.analyzed = true;
+                Object.assign(updatedArticle, json.data);
+                
+                const existingCard = document.getElementById(`article-card-${newsId}`);
+                if (existingCard) {
+                    const isFeatured = existingCard.classList.contains('featured-card');
+                    const newCard = createNewsCard(updatedArticle, 0, isFeatured);
+                    existingCard.innerHTML = newCard.innerHTML;
+                    existingCard.className = newCard.className;
+                    existingCard.onclick = () => openModal(updatedArticle);
+                }
+
+                // Re-open modal with updated article if modal was open
+                if (modalOverlay.classList.contains('active')) {
+                    openModal(updatedArticle);
+                }
             }
+            
+            await fetchNews(false, true); // Still run just in case for backend sync
         } else {
             showToast('Analysis failed — click to retry', 'error');
             document.querySelectorAll(`.analyze-btn[data-id="${newsId}"]`).forEach(btn => {
@@ -788,22 +1086,22 @@ function renderIndianCompactModal(article, analysis) {
                         Indian Market Intelligence IQ
                     </div>
                     <div class="analysis-panel-badges">
-                        <span class="signal-bucket-badge ${bucketCls}">${bucket}</span>
-                        <span class="tradeability-badge ${tradeCls}">${tradeIcon} ${escapeHtml((tradeClass).replace(/_/g, ' ').toUpperCase())}</span>
+                        ${wrapTooltip(`<span class="signal-bucket-badge ${bucketCls}">${bucket}</span>`, 'signal_bucket', bucket)}
+                        ${wrapTooltip(`<span class="tradeability-badge ${tradeCls}">${tradeIcon} ${escapeHtml((tradeClass).replace(/_/g, ' ').toUpperCase())}</span>`, 'tradeability', tradeClass)}
                     </div>
                 </div>
 
                 <div class="analysis-score-row">
                     <div class="analysis-score-main">
-                        <span class="analysis-score-number ${scoreClass}">${impactScore}</span>
+                        ${wrapTooltip(`<span class="analysis-score-number ${scoreClass}">${impactScore}</span>`, 'impact_score', impactScore <= 1 ? '0-1' : impactScore <= 3 ? '2-3' : impactScore <= 5 ? '4-5' : impactScore <= 7 ? '6-7' : '8-10')}
                         <div class="analysis-score-meta">
                             <span class="analysis-score-label">${scoreLabel}</span>
                             <span class="analysis-score-sub" style="font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">impact score</span>
                         </div>
                     </div>
                     <div class="parent-bias">
-                        <span class="bias-pill ${biasCls}">${biasArrow} ${coreView.market_bias || 'Neutral'} Bias</span>
-                        <span style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase; font-weight:700;">HORIZON: ${escapeHtml(coreView.horizon || 'short_term').replace(/_/g, ' ').toUpperCase()}</span>
+                        ${wrapTooltip(`<span class="bias-pill ${biasCls}">${biasArrow} ${coreView.market_bias || 'Neutral'} Bias</span>`, 'market_bias', (coreView.market_bias || 'neutral'))}
+                        ${wrapTooltip(`<span style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; cursor:help;">HORIZON: ${escapeHtml(coreView.horizon || 'short_term').replace(/_/g, ' ').toUpperCase()}</span>`, 'horizon', (coreView.horizon || 'short_term'))}
                     </div>
                 </div>
 
@@ -892,17 +1190,17 @@ function renderIndianCompactModal(article, analysis) {
 
                         <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:10px; padding:16px; margin-top:8px;">
                             
-                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-                                <span class="tradeability-badge ${tradeCls}" style="font-size:0.8rem;">
+                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                                ${wrapTooltip(`<span class="tradeability-badge ${tradeCls}" style="font-size:0.8rem;">
                                     ${tradeIcon} ${tradeClass.replace(/_/g, ' ').toUpperCase()}
-                                </span>
+                                </span>`, 'tradeability', tradeClass)}
 
-                                ${tradeability.remaining_impact_state ? `
+                                ${tradeability.remaining_impact_state ? wrapTooltip(`
                                     <span class="impact-state-badge state-${tradeability.remaining_impact_state.replace(/_/g, '-')}" 
-                                        style="font-size:0.65rem; padding:4px 10px; border-radius:99px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; background:rgba(255,255,255,0.05); border:1px solid var(--border-color);">
+                                        style="font-size:0.65rem; padding:4px 10px; border-radius:99px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; background:rgba(255,255,255,0.05); border:1px solid var(--border-color); cursor:help;">
                                         🎯 ${tradeability.remaining_impact_state.replace(/_/g, ' ')}
                                     </span>
-                                ` : ''}
+                                `, 'remaining_impact', tradeability.remaining_impact_state) : ''}
                             </div>
 
                             ${tradeability.priced_in_assessment ? `
@@ -994,8 +1292,8 @@ function renderIndianCompactModal(article, analysis) {
             ${article.image_url ? `<img class="modal-image" src="${escapeHtml(article.image_url)}" alt="" onerror="this.style.display='none'">` : ''}
             <div class="card-header-row" style="margin-bottom: 12px; margin-top: 8px;">
                 <div class="card-header-left">
-                    ${renderRelevanceBadge(article.news_relevance)}
-                    ${renderCategoryBadge(article.news_category)}
+                    ${renderRelevanceBadge(article.news_relevance, true)}
+                    ${renderCategoryBadge(article.news_category, true)}
                 </div>
                 <div class="card-header-right">
                     <span class="card-time">${formatTime(article.published)}</span>
@@ -1006,7 +1304,7 @@ function renderIndianCompactModal(article, analysis) {
             
             <div class="modal-timestamps-premium" style="margin-bottom: 24px; margin-top: 20px;">
                 <div class="ts-row"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
-                <div class="ts-row"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
+                <div class="ts-row"><strong>We Posted:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
             </div>
 
             <div class="modal-description" style="margin-bottom: 24px;">${escapeHtml(article.description || '')}</div>
@@ -1418,6 +1716,7 @@ function renderCardTimestamps(article) {
 // ---- Render News Card ----
 function createNewsCard(article, index, isFeatured = false) {
     const card = document.createElement('div');
+    card.id = `article-card-${article.id}`;
     card.className = isFeatured ? 'news-card featured-card' : 'news-card';
     card.style.animationDelay = `${index * 0.05}s`;
 
@@ -1456,7 +1755,7 @@ function createNewsCard(article, index, isFeatured = false) {
         <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
             <div class="card-timestamps-premium" style="margin:0;">
                 <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
-                <div class="ts-row" style="font-size:0.65rem;"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
+                <div class="ts-row" style="font-size:0.65rem;"><strong>We Posted:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
             </div>
             <div class="card-footer-right">
                 ${renderAnalyzeButton(article)}
@@ -1471,7 +1770,7 @@ function createNewsCard(article, index, isFeatured = false) {
         </div>
     `;
 
-    card.addEventListener('click', () => openModal(article));
+    card.onclick = () => openModal(article);
     return card;
 }
 
@@ -1482,7 +1781,7 @@ function renderNews(articles, prepend = false, append = false) {
         featuredGrid.innerHTML = '';
         featuredSection.style.display = 'none';
         allNewsHeader.style.display = 'none';
-        
+
         if (!articles || articles.length === 0) {
             emptyState.style.display = 'flex';
             newsGrid.style.display = 'none';
@@ -1504,8 +1803,7 @@ function renderNews(articles, prepend = false, append = false) {
 
     // Update article count
     if (!prepend && !append) {
-        if (articleCount) articleCount.textContent = `${articles.length} article${articles.length !== 1 ? 's' : ''}`;
-        if (drawerCount) drawerCount.textContent = `${articles.length} article${articles.length !== 1 ? 's' : ''}`;
+        updateDisplayCounts();
     }
 
     // Handle Featured Articles (ONLY on the first page/initial load/refresh when not searching)
@@ -1531,7 +1829,7 @@ function renderNews(articles, prepend = false, append = false) {
 
         // 2. Find Most Impacted from remaining
         let mostImpactedIdx = -1;
-        let highestScore = 3; 
+        let highestScore = 3;
 
         regularArticles.forEach((a, idx) => {
             if (a.impact_score && a.impact_score > highestScore) {
@@ -1553,21 +1851,25 @@ function renderNews(articles, prepend = false, append = false) {
                 featuredGrid.appendChild(createNewsCard(art, idx, true));
             });
         }
-        
+
         // Render the remaining regular articles
         regularArticles.forEach((article, index) => {
             newsGrid.appendChild(createNewsCard(article, index));
         });
     } else {
         // Standard Prepended or Appended rendering (for load more and search results)
-        articles.forEach((article, index) => {
-            const card = createNewsCard(article, index);
-            if (prepend) {
+        if (prepend) {
+            for (let i = articles.length - 1; i >= 0; i--) {
+                const card = createNewsCard(articles[i], i);
+                card.style.animation = 'none'; // skip animation for silent auto-updates
                 newsGrid.insertBefore(card, newsGrid.firstChild);
-            } else {
-                newsGrid.appendChild(card);
             }
-        });
+        } else {
+            articles.forEach((article, index) => {
+                const card = createNewsCard(article, index);
+                newsGrid.appendChild(card);
+            });
+        }
     }
 }
 
@@ -1663,12 +1965,12 @@ function formatSymbol(sym) {
 // ---- Fetch News (with Pagination & Smart Refresh) ----
 async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
     if (isFetching || (isLoadMore && !hasMoreArticles)) return;
-    
+
     // If it's a background refresh, we don't show the full-page loader
     if (!isBackgroundRefresh && !isLoadMore) {
         showRefreshIndicator();
     }
-    
+
     if (isLoadMore) {
         isLoadingMore = true;
         const indicator = document.getElementById('loadMoreIndicator');
@@ -1684,7 +1986,7 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         const fetchLimit = isBackgroundRefresh ? 50 : articlesPerPage;
 
         let url = `${API_BASE}/api/indian_news?today_only=false&limit=${fetchLimit}&offset=${fetchOffset}`;
-        
+
         if (currentSource && currentSource !== 'all') {
             url += `&source=${encodeURIComponent(currentSource)}`;
         }
@@ -1706,17 +2008,39 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
 
         if (json.status === 'success') {
             const newArticles = json.data || [];
-            
+
             if (isBackgroundRefresh) {
-                // Smart Refresh: Only add articles we haven't seen yet
-                const trulyNew = newArticles.filter(a => !seenArticleIds.has(a.id));
+                // Smart Refresh: Add new articles and update existing ones seamlessly
+                const trulyNew = [];
+                newArticles.forEach(a => {
+                    if (!seenArticleIds.has(a.id)) {
+                        trulyNew.push(a);
+                    } else {
+                        // Check for updates to existing articles (e.g. analyzed status changed)
+                        const existIdx = newsData.findIndex(x => x.id === a.id);
+                        if (existIdx !== -1) {
+                            const oldA = newsData[existIdx];
+                            if (oldA.analyzed !== a.analyzed || oldA.impact_score !== a.impact_score || oldA.prediction_count !== a.prediction_count || oldA.event_id !== a.event_id || oldA.symbols !== a.symbols) {
+                                a.featuredType = oldA.featuredType; // preserve featured label
+                                newsData[existIdx] = a;
+                                const existingCard = document.getElementById(`article-card-${a.id}`);
+                                if (existingCard) {
+                                    const isFeatured = existingCard.classList.contains('featured-card');
+                                    const newCard = createNewsCard(a, existIdx, isFeatured);
+                                    existingCard.innerHTML = newCard.innerHTML;
+                                    existingCard.className = newCard.className;
+                                    existingCard.onclick = () => openModal(a);
+                                }
+                            }
+                        }
+                    }
+                });
+
                 if (trulyNew.length > 0) {
                     console.log(`[Smart Refresh] Found ${trulyNew.length} new articles`);
-                    // Prepend new articles to the global newsData
-                    newsData = [...trulyNew, ...newsData];
                     trulyNew.forEach(a => seenArticleIds.add(a.id));
-                    // Render ONLY the new ones at the top
-                    renderNews(trulyNew, true); // true = prepend
+                    pendingNewArticles = [...trulyNew, ...pendingNewArticles];
+                    showNewNewsPill(pendingNewArticles.length);
                 }
             } else if (isLoadMore) {
                 // Infinite Scroll: Append new articles
@@ -1724,26 +2048,28 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
                     hasMoreArticles = false;
                 }
                 currentPage++;
-                
+
                 // Filter out duplicates just in case
                 const uniqueNew = newArticles.filter(a => !seenArticleIds.has(a.id));
                 newsData = [...newsData, ...uniqueNew];
                 uniqueNew.forEach(a => seenArticleIds.add(a.id));
-                
+
                 renderNews(uniqueNew, false, true); // append = true
             } else {
                 // Initial load or Filter change
                 newsData = newArticles;
+                pendingNewArticles = [];
                 seenArticleIds.clear();
                 newArticles.forEach(a => seenArticleIds.add(a.id));
+                const pill = document.getElementById('new-news-pill');
+                if (pill) pill.remove();
                 currentPage = 0;
                 hasMoreArticles = newArticles.length >= articlesPerPage;
                 renderNews(newsData);
             }
 
             // Update counts
-            if (articleCount) articleCount.textContent = `${newsData.length} articles`;
-            if (drawerCount) drawerCount.textContent = `${newsData.length} articles`;
+            updateDisplayCounts();
 
             if (consecutiveFailures > 0) {
                 hideConnectionBanner();
@@ -1763,11 +2089,53 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         hideRefreshIndicator();
         const indicator = document.getElementById('loadMoreIndicator');
         if (indicator) indicator.style.display = 'none';
-        
+
         // Hide/Show sentinel based on hasMoreArticles
         const sentinel = document.getElementById('infiniteScrollSentinel');
         if (sentinel) sentinel.style.display = hasMoreArticles ? 'block' : 'none';
     }
+}
+
+// ---- New News Pill ----
+function showNewNewsPill(count) {
+    let pill = document.getElementById('new-news-pill');
+    if (!pill) {
+        pill = document.createElement('div');
+        pill.id = 'new-news-pill';
+        pill.style.cssText = 'position:fixed; top:80px; left:50%; transform:translateX(-50%); background:var(--accent-1, #6C63FF); color:#fff; padding:10px 20px; border-radius:99px; cursor:pointer; font-weight:bold; z-index:9999; box-shadow:0 8px 20px rgba(108,99,255,0.4); animation: slipDown 0.3s ease;';
+        document.body.appendChild(pill);
+        
+        if (!document.getElementById('pill-styles')) {
+            const style = document.createElement('style');
+            style.id = 'pill-styles';
+            style.innerHTML = `@keyframes slipDown { from { opacity: 0; transform: translate(-50%, -20px); } to { opacity: 1; transform: translate(-50%, 0); } }`;
+            document.head.appendChild(style);
+        }
+
+        pill.onclick = () => {
+            newsData = [...pendingNewArticles, ...newsData];
+            
+            for (let i = pendingNewArticles.length - 1; i >= 0; i--) {
+                const card = createNewsCard(pendingNewArticles[i], i);
+                newsGrid.insertBefore(card, newsGrid.firstChild);
+            }
+            
+            pendingNewArticles = [];
+            pill.remove();
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        };
+    }
+    pill.textContent = `↑ ${count} new article${count > 1 ? 's' : ''}`;
+}
+
+// ---- Display Counts Helper ----
+function updateDisplayCounts() {
+    const displayCount = searchQuery ? newsData.length : totalDbArticles;
+    const suffix = searchQuery ? ' results' : ' articles';
+    
+    const formattedCount = displayCount.toLocaleString();
+    if (articleCount) articleCount.textContent = `${formattedCount}${suffix}`;
+    if (drawerCount) drawerCount.textContent = `${formattedCount}${suffix}`;
 }
 
 // ---- Fetch Footer Stats ----
@@ -1777,6 +2145,9 @@ async function fetchStats() {
         const json = await res.json();
         if (json.status === 'success') {
             const d = json.data;
+            totalDbArticles = d.total_articles;
+            updateDisplayCounts();
+            
             document.getElementById('footerTotal').textContent = d.total_articles.toLocaleString();
             document.getElementById('footerAnalyzed').textContent = d.analyzed_articles.toLocaleString();
             document.getElementById('footerSources').textContent = d.source_count.toLocaleString();
@@ -1906,7 +2277,7 @@ async function init() {
     if (relevanceFilter) {
         relevanceFilter.value = 'all';
     }
-    
+
     // Setup Infinite Scroll (IntersectionObserver)
     const sentinel = document.getElementById('infiniteScrollSentinel');
     if (sentinel) {
@@ -1918,7 +2289,7 @@ async function init() {
         }, { threshold: 0.1 });
         observer.observe(sentinel);
     }
-    
+
     await Promise.all([fetchSources(), fetchNews(), fetchStats(), fetchHolidays(), fetchEvents()]);
 }
 
@@ -3217,7 +3588,7 @@ function openArticleDetail(event, articleIdx) {
 
 function getRelevanceEmoji(relevance) {
     const map = {
-        'very high useful': '🔥',
+        'high useful': '🔥',
         'useful': '🟢',
         'medium': '🟡',
         'neutral': '⚖️',

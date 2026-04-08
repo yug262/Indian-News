@@ -243,6 +243,15 @@
             <h3 id="emptyStateTitle">No articles yet</h3>
             <p id="emptyStateMsg">The monitor is fetching news. Articles will appear here automatically.</p>
         </div>
+
+        <!-- Infinite Scroll Load More Indicator -->
+        <div id="loadMoreIndicator" class="load-more-indicator" style="display: none;">
+            <div class="loading-spinner-small"></div>
+            <span>Loading older news...</span>
+        </div>
+
+        <!-- Sentinel for IntersectionObserver -->
+        <div id="infiniteScrollSentinel" style="height: 20px; margin-top: 10px;"></div>
     </main>
 
     <!-- Live Trade View Panel -->

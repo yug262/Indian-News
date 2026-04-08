@@ -6072,3 +6072,151 @@ body {
         word-break: break-word !important;
     }
 }
+/* ---- Infinite Scroll Loader ---- */
+.load-more-indicator {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 30px 0;
+    width: 100%;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.loading-spinner-small {
+    width: 20px;
+    height: 20px;
+    border: 3px solid rgba(108, 99, 255, 0.1);
+    border-top: 3px solid #6C63FF;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}/* ---- AI Analysis Tooltips (Floating) ---- */
+[data-ai-tip] {
+    cursor: help;
+    position: relative;
+}
+
+#aiTooltipFloat {
+    position: fixed;
+    z-index: 999999;
+    min-width: 270px;
+    max-width: 360px;
+    padding: 16px 18px;
+    background: var(--bg-card, #181c2e);
+    border: 1px solid rgba(108, 99, 255, 0.4);
+    border-radius: 14px;
+    box-shadow: 0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(108,99,255,0.12);
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.18s ease, visibility 0.18s ease, transform 0.18s ease;
+    transform: translateY(6px);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+}
+
+#aiTooltipFloat.visible {
+    opacity: 1;
+    visibility: visible;
+    transform: translateY(0);
+    pointer-events: auto;
+}
+
+#aiTooltipFloat .tt-title {
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: var(--accent-1, #6C63FF);
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+#aiTooltipFloat .tt-desc {
+    font-size: 0.82rem;
+    color: var(--text-secondary, #bbb);
+    line-height: 1.55;
+    font-weight: 400;
+    margin-bottom: 2px;
+}
+
+#aiTooltipFloat .tt-divider {
+    height: 1px;
+    background: rgba(255,255,255,0.08);
+    margin: 10px 0;
+}
+
+#aiTooltipFloat .tt-values {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+#aiTooltipFloat .tt-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 0.76rem;
+    line-height: 1.45;
+}
+
+#aiTooltipFloat .tt-dot {
+    width: 7px;
+    height: 7px;
+    min-width: 7px;
+    border-radius: 50%;
+    margin-top: 4px;
+    flex-shrink: 0;
+}
+
+#aiTooltipFloat .tt-dot.active {
+    width: 9px;
+    height: 9px;
+    min-width: 9px;
+    box-shadow: 0 0 6px currentColor;
+}
+
+#aiTooltipFloat .tt-vlabel {
+    font-weight: 700;
+    color: var(--text-primary, #eee);
+    white-space: nowrap;
+}
+
+#aiTooltipFloat .tt-vlabel.active {
+    color: var(--accent-1, #6C63FF);
+}
+
+#aiTooltipFloat .tt-vdesc {
+    color: var(--text-secondary, #aaa);
+}
+
+/* Mobile: full-width bottom sheet style */
+@media (max-width: 768px) {
+    #aiTooltipFloat {
+        position: fixed !important;
+        bottom: 0 !important;
+        top: auto !important;
+        left: 0 !important;
+        right: 0 !important;
+        min-width: unset;
+        max-width: unset;
+        width: 100%;
+        border-radius: 18px 18px 0 0;
+        padding: 20px 18px 28px;
+        transform: translateY(100%);
+        max-height: 65vh;
+        overflow-y: auto;
+        box-shadow: 0 -8px 40px rgba(0,0,0,0.5);
+    }
+    #aiTooltipFloat.visible {
+        transform: translateY(0);
+    }
+}
