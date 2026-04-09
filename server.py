@@ -1,19 +1,39 @@
 from fastapi import FastAPI, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 import uvicorn
 from datetime import datetime, timezone
 from typing import Optional, Any, List, Dict
 import os
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from app.core.agent import analyze_news, save_analysis
-from app.core.db import fetch_all, fetch_one
+from app.core.db import fetch_all, fetch_one, execute_query
+
+# Thread pool for blocking database operations
+executor = ThreadPoolExecutor(max_workers=20)
 
 app = FastAPI(title="News Website API")
 SERVER_START = datetime.now(timezone.utc)
 
-# Enable CORS
+# Thread pool for blocking database operations
+executor = ThreadPoolExecutor(max_workers=20)
+
+# Async helpers to run blocking DB operations
+async def run_in_executor(func, *args):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, lambda: func(*args))
+
+# Async wrapper with timeout
+async def run_with_timeout(func, timeout_sec, *args):
+    try:
+        loop = asyncio.get_event_loop()
+        future = loop.run_in_executor(executor, lambda: func(*args))
+        return await asyncio.wait_for(future, timeout=timeout_sec)
+    except asyncio.TimeoutError:
+        raise TimeoutError(f"Operation timed out after {timeout_sec} seconds")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,13 +42,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API Endpoints
+# Add response headers middleware for caching and performance
+@app.middleware("http")
+async def add_cache_headers(request, call_next):
+    response = await call_next(request)
+    # Add cache control headers for specific endpoints
+    if request.url.path.startswith("/api/sources") or request.url.path.startswith("/api/indian_sources"):
+        response.headers["Cache-Control"] = "public, max-age=3600"  # 1 hour cache
+    elif request.url.path.startswith("/api/stats"):
+        response.headers["Cache-Control"] = "public, max-age=30"  # 30 second cache
+    elif request.url.path.startswith("/api/news") or request.url.path.startswith("/api/indian_news"):
+        response.headers["Cache-Control"] = "public, max-age=5"  # 5 second cache
+    # Don't cache analyze endpoints
+    elif request.url.path.startswith("/api/analyze"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
+
+# ===== API Endpoints =====
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "version": "1.0.1_fallbacks_active"}
 
 @app.get("/api/news")
-def get_news(source: str = Query(None, description="Filter news by source name"), 
+async def get_news(source: str = Query(None, description="Filter news by source name"), 
              limit: int = Query(1000, description="Max number of articles to return"),
              today_only: bool = Query(False, description="Only fetch today's news"),
              relevance: str = Query(None, description="Filter news by relevance"),
@@ -36,7 +72,7 @@ def get_news(source: str = Query(None, description="Filter news by source name")
              event_id: str = Query(None, description="Filter news by exact event ID"),
              offset: int = Query(0, description="Number of items to skip for pagination"),
              search: str = Query(None, description="Search in title, description, and source")):
-    """Get news articles, sorted by newest first."""
+    """Get news articles, sorted by newest first (async, non-blocking)."""
     
     query = """SELECT id, title, link, published, source, description, image_url,
         impact_score, impact_summary, affected_markets, affected_sectors, impact_duration,
@@ -260,11 +296,16 @@ def get_indian_sources():
 
 
 @app.post("/api/analyze/{news_id}")
-def analyze_single_article(news_id: int):
-    """Analyze a single news article by its DB id."""
+async def analyze_single_article(news_id: int):
+    """Analyze a single news article by its DB id (async, non-blocking, with timeout)."""
     
     try:
-        article = fetch_one("SELECT id, title, published, description, affected_forex_pairs FROM news WHERE id = %s", (news_id,))
+        # Run blocking DB call in thread pool with 120 second timeout
+        article = await run_with_timeout(
+            lambda: fetch_one("SELECT id, title, published, description, affected_forex_pairs FROM news WHERE id = %s", (news_id,)),
+            120
+        )
+        
         if not article:
             return {"status": "error", "message": "Article not found"}
 
@@ -273,18 +314,28 @@ def analyze_single_article(news_id: int):
         description = article.get("description", "") or ""
         existing_pairs = article.get("affected_forex_pairs", []) or []
 
-        analysis = analyze_news(title, published, description, current_news_id=news_id)
+        # Run analysis with 120 second timeout
+        analysis = await run_with_timeout(
+            lambda: analyze_news(title, published, description, current_news_id=news_id),
+            120
+        )
 
         if analysis:
             # Consistency check: if deep analysis didn't find new pairs, but we have old ones, merge them
-            # This prevents the 'blanking out' of tags when a deep analysis is more conservative than the fast classifier
             if not analysis.get("affected_forex_pairs") and existing_pairs:
                 analysis["affected_forex_pairs"] = existing_pairs
             
             try:
-                save_analysis(news_id, analysis)
+                # Save analysis with 30 second timeout
+                await run_with_timeout(
+                    lambda: save_analysis(news_id, analysis),
+                    30
+                )
                 print(f"[API] Analysis saved for news_id={news_id}, score={analysis.get('impact_score')}")
                 return {"status": "success", "data": analysis}
+            except TimeoutError:
+                print(f"[API] save_analysis TIMEOUT for news_id={news_id}")
+                return {"status": "error", "message": "Analysis completed but save timed out"}
             except Exception as save_err:
                 print(f"[API] save_analysis FAILED for news_id={news_id}: {save_err}")
                 import traceback
@@ -293,6 +344,12 @@ def analyze_single_article(news_id: int):
         else:
             print(f"[API] analyze_news returned None for news_id={news_id}")
             return {"status": "error", "message": "Analysis failed — click to retry"}
+    except TimeoutError as te:
+        print(f"[API] TIMEOUT in analyze endpoint for news_id={news_id}: {te}")
+        return {"status": "error", "message": "Analysis timeout - took too long (2 min limit)"}
+    except asyncio.CancelledError:
+        print(f"[API] Analysis cancelled for news_id={news_id}")
+        return {"status": "error", "message": "Analysis was cancelled"}
     except Exception as e:
         print(f"[API] Exception in analyze endpoint: {e}")
         import traceback
@@ -301,14 +358,17 @@ def analyze_single_article(news_id: int):
 
 
 @app.get("/api/stats")
-def get_stats():
-    """Get dashboard statistics for the footer."""
+async def get_stats():
+    """Get dashboard statistics for the footer (with caching)."""
     try:
-        row = fetch_one(
-            "SELECT COUNT(*) as total, "
-            "COUNT(CASE WHEN analyzed = true THEN 1 END) as analyzed, "
-            "COUNT(DISTINCT source) as sources "
-            "FROM news"
+        row = await run_with_timeout(
+            lambda: fetch_one(
+                "SELECT COUNT(*) as total, "
+                "COUNT(CASE WHEN analyzed = true THEN 1 END) as analyzed, "
+                "COUNT(DISTINCT source) as sources "
+                "FROM news"
+            ),
+            10  # 10 second timeout for stats
         )
         uptime_seconds = int((datetime.now(timezone.utc) - SERVER_START).total_seconds())
         return {
@@ -318,8 +378,11 @@ def get_stats():
                 "analyzed_articles": row["analyzed"] if row else 0,
                 "source_count": row["sources"] if row else 0,
                 "uptime_seconds": uptime_seconds
-            }
+            },
+            "cache-control": "max-age=30"  # Cache for 30 seconds
         }
+    except TimeoutError:
+        return {"status": "error", "message": "Stats query timeout"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -784,33 +847,7 @@ try:
 except NameError:
     current_dir = os.getcwd()
 
-frontend_dir = os.path.join(current_dir, "frontend")
-if not os.path.exists(frontend_dir):
-    os.makedirs(frontend_dir)
-
-@app.get("/")
-def read_root():
-    """Serve the Indian news home page (indian_news.html)."""
-    indian_news_path = os.path.join(frontend_dir, "indian_news.html")
-    if os.path.exists(indian_news_path):
-        return FileResponse(indian_news_path)
-    return {"message": "Frontend not found. Please create frontend/indian_news.html"}
-
-@app.get("/global")
-def read_global():
-    """Serve the global news page (index.html)."""
-    index_path = os.path.join(frontend_dir, "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
-    return {"message": "Frontend not found. Please create frontend/index.html"}
-
-@app.get("/predictions")
-def read_predictions():
-    """Serve the predictions.html page."""
-    pred_path = os.path.join(frontend_dir, "predictions.html")
-    if os.path.exists(pred_path):
-        return FileResponse(pred_path)
-    return {"message": "Frontend not found. Please create frontend/predictions.html"}
+# API Routes for News Feed
 
 # @app.get("/api/indian_news")
 # def get_indian_news(source: str = Query(None), limit: int = Query(1000),
@@ -897,12 +934,16 @@ def get_indian_stats():
         return {"status": "error", "message": str(e)}
 
 @app.post("/api/indian_analyze/{news_id}")
-def analyze_single_indian_article(news_id: int):
-    """Analyze a single Indian news article by its DB id using the Indian Agent."""
+async def analyze_single_indian_article(news_id: int):
+    """Analyze a single Indian news article by its DB id using the Indian Agent (async, non-blocking, with timeout)."""
     from app.ind.agent import analyze_indian_news, save_indian_analysis
     
     try:
-        article = fetch_one("SELECT id, title, published, description, source FROM indian_news WHERE id = %s", (news_id,))
+        # Run blocking DB call in thread pool with 120 second timeout
+        article = await run_with_timeout(
+            lambda: fetch_one("SELECT id, title, published, description, source FROM indian_news WHERE id = %s", (news_id,)),
+            120
+        )
         if not article:
             return {"status": "error", "message": "Indian Article not found"}
 
@@ -911,19 +952,54 @@ def analyze_single_indian_article(news_id: int):
         description = article.get("description", "") or ""
         source = article.get("source", "") or ""
 
-        analysis = analyze_indian_news(
-            title=title, 
-            published_iso=published, 
-            summary=description, 
-            source=source,
-            current_news_id=news_id
+        # Run analysis with 120 second timeout
+        analysis = await run_with_timeout(
+            lambda: analyze_indian_news(
+                title=title, 
+                published_iso=published, 
+                summary=description, 
+                source=source,
+                current_news_id=news_id
+            ),
+            120
         )
 
         if analysis:
             try:
-                save_indian_analysis(news_id, analysis)
+                # Save analysis with 30 second timeout
+                await run_with_timeout(
+                    lambda: save_indian_analysis(news_id, analysis),
+                    30
+                )
                 print(f"[API] Indian Analysis saved for news_id={news_id}")
+                
+                # Re-fetch the full updated article from DB so frontend gets flat fields
+                try:
+                    updated_row = await run_with_timeout(
+                        lambda: fetch_one(
+                            """SELECT id, title, link, published, source, description, image_url,
+                                impact_score, impact_summary, analyzed, created_at,
+                                market_bias, signal_bucket, news_category, news_relevance,
+                                primary_symbol, executive_summary, analysis_data, symbols,
+                                event_id, event_title
+                            FROM indian_news WHERE id = %s""", (news_id,)
+                        ),
+                        10
+                    )
+                    if updated_row:
+                        # Convert datetime objects for JSON serialization
+                        if isinstance(updated_row.get('published'), datetime):
+                            updated_row['published'] = updated_row['published'].isoformat()
+                        if isinstance(updated_row.get('created_at'), datetime):
+                            updated_row['created_at'] = updated_row['created_at'].isoformat()
+                        return {"status": "success", "data": analysis, "article": dict(updated_row)}
+                except Exception as row_err:
+                    print(f"[API] Re-fetch after save failed (non-critical): {row_err}")
+                
                 return {"status": "success", "data": analysis}
+            except TimeoutError:
+                print(f"[API] save_indian_analysis TIMEOUT for news_id={news_id}")
+                return {"status": "error", "message": "Analysis completed but save timed out"}
             except Exception as save_err:
                 print(f"[API] save_indian_analysis FAILED for news_id={news_id}: {save_err}")
                 import traceback
@@ -932,23 +1008,20 @@ def analyze_single_indian_article(news_id: int):
         else:
             print(f"[API] analyze_indian_news returned None for news_id={news_id}")
             return {"status": "error", "message": "Analysis failed — click to retry"}
+    except TimeoutError as te:
+        print(f"[API] TIMEOUT in indian_analyze endpoint for news_id={news_id}: {te}")
+        return {"status": "error", "message": "Analysis timeout - took too long (2 min limit)"}
+    except asyncio.CancelledError:
+        print(f"[API] Indian Analysis cancelled for news_id={news_id}")
+        return {"status": "error", "message": "Analysis was cancelled"}
     except Exception as e:
         print(f"[API] Exception in indian_analyze endpoint: {e}")
         import traceback
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
-@app.get("/indian_news")
-def read_indian_news():
-    """Serve the indian_news.html page."""
-    indian_path = os.path.join(frontend_dir, "indian_news.html")
-    if os.path.exists(indian_path):
-        return FileResponse(indian_path)
-    return {"message": "Frontend not found. Please create frontend/indian_news.html"}
-
-# Mount static AFTER explicit routes so /api/* and / are matched first
-app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
-
+# API server entry point
+    
 if __name__ == "__main__":
     print("Starting API Server on http://localhost:8000")
     uvicorn.run("server:app", host="localhost", port=8000, reload=True)

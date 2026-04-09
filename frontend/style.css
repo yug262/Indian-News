@@ -6072,6 +6072,7 @@ body {
         word-break: break-word !important;
     }
 }
+
 /* ---- Infinite Scroll Loader ---- */
 .load-more-indicator {
     display: none;
@@ -6095,8 +6096,12 @@ body {
 }
 
 @keyframes spin {
-    to { transform: rotate(360deg); }
-}/* ---- AI Analysis Tooltips (Floating) ---- */
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ---- AI Analysis Tooltips (Floating) ---- */
 [data-ai-tip] {
     cursor: help;
     position: relative;
@@ -6107,11 +6112,13 @@ body {
     z-index: 999999;
     min-width: 270px;
     max-width: 360px;
+    max-height: 420px;
+    overflow-y: auto;
     padding: 16px 18px;
     background: var(--bg-card, #181c2e);
     border: 1px solid rgba(108, 99, 255, 0.4);
     border-radius: 14px;
-    box-shadow: 0 16px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(108,99,255,0.12);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(108, 99, 255, 0.12);
     pointer-events: none;
     opacity: 0;
     visibility: hidden;
@@ -6121,11 +6128,41 @@ body {
     -webkit-backdrop-filter: blur(16px);
 }
 
+#aiTooltipFloat::-webkit-scrollbar {
+    width: 5px;
+}
+
+#aiTooltipFloat::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+}
+
+#aiTooltipFloat::-webkit-scrollbar-thumb {
+    background: rgba(108, 99, 255, 0.3);
+    border-radius: 10px;
+}
+
+#aiTooltipFloat::-webkit-scrollbar-thumb:hover {
+    background: rgba(108, 99, 255, 0.5);
+}
+
 #aiTooltipFloat.visible {
     opacity: 1;
     visibility: visible;
     transform: translateY(0);
-    pointer-events: auto;
+    pointer-events: auto !important;
+}
+
+/* Expert Tip: The pseudo-element bridge ensures the mouse never 'leaves' 
+   the hover zone when moving between the badge and the tooltip. */
+#aiTooltipFloat::after {
+    content: '';
+    position: absolute;
+    top: -12px;
+    left: 0;
+    right: 0;
+    height: 12px;
+    background: transparent;
 }
 
 #aiTooltipFloat .tt-title {
@@ -6150,7 +6187,7 @@ body {
 
 #aiTooltipFloat .tt-divider {
     height: 1px;
-    background: rgba(255,255,255,0.08);
+    background: rgba(255, 255, 255, 0.08);
     margin: 10px 0;
 }
 
@@ -6214,8 +6251,9 @@ body {
         transform: translateY(100%);
         max-height: 65vh;
         overflow-y: auto;
-        box-shadow: 0 -8px 40px rgba(0,0,0,0.5);
+        box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.5);
     }
+
     #aiTooltipFloat.visible {
         transform: translateY(0);
     }

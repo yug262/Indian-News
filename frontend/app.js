@@ -2,7 +2,7 @@
 // CryptoWire — Frontend Logic (Production)
 // =========================================
 
-const API_BASE = '';  // Same origin
+const API_BASE = (window.APP_CONFIG && window.APP_CONFIG.BACKEND_URL) ? window.APP_CONFIG.BACKEND_URL : '';
 const REFRESH_INTERVAL = 30_000; // 30 seconds
 const SEARCH_DEBOUNCE = 300;
 const SCROLL_TOP_THRESHOLD = 400;
@@ -20,6 +20,14 @@ let isFetching = false;
 let consecutiveFailures = 0;
 let searchDebounceTimer = null;
 let chartNewsByTime = {}; // Global store for news markers by time
+
+// ---- Pagination & Smart Refresh ----
+let totalDbArticles = 0;
+let currentPage = 0;
+const articlesPerPage = 20;
+let hasMoreArticles = true;
+let isLoadingMore = false;
+const seenArticleIds = new Set();
 
 // ---- DOM Elements ----
 const newsGrid = document.getElementById('newsGrid');
@@ -676,7 +684,7 @@ async function analyzeArticle(newsId, btnEl) {
 
         if (json.status === 'success') {
             showToast('Analysis complete — impact score assigned', 'success');
-            await fetchNews();
+            await fetchNews(false, true); // Use smart refresh instead of full DOM wipe
             // Re-open modal with updated article if modal was open
             const updatedArticle = newsData.find(a => a.id === newsId);
             if (updatedArticle && modalOverlay.classList.contains('active')) {
@@ -1277,56 +1285,52 @@ function renderCardTimestamps(article) {
     `;
 }
 
-// ---- Render News Cards ----
-function renderNews(articles) {
-    newsGrid.innerHTML = '';
-    const featuredSection = document.getElementById('featuredSection');
-    const featuredGrid = document.getElementById('featuredGrid');
-    const allNewsHeader = document.getElementById('allNewsHeader');
-    featuredGrid.innerHTML = '';
+// ---- Render News Cards (supports Prepend, Append, and Full Refresh) ----
+function renderNews(articles, prepend = false, append = false) {
+    if (!prepend && !append) {
+        newsGrid.innerHTML = '';
+        const featuredSection = document.getElementById('featuredSection');
+        const featuredGrid = document.getElementById('featuredGrid');
+        const allNewsHeader = document.getElementById('allNewsHeader');
+        if (featuredGrid) featuredGrid.innerHTML = '';
 
-    // Filter by Analyzed Status
-    if (showOnlyAnalyzed) {
-        articles = articles.filter(a => a.impact_score != null);
-    }
+        if (!articles || articles.length === 0) {
+            if (featuredSection) featuredSection.style.display = 'none';
+            if (allNewsHeader) allNewsHeader.style.display = 'none';
+            newsGrid.style.display = 'none';
+            emptyState.style.display = 'block';
 
-    // Filter by Search Query
-    if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        articles = articles.filter(a =>
-            (a.title && a.title.toLowerCase().includes(q)) ||
-            (a.source && a.source.toLowerCase().includes(q)) ||
-            (a.description && a.description.toLowerCase().includes(q))
-        );
-    }
+            if (searchQuery) {
+                emptyStateTitle.textContent = `No results for "${searchQuery}"`;
+                emptyStateMsg.textContent = 'Try a different search term or clear the filter.';
+            } else {
+                emptyStateTitle.textContent = 'No articles yet';
+                emptyStateMsg.textContent = 'The monitor is fetching news. Articles will appear here automatically.';
+            }
 
-    if (articles.length === 0) {
-        featuredSection.style.display = 'none';
-        allNewsHeader.style.display = 'none';
-        newsGrid.style.display = 'none';
-        emptyState.style.display = 'block';
-
-        if (searchQuery) {
-            emptyStateTitle.textContent = `No results for "${searchQuery}"`;
-            emptyStateMsg.textContent = 'Try a different search term or clear the filter.';
-        } else {
-            emptyStateTitle.textContent = 'No articles yet';
-            emptyStateMsg.textContent = 'The monitor is fetching news. Articles will appear here automatically.';
+            articleCount.textContent = '0 articles';
+            return;
         }
-
-        articleCount.textContent = '0 articles';
-        return;
     }
+
+    if (!articles || articles.length === 0) return;
 
     emptyState.style.display = 'none';
     newsGrid.style.display = 'grid';
-    articleCount.textContent = `${articles.length} article${articles.length !== 1 ? 's' : ''}`;
 
-    // Separate featured articles (only when NOT searching)
+    if (!prepend && !append) {
+        articleCount.textContent = `${articles.length} article${articles.length !== 1 ? 's' : ''}`;
+    }
+
+    const featuredSection = document.getElementById('featuredSection');
+    const featuredGrid = document.getElementById('featuredGrid');
+    const allNewsHeader = document.getElementById('allNewsHeader');
+
+    // Separate featured articles (only when NOT searching and NOT prepending/appending)
     let regularArticles = [...articles];
     let featured = [];
 
-    if (!searchQuery) {
+    if (!searchQuery && !prepend && !append) {
         // 1. Find Latest (Scraped within last 20 minutes)
         const TWENTY_MINS_MS = 20 * 60 * 1000;
         const now = Date.now();
@@ -1359,17 +1363,64 @@ function renderNews(articles) {
             mostImpacted.featuredType = '🔥 Most Impacted';
             featured.unshift(mostImpacted);
         }
+
+        // Render Featured
+        if (featured.length > 0) {
+            if (featuredSection) featuredSection.style.display = 'block';
+            if (allNewsHeader) allNewsHeader.style.display = 'block';
+
+            featured.forEach((article, index) => {
+                const card = document.createElement('div');
+                card.className = 'news-card featured-card';
+                card.style.animationDelay = `${index * 0.1}s`;
+
+                const imageHtml = article.image_url ?
+                    `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
+                if (!article.image_url) card.classList.add('no-image');
+
+                card.innerHTML = `
+                    ${imageHtml}
+                    <div class="card-header-row">
+                        <div class="card-header-left">
+                            ${renderRelevanceBadge(article.news_relevance)}
+                            ${renderCategoryBadge(article.news_category)}
+                            <span class="featured-type-badge">${article.featuredType}</span>
+                        </div>
+                        <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
+                    </div>
+                    <h2 class="card-title">${escapeHtml(article.title)}</h2>
+                    ${renderForexPairs(article)}
+                    ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
+                    <div class="card-footer">
+                        ${renderCardTimestamps(article)}
+                        <div class="card-footer-right">
+                            ${renderImpactBadge(article)}
+                        </div>
+                    </div>
+                    <div class="card-action-row">
+                        <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
+                            Read Now →
+                        </a>
+                    </div>
+                `;
+
+                card.addEventListener('click', () => openModal(article));
+                if (featuredGrid) featuredGrid.appendChild(card);
+            });
+        } else {
+            if (featuredSection) featuredSection.style.display = 'none';
+            if (allNewsHeader) allNewsHeader.style.display = 'none';
+        }
     }
 
-    // Render Featured
-    if (featured.length > 0) {
-        featuredSection.style.display = 'block';
-        allNewsHeader.style.display = 'block';
-
-        featured.forEach((article, index) => {
+    // Render Regular
+    if (prepend) {
+        for (let i = regularArticles.length - 1; i >= 0; i--) {
+            const article = regularArticles[i];
             const card = document.createElement('div');
-            card.className = 'news-card featured-card';
-            card.style.animationDelay = `${index * 0.1}s`;
+            card.className = 'news-card';
+            card.id = `article-card-${article.id}`;
+            card.style.animation = 'none';
 
             const imageHtml = article.image_url ?
                 `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
@@ -1381,13 +1432,12 @@ function renderNews(articles) {
                     <div class="card-header-left">
                         ${renderRelevanceBadge(article.news_relevance)}
                         ${renderCategoryBadge(article.news_category)}
-                        <span class="featured-type-badge">${article.featuredType}</span>
                     </div>
                     <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
                 </div>
                 <h2 class="card-title">${escapeHtml(article.title)}</h2>
-                ${renderForexPairs(article)}
                 ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
+                ${renderForexPairs(article)}
                 <div class="card-footer">
                     ${renderCardTimestamps(article)}
                     <div class="card-footer-right">
@@ -1402,51 +1452,48 @@ function renderNews(articles) {
             `;
 
             card.addEventListener('click', () => openModal(article));
-            featuredGrid.appendChild(card);
-        });
+            newsGrid.insertBefore(card, newsGrid.firstChild);
+        }
     } else {
-        featuredSection.style.display = 'none';
-        allNewsHeader.style.display = 'none';
+        regularArticles.forEach((article, index) => {
+            const card = document.createElement('div');
+            card.className = 'news-card';
+            card.id = `article-card-${article.id}`;
+            if (!append) card.style.animationDelay = `${index * 0.05}s`;
+
+            const imageHtml = article.image_url ?
+                `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
+            if (!article.image_url) card.classList.add('no-image');
+
+            card.innerHTML = `
+                ${imageHtml}
+                <div class="card-header-row">
+                    <div class="card-header-left">
+                        ${renderRelevanceBadge(article.news_relevance)}
+                        ${renderCategoryBadge(article.news_category)}
+                    </div>
+                    <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
+                </div>
+                <h2 class="card-title">${escapeHtml(article.title)}</h2>
+                ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
+                ${renderForexPairs(article)}
+                <div class="card-footer">
+                    ${renderCardTimestamps(article)}
+                    <div class="card-footer-right">
+                        ${renderImpactBadge(article)}
+                    </div>
+                </div>
+                <div class="card-action-row">
+                    <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
+                        Read Now →
+                    </a>
+                </div>
+            `;
+
+            card.addEventListener('click', () => openModal(article));
+            newsGrid.appendChild(card);
+        });
     }
-
-    // Render Regular
-    regularArticles.forEach((article, index) => {
-        const card = document.createElement('div');
-        card.className = 'news-card';
-        card.style.animationDelay = `${index * 0.05}s`;
-
-        const imageHtml = article.image_url ?
-            `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
-        if (!article.image_url) card.classList.add('no-image');
-
-        card.innerHTML = `
-            ${imageHtml}
-            <div class="card-header-row">
-                <div class="card-header-left">
-                    ${renderRelevanceBadge(article.news_relevance)}
-                    ${renderCategoryBadge(article.news_category)}
-                </div>
-                <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
-            </div>
-            <h2 class="card-title">${escapeHtml(article.title)}</h2>
-            ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
-            ${renderForexPairs(article)}
-            <div class="card-footer">
-                ${renderCardTimestamps(article)}
-                <div class="card-footer-right">
-                    ${renderImpactBadge(article)}
-                </div>
-            </div>
-            <div class="card-action-row">
-                <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
-                    Read Now →
-                </a>
-            </div>
-        `;
-
-        card.addEventListener('click', () => openModal(article));
-        newsGrid.appendChild(card);
-    });
 }
 
 // ---- Fetch Sources ----
@@ -1454,7 +1501,12 @@ async function fetchSources() {
     try {
         const res = await fetch(`${API_BASE}/api/sources`);
         const json = await res.json();
-        if (json.status === 'success') {
+        if (json.status === 'success' && Array.isArray(json.data)) {
+            // Skip DOM rebuild if sources list hasn't changed
+            const newSources = json.data;
+            if (JSON.stringify(sourceFilters) === JSON.stringify(newSources)) return;
+            sourceFilters = newSources;
+
             // Keep the "All Sources" button
             const allBtn = filtersContainer.querySelector('[data-source="all"]');
 
@@ -1463,18 +1515,16 @@ async function fetchSources() {
             existingPills.forEach(p => p.remove());
 
             // Add new pills from API
-            if (Array.isArray(json.data)) {
-                json.data.forEach(source => {
-                    const pill = document.createElement('button');
-                    pill.className = 'filter-pill';
-                    pill.dataset.source = source;
-                    pill.textContent = source;
-                    pill.setAttribute('role', 'tab');
-                    pill.setAttribute('aria-selected', source === currentSource ? 'true' : 'false');
-                    if (source === currentSource) pill.classList.add('active');
-                    filtersContainer.appendChild(pill);
-                });
-            }
+            newSources.forEach(source => {
+                const pill = document.createElement('button');
+                pill.className = 'filter-pill';
+                pill.dataset.source = source;
+                pill.textContent = source;
+                pill.setAttribute('role', 'tab');
+                pill.setAttribute('aria-selected', source === currentSource ? 'true' : 'false');
+                if (source === currentSource) pill.classList.add('active');
+                filtersContainer.appendChild(pill);
+            });
 
             // Ensure "All Sources" is active if currentSource is 'all'
             if (currentSource === 'all' && allBtn) {
@@ -1537,14 +1587,23 @@ function formatSymbol(sym) {
     return sym;
 }
 
-// ---- Fetch News ----
-async function fetchNews() {
-    if (isFetching) return;
+// ---- Fetch News (with Smart Refresh) ----
+async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
+    if (isFetching || (isLoadMore && !hasMoreArticles)) return;
+
+    if (!isBackgroundRefresh && !isLoadMore) {
+        showRefreshIndicator();
+    }
+
     isFetching = true;
-    showRefreshIndicator();
 
     try {
-        let url = `${API_BASE}/api/news?today_only=false`;
+        const offset = isLoadMore ? (currentPage + 1) * articlesPerPage : 0;
+        const fetchOffset = isBackgroundRefresh ? 0 : offset;
+        const fetchLimit = isBackgroundRefresh ? 20 : articlesPerPage;
+
+        let url = `${API_BASE}/api/news?today_only=false&limit=${fetchLimit}&offset=${fetchOffset}`;
+
         if (currentSource && currentSource !== 'all') {
             url += `&source=${encodeURIComponent(currentSource)}`;
         }
@@ -1562,12 +1621,63 @@ async function fetchNews() {
         const json = await res.json();
 
         if (json.status === 'success') {
-            newsData = json.data;
-            // The backend handles the `analyzed_only` filter, but we filter client-side just in case
-            let displayData = [...newsData];
-            if (showOnlyAnalyzed) displayData = displayData.filter(a => a.impact_score != null);
-            renderNews(displayData);
-            // Reset connection failures on success
+            let newArticles = json.data || [];
+
+            // Client-side analyzed filter just in case
+            if (showOnlyAnalyzed) {
+                newArticles = newArticles.filter(a => a.impact_score != null);
+            }
+
+            if (isBackgroundRefresh) {
+                const trulyNew = [];
+                newArticles.forEach(a => {
+                    if (!seenArticleIds.has(a.id)) {
+                        trulyNew.push(a);
+                    } else {
+                        // Patch updates silently
+                        const existIdx = newsData.findIndex(x => x.id === a.id);
+                        if (existIdx !== -1) {
+                            const oldA = newsData[existIdx];
+                            if (oldA.analyzed !== a.analyzed || oldA.impact_score !== a.impact_score || oldA.prediction_count !== a.prediction_count) {
+                                a.featuredType = oldA.featuredType;
+                                newsData[existIdx] = a;
+                                const existingCard = document.getElementById(`article-card-${a.id}`);
+                                if (existingCard) {
+                                    const isFeatured = existingCard.classList.contains('featured-card');
+                                    // Use innerHTML patching to preserve DOM node
+                                    // Note: createNewsCard equivalent for app.js is manually rendering HTML. We'll simply let next full reload fix it if needed, or re-render this card.
+                                    // Since we don't have a createNewsCard helper like indian_app.js, we skip direct DOM patching here to avoid duplication.
+                                    // Full details will update next reload.
+                                }
+                            }
+                        }
+                    }
+                });
+
+                if (trulyNew.length > 0) {
+                    console.log(`[Smart Refresh] Found ${trulyNew.length} new articles`);
+                    trulyNew.forEach(a => seenArticleIds.add(a.id));
+                    newsData = [...trulyNew, ...newsData];
+                    renderNews(trulyNew, true); // prepend = true
+                }
+            } else if (isLoadMore) {
+                if (newArticles.length < articlesPerPage) hasMoreArticles = false;
+                currentPage++;
+
+                const uniqueNew = newArticles.filter(a => !seenArticleIds.has(a.id));
+                newsData = [...newsData, ...uniqueNew];
+                uniqueNew.forEach(a => seenArticleIds.add(a.id));
+
+                renderNews(uniqueNew, false, true); // append = true
+            } else {
+                newsData = newArticles;
+                seenArticleIds.clear();
+                newArticles.forEach(a => seenArticleIds.add(a.id));
+                currentPage = 0;
+                hasMoreArticles = newArticles.length >= articlesPerPage;
+                renderNews(newsData);
+            }
+
             if (consecutiveFailures > 0) {
                 hideConnectionBanner();
                 showToast('Connection restored', 'success');
@@ -1584,7 +1694,7 @@ async function fetchNews() {
         }
     } finally {
         isFetching = false;
-        hideRefreshIndicator();
+        if (!isBackgroundRefresh && !isLoadMore) hideRefreshIndicator();
     }
 }
 
@@ -1700,9 +1810,19 @@ init();
 // ---- Auto-refresh ----
 setInterval(() => {
     fetchSources();
-    fetchNews();
+    fetchNews(false, true); // (isLoadMore=false, isBackgroundRefresh=true)
     fetchStats();
 }, REFRESH_INTERVAL);
+
+// ---- Infinite Scroll ----
+const observer = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting && !isFetching && hasMoreArticles && !searchQuery) {
+        fetchNews(true); // isLoadMore = true
+    }
+}, { rootMargin: '200px' });
+
+const sentinel = document.getElementById('infiniteScrollSentinel');
+if (sentinel) observer.observe(sentinel);
 
 
 // ============================================

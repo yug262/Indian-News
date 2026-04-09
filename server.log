@@ -1,0 +1,55 @@
+2026-04-09 15:55:10,603 - server - INFO - === SERVER STARTUP ===
+2026-04-09 15:55:30,706 - server - INFO - === SERVER STARTUP ===
+2026-04-09 15:55:49,593 - server - INFO - === SERVER STARTUP ===
+2026-04-09 15:55:56,416 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:56:02,983 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:56:13,550 - server - INFO - === SERVER STARTUP ===
+2026-04-09 15:56:13,943 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:56:13,944 - server - INFO - GET /api/indian_news returned 20 articles
+2026-04-09 15:56:26,297 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:56:36,927 - server - INFO - === SERVER STARTUP ===
+2026-04-09 15:56:42,866 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:56:51,004 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:56:51,197 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:56:56,830 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:57:12,926 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:57:25,844 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:57:31,036 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:57:31,079 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:57:32,885 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:57:55,935 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:58:25,853 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:58:31,055 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:58:31,055 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:58:55,966 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:59:02,876 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:59:25,850 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 15:59:31,021 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:59:31,279 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:59:32,847 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:59:56,549 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 15:59:56,859 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 16:00:02,895 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:00:25,842 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 16:00:31,212 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:00:55,857 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 16:01:02,862 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:01:21,014 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:01:25,854 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 16:01:31,035 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 16:01:40,179 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:01:52,944 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:01:55,851 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 16:02:01,077 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 16:02:24,114 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:02:28,136 - server - INFO - GET /api/indian_news returned 20 articles
+2026-04-09 16:02:28,142 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:02:28,376 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:02:31,106 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 16:02:53,953 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:02:59,058 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:02:59,085 - server - INFO - GET /api/indian_news returned 50 articles
+2026-04-09 16:03:18,439 - server - INFO - GET /api/indian_news returned 20 articles
+2026-04-09 16:03:18,457 - server - INFO - GET /api/indian_sources returned 8 sources
+2026-04-09 16:03:23,093 - server - INFO - GET /api/indian_news returned 20 articles
+2026-04-09 16:03:23,093 - server - INFO - GET /api/indian_sources returned 8 sources

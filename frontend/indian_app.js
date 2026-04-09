@@ -2,8 +2,8 @@
 // CryptoWire — Frontend Logic (Production)
 // =========================================
 
-const API_BASE = '';  // Same origin
-const REFRESH_INTERVAL = 5_000; // 5 seconds
+const API_BASE = (window.APP_CONFIG && window.APP_CONFIG.BACKEND_URL) ? window.APP_CONFIG.BACKEND_URL : '';
+const REFRESH_INTERVAL = 30_000; // 30 seconds
 const SEARCH_DEBOUNCE = 300;
 const SCROLL_TOP_THRESHOLD = 400;
 const CONNECTION_FAIL_THRESHOLD = 2;
@@ -22,7 +22,7 @@ let consecutiveFailures = 0;
 let searchDebounceTimer = null;
 
 // ---- Pagination & Smart Refresh ----
-let pendingNewArticles = [];
+
 let totalDbArticles = 0;
 let currentPage = 0;
 const articlesPerPage = 20;
@@ -32,6 +32,9 @@ const seenArticleIds = new Set();
 
 // ---- DOM Elements ----
 const newsGrid = document.getElementById('newsGrid');
+const featuredGrid = document.getElementById('featuredGrid');
+const featuredSection = document.getElementById('featuredSection');
+const allNewsHeader = document.getElementById('allNewsHeader');
 const emptyState = document.getElementById('emptyState');
 const emptyStateTitle = document.getElementById('emptyStateTitle');
 const emptyStateMsg = document.getElementById('emptyStateMsg');
@@ -321,6 +324,8 @@ function wrapTooltip(innerHtml, field, currentValue) {
     }
 
     function showTooltip(trigger) {
+        if (activeTrigger === trigger && tip.classList.contains('visible')) return;
+
         clearTimeout(hideTimer);
         const field = trigger.getAttribute('data-ai-tip');
         const val = trigger.getAttribute('data-ai-val') || '';
@@ -331,29 +336,24 @@ function wrapTooltip(innerHtml, field, currentValue) {
         activeTrigger = trigger;
 
         if (isMobile()) {
-            // Mobile: bottom sheet — no positioning needed, CSS handles it
             tip.style.top = '';
             tip.style.left = '';
             tip.classList.add('visible');
-            // Add a close-on-tap-outside handler
             setTimeout(() => {
                 document.addEventListener('touchstart', closeMobileTooltip, { once: true });
             }, 50);
         } else {
-            // Desktop: position near the trigger element
             tip.classList.add('visible');
             const rect = trigger.getBoundingClientRect();
             const tipRect = tip.getBoundingClientRect();
 
-            // Try to show above
-            let top = rect.top - tipRect.height - 10;
+            // Try to show above - Reduced gap to 6px
+            let top = rect.top - tipRect.height - 6;
             let left = rect.left + rect.width / 2 - tipRect.width / 2;
 
-            // If it overflows the top, show below
             if (top < 8) {
-                top = rect.bottom + 10;
+                top = rect.bottom + 6;
             }
-            // Clamp horizontal position
             if (left < 8) left = 8;
             if (left + tipRect.width > window.innerWidth - 8) {
                 left = window.innerWidth - tipRect.width - 8;
@@ -365,10 +365,11 @@ function wrapTooltip(innerHtml, field, currentValue) {
     }
 
     function hideTooltip() {
+        clearTimeout(hideTimer);
         hideTimer = setTimeout(() => {
             tip.classList.remove('visible');
             activeTrigger = null;
-        }, 120);
+        }, 200);
     }
 
     function closeMobileTooltip(e) {
@@ -378,22 +379,33 @@ function wrapTooltip(innerHtml, field, currentValue) {
         }
     }
 
-    // Event delegation on the entire document
-    document.addEventListener('mouseenter', (e) => {
+    // Expert Event Delegation: Robust mouseover/mouseout
+    document.addEventListener('mouseover', (e) => {
         const trigger = e.target.closest('[data-ai-tip]');
-        if (trigger) showTooltip(trigger);
-    }, true);
+        const isTooltip = e.target.closest('#aiTooltipFloat');
 
-    document.addEventListener('mouseleave', (e) => {
+        if (trigger || isTooltip) {
+            clearTimeout(hideTimer);
+            if (trigger) {
+                showTooltip(trigger);
+            }
+        }
+    });
+
+    document.addEventListener('mouseout', (e) => {
         const trigger = e.target.closest('[data-ai-tip]');
-        if (trigger) hideTooltip();
-    }, true);
+        const isTooltip = e.target.closest('#aiTooltipFloat');
+        const related = e.relatedTarget;
 
-    // Keep tooltip visible when hovering over the tooltip itself (desktop)
-    tip.addEventListener('mouseenter', () => clearTimeout(hideTimer));
-    tip.addEventListener('mouseleave', () => hideTooltip());
+        // Only trigger hide if moving to an element that is NOT part of the trigger or tooltip
+        const movingToSafe = related && (related.closest('[data-ai-tip]') || related.closest('#aiTooltipFloat'));
 
-    // Touch support (mobile)
+        if (!movingToSafe) {
+            hideTooltip();
+        }
+    });
+
+    // Touch support (mobile) remains largely the same but simplified
     document.addEventListener('touchstart', (e) => {
         const trigger = e.target.closest('[data-ai-tip]');
         if (trigger) {
@@ -407,13 +419,12 @@ function wrapTooltip(innerHtml, field, currentValue) {
         }
     }, { passive: false });
 
-    // Close tooltip on scroll (prevents stale position)
-    document.addEventListener('scroll', () => {
-        if (!isMobile()) hideTooltip();
+    document.addEventListener('scroll', (e) => {
+        if (!isMobile() && !tip.contains(e.target)) hideTooltip();
     }, true);
 })();
 
-function renderRelevanceBadge(relevance, useRichTooltip = false) {
+function renderRelevanceBadge(relevance, useRichTooltip = true) {
     if (!relevance) return '';
     const rel = relevance.toLowerCase();
     let cssClass = 'rel-neutral';
@@ -425,29 +436,29 @@ function renderRelevanceBadge(relevance, useRichTooltip = false) {
     else if (rel.includes('noisy')) cssClass = 'rel-noisy';
 
     const label = relevance.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-    
+
     // Get short description for title attribute
     const tipData = AI_TOOLTIPS.relevance[rel] || {};
     const titleAttr = tipData.desc ? ` title="${label}: ${tipData.desc}"` : '';
-    
+
     const badgeHtml = `<span class="relevance-badge ${cssClass}"${titleAttr}>${escapeHtml(label)}</span>`;
-    
+
     if (useRichTooltip) {
         return wrapTooltip(badgeHtml, 'relevance', rel);
     }
     return badgeHtml;
 }
 
-function renderCategoryBadge(category, useRichTooltip = false) {
+function renderCategoryBadge(category, useRichTooltip = true) {
     if (!category || category.toLowerCase() === 'none') return '';
     const label = category.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-    
+
     // Get short description for title attribute
     const tipData = AI_TOOLTIPS.category[category.toLowerCase()] || {};
     const titleAttr = tipData.desc ? ` title="${label}: ${tipData.desc}"` : '';
-    
+
     const badgeHtml = `<span class="category-badge"${titleAttr}>${escapeHtml(label)}</span>`;
-    
+
     if (useRichTooltip) {
         return wrapTooltip(badgeHtml, 'category', category.toLowerCase());
     }
@@ -701,19 +712,16 @@ function renderImpactBadge(article) {
         if (analysis && analysis.signal_bucket) {
             const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
             const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
-            const bucketTip = AI_TOOLTIPS.signal_bucket[bucket] || {};
-            const bucketTitle = bucketTip.desc ? ` title="Signal: ${bucket} — ${bucketTip.desc}"` : '';
-            badges += `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px; cursor:help;"${bucketTitle}>${bucket}</span>`;
+            const badgeHtml = `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px;">${bucket}</span>`;
+            badges += wrapTooltip(badgeHtml, 'signal_bucket', bucket);
         }
 
         // Show Impact Score
         if (article.impact_score != null) {
             const scoreClass = getScoreClass(article.impact_score);
-            const scoreLabel = getScoreLabel(article.impact_score);
             const scoreRange = article.impact_score <= 1 ? '0-1' : article.impact_score <= 3 ? '2-3' : article.impact_score <= 5 ? '4-5' : article.impact_score <= 7 ? '6-7' : '8-10';
-            const scoreTip = AI_TOOLTIPS.impact_score[scoreRange] || {};
-            const scoreTitle = scoreTip.desc ? ` title="Impact ${article.impact_score}/10 (${scoreRange}): ${scoreTip.desc}"` : '';
-            badges += `<span class="impact-score-badge ${scoreClass}" style="cursor:help;"${scoreTitle}>⚡ ${article.impact_score}/10</span>`;
+            const badgeHtml = `<span class="impact-score-badge ${scoreClass}">⚡ ${article.impact_score}/10</span>`;
+            badges += wrapTooltip(badgeHtml, 'impact_score', scoreRange);
         }
     } else {
         // Fallback or legacy impact displays
@@ -992,13 +1000,50 @@ async function analyzeArticle(newsId, btnEl) {
 
         if (json.status === 'success') {
             showToast('Analysis complete — impact score assigned', 'success');
-            
+
             // Instantly patch the local DOM and state so the user sees results immediately
             const updatedArticle = newsData.find(a => a.id === newsId);
             if (updatedArticle && json.data) {
-                updatedArticle.analyzed = true;
-                Object.assign(updatedArticle, json.data);
-                
+                const analysisResult = json.data;
+
+                // If server returned the complete updated DB row, use it (best source of truth)
+                if (json.article) {
+                    // Merge the full DB row into our local article (preserves all flat fields)
+                    Object.assign(updatedArticle, json.article);
+                    // Ensure analysis_data is the full object (not stringified)
+                    if (typeof updatedArticle.analysis_data === 'string') {
+                        try { updatedArticle.analysis_data = JSON.parse(updatedArticle.analysis_data); } catch (e) { }
+                    }
+                } else {
+                    // Fallback: manually map nested analysis to flat fields
+                    updatedArticle.analyzed = true;
+                    updatedArticle.analysis_data = analysisResult;
+
+                    const coreView = analysisResult.core_view || {};
+                    updatedArticle.impact_score = coreView.impact_score ?? analysisResult.impact_score ?? null;
+                    updatedArticle.market_bias = (coreView.market_bias || 'neutral').toLowerCase();
+                    updatedArticle.signal_bucket = (analysisResult.signal_bucket || 'NOISE').toUpperCase();
+                    updatedArticle.executive_summary = analysisResult.executive_summary || '';
+                    updatedArticle.decision_trace = analysisResult.decision_trace || {};
+
+                    const event = analysisResult.event || {};
+                    updatedArticle.news_category = event.event_type || updatedArticle.news_category || 'general';
+
+                    const score = updatedArticle.impact_score || 0;
+                    if (!updatedArticle.news_relevance || updatedArticle.news_relevance === 'None') {
+                        updatedArticle.news_relevance = score >= 6 ? 'High' : score >= 3 ? 'Medium' : 'Low';
+                    }
+
+                    const stockImpacts = analysisResult.stock_impacts || [];
+                    if (stockImpacts.length > 0 && (!updatedArticle.symbols || updatedArticle.symbols.length === 0)) {
+                        updatedArticle.symbols = stockImpacts.map(s => s.symbol).filter(Boolean);
+                    }
+                    if (stockImpacts.length > 0) {
+                        updatedArticle.primary_symbol = stockImpacts[0].symbol || null;
+                    }
+                }
+
+                // Update the card in the DOM immediately
                 const existingCard = document.getElementById(`article-card-${newsId}`);
                 if (existingCard) {
                     const isFeatured = existingCard.classList.contains('featured-card');
@@ -1013,7 +1058,7 @@ async function analyzeArticle(newsId, btnEl) {
                     openModal(updatedArticle);
                 }
             }
-            
+
             await fetchNews(false, true); // Still run just in case for backend sync
         } else {
             showToast('Analysis failed — click to retry', 'error');
@@ -2039,8 +2084,9 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
                 if (trulyNew.length > 0) {
                     console.log(`[Smart Refresh] Found ${trulyNew.length} new articles`);
                     trulyNew.forEach(a => seenArticleIds.add(a.id));
-                    pendingNewArticles = [...trulyNew, ...pendingNewArticles];
-                    showNewNewsPill(pendingNewArticles.length);
+                    // Directly prepend new articles and render them
+                    newsData = [...trulyNew, ...newsData];
+                    renderNews(newsData);
                 }
             } else if (isLoadMore) {
                 // Infinite Scroll: Append new articles
@@ -2058,11 +2104,8 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
             } else {
                 // Initial load or Filter change
                 newsData = newArticles;
-                pendingNewArticles = [];
                 seenArticleIds.clear();
                 newArticles.forEach(a => seenArticleIds.add(a.id));
-                const pill = document.getElementById('new-news-pill');
-                if (pill) pill.remove();
                 currentPage = 0;
                 hasMoreArticles = newArticles.length >= articlesPerPage;
                 renderNews(newsData);
@@ -2096,43 +2139,13 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
     }
 }
 
-// ---- New News Pill ----
-function showNewNewsPill(count) {
-    let pill = document.getElementById('new-news-pill');
-    if (!pill) {
-        pill = document.createElement('div');
-        pill.id = 'new-news-pill';
-        pill.style.cssText = 'position:fixed; top:80px; left:50%; transform:translateX(-50%); background:var(--accent-1, #6C63FF); color:#fff; padding:10px 20px; border-radius:99px; cursor:pointer; font-weight:bold; z-index:9999; box-shadow:0 8px 20px rgba(108,99,255,0.4); animation: slipDown 0.3s ease;';
-        document.body.appendChild(pill);
-        
-        if (!document.getElementById('pill-styles')) {
-            const style = document.createElement('style');
-            style.id = 'pill-styles';
-            style.innerHTML = `@keyframes slipDown { from { opacity: 0; transform: translate(-50%, -20px); } to { opacity: 1; transform: translate(-50%, 0); } }`;
-            document.head.appendChild(style);
-        }
 
-        pill.onclick = () => {
-            newsData = [...pendingNewArticles, ...newsData];
-            
-            for (let i = pendingNewArticles.length - 1; i >= 0; i--) {
-                const card = createNewsCard(pendingNewArticles[i], i);
-                newsGrid.insertBefore(card, newsGrid.firstChild);
-            }
-            
-            pendingNewArticles = [];
-            pill.remove();
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-        };
-    }
-    pill.textContent = `↑ ${count} new article${count > 1 ? 's' : ''}`;
-}
 
 // ---- Display Counts Helper ----
 function updateDisplayCounts() {
     const displayCount = searchQuery ? newsData.length : totalDbArticles;
     const suffix = searchQuery ? ' results' : ' articles';
-    
+
     const formattedCount = displayCount.toLocaleString();
     if (articleCount) articleCount.textContent = `${formattedCount}${suffix}`;
     if (drawerCount) drawerCount.textContent = `${formattedCount}${suffix}`;
@@ -2147,7 +2160,7 @@ async function fetchStats() {
             const d = json.data;
             totalDbArticles = d.total_articles;
             updateDisplayCounts();
-            
+
             document.getElementById('footerTotal').textContent = d.total_articles.toLocaleString();
             document.getElementById('footerAnalyzed').textContent = d.analyzed_articles.toLocaleString();
             document.getElementById('footerSources').textContent = d.source_count.toLocaleString();
@@ -2502,14 +2515,14 @@ function startChartRefresh(symbol) {
 // ---- Load first pair that has candle data ----
 async function loadFirstAvailablePair() {
     try {
-        const res = await fetch('/api/nse/pairs?q=TCS');
+        const res = await fetch(`${API_BASE}/api/nse/pairs?q=TCS`);
         const json = await res.json();
         if (json.status === 'success' && json.data.length > 0) {
             await loadChart(json.data[0]);
             return;
         }
         // fallback: get any pair
-        const res2 = await fetch('/api/nse/pairs');
+        const res2 = await fetch(`${API_BASE}/api/nse/pairs`);
         const json2 = await res2.json();
         if (json2.status === 'success' && json2.data.length > 0) {
             await loadChart(json2.data[0]);
@@ -2530,7 +2543,7 @@ async function doChartSearch(query) {
         return;
     }
     try {
-        const url = `/api/nse/pairs?q=${encodeURIComponent(query)}`;
+        const url = `${API_BASE}/api/nse/pairs?q=${encodeURIComponent(query)}`;
         const res = await fetch(url);
         const json = await res.json();
         if (json.status !== 'success' || !json.data.length) {
@@ -2688,7 +2701,7 @@ async function fetchNewsMarkers(symbol) {
             pairOnly = symbol.split(':')[1];
         }
 
-        const url = `/api/nse/news-markers?symbol=${encodeURIComponent(pairOnly)}`;
+        const url = `${API_BASE}/api/nse/news-markers?symbol=${encodeURIComponent(pairOnly)}`;
         console.log('[NEWS MARKERS] Fetching from URL:', url);
         const res = await fetch(url);
         const json = await res.json();
@@ -3058,7 +3071,7 @@ async function fetchCandleData(symbol) {
     const loadingMsg = document.getElementById('chartLoadingMsg');
 
     try {
-        const url = `/api/nse/candles?symbol=${encodeURIComponent(symbol)}&limit=500`;
+        const url = `${API_BASE}/api/nse/candles?symbol=${encodeURIComponent(symbol)}&limit=500`;
         const res = await fetch(url);
         const json = await res.json();
 
@@ -3372,7 +3385,7 @@ let dynamicHolidays = null;
 
 async function fetchHolidays() {
     try {
-        const res = await fetch('/api/nse/holidays');
+        const res = await fetch(`${API_BASE}/api/nse/holidays`);
         const json = await res.json();
         if (json.status === 'success') {
             dynamicHolidays = json.data;
