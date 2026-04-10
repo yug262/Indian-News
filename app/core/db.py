@@ -15,7 +15,7 @@ DB_CONFIG = {
 
 import threading
 
-# Connection pool (min 1, max 50 connections)
+# Connection pool tuned for concurrent API + worker load.
 _pool = None
 _pool_lock = threading.Lock()
 
@@ -26,7 +26,7 @@ def get_pool():
         with _pool_lock:
             if _pool is None:
                 # Use ThreadedConnectionPool instead of SimpleConnectionPool for thread safety
-                _pool = pool.ThreadedConnectionPool(1, 50, **DB_CONFIG)
+                _pool = pool.ThreadedConnectionPool(5, 100, **DB_CONFIG)
     return _pool
 
 

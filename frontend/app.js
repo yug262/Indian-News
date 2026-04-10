@@ -2,7 +2,20 @@
 // CryptoWire — Frontend Logic (Production)
 // =========================================
 
-const API_BASE = (window.APP_CONFIG && window.APP_CONFIG.BACKEND_URL) ? window.APP_CONFIG.BACKEND_URL : '';
+const DEFAULT_LOCAL_API = (() => {
+    const host = window.location.hostname;
+    const port = window.location.port;
+    const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0';
+    const isLanHost = /^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+    if (port === '3000' || isLocalHost || isLanHost) {
+        const targetHost = host === '0.0.0.0' ? 'localhost' : host;
+        return `${window.location.protocol}//${targetHost}:8000`;
+    }
+    return '';
+})();
+const API_BASE = (window.APP_CONFIG && typeof window.APP_CONFIG.BACKEND_URL === 'string' && window.APP_CONFIG.BACKEND_URL.trim())
+    ? window.APP_CONFIG.BACKEND_URL.trim()
+    : DEFAULT_LOCAL_API;
 const REFRESH_INTERVAL = 30_000; // 30 seconds
 const SEARCH_DEBOUNCE = 300;
 const SCROLL_TOP_THRESHOLD = 400;
@@ -1910,14 +1923,14 @@ function startChartRefresh(symbol) {
 // ---- Load first pair that has candle data ----
 async function loadFirstAvailablePair() {
     try {
-        const res = await fetch('/api/forex/pairs?q=EURUSD');
+        const res = await fetch(`${API_BASE}/api/forex/pairs?q=EURUSD`);
         const json = await res.json();
         if (json.status === 'success' && json.data.length > 0) {
             await loadChart(json.data[0]);
             return;
         }
         // fallback: get any pair
-        const res2 = await fetch('/api/forex/pairs');
+        const res2 = await fetch(`${API_BASE}/api/forex/pairs`);
         const json2 = await res2.json();
         if (json2.status === 'success' && json2.data.length > 0) {
             await loadChart(json2.data[0]);
@@ -1938,7 +1951,7 @@ async function doChartSearch(query) {
         return;
     }
     try {
-        const url = `/api/forex/pairs?q=${encodeURIComponent(query)}`;
+        const url = `${API_BASE}/api/forex/pairs?q=${encodeURIComponent(query)}`;
         const res = await fetch(url);
         const json = await res.json();
         if (json.status !== 'success' || !json.data.length) {
@@ -2050,7 +2063,7 @@ async function fetchNewsMarkers(symbol) {
             pairOnly = symbol.split(':')[1];
         }
 
-        const url = `/api/forex/news-markers?symbol=${encodeURIComponent(pairOnly)}`;
+        const url = `${API_BASE}/api/forex/news-markers?symbol=${encodeURIComponent(pairOnly)}`;
         console.log('[NEWS MARKERS] Fetching from URL:', url);
         const res = await fetch(url);
         const json = await res.json();
@@ -2421,7 +2434,7 @@ async function fetchCandleData(symbol) {
     const loadingMsg = document.getElementById('chartLoadingMsg');
 
     try {
-        const url = `/api/forex/candles?symbol=${encodeURIComponent(symbol)}&limit=500`;
+        const url = `${API_BASE}/api/forex/candles?symbol=${encodeURIComponent(symbol)}&limit=500`;
         const res = await fetch(url);
         const json = await res.json();
 

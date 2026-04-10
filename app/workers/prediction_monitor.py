@@ -234,8 +234,14 @@ def check_predictions():
         news_id = pred["news_id"]
         
         try:
-            # 1. Check if the parent news article still exists
-            news_exists = fetch_all("SELECT id FROM news WHERE id = %s", (news_id,))
+            # 1. Check if the parent article still exists in either news table.
+            news_exists = fetch_all(
+                """SELECT id FROM news WHERE id = %s
+                UNION ALL
+                SELECT id FROM indian_news WHERE id = %s
+                LIMIT 1""",
+                (news_id, news_id),
+            )
             if not news_exists:
                 _log(f"  🗑️ #{pred_id} {symbol}: parent news #{news_id} deleted. Finalizing early.")
                 execute_query(

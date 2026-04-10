@@ -2,7 +2,20 @@
 // CryptoWire — Frontend Logic (Production)
 // =========================================
 
-const API_BASE = (window.APP_CONFIG && window.APP_CONFIG.BACKEND_URL) ? window.APP_CONFIG.BACKEND_URL : '';
+const DEFAULT_LOCAL_API = (() => {
+    const host = window.location.hostname;
+    const port = window.location.port;
+    const isLocalHost = host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0';
+    const isLanHost = /^10\.|^192\.168\.|^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+    if (port === '3000' || isLocalHost || isLanHost) {
+        const targetHost = host === '0.0.0.0' ? 'localhost' : host;
+        return `${window.location.protocol}//${targetHost}:8000`;
+    }
+    return '';
+})();
+const API_BASE = (window.APP_CONFIG && typeof window.APP_CONFIG.BACKEND_URL === 'string' && window.APP_CONFIG.BACKEND_URL.trim())
+    ? window.APP_CONFIG.BACKEND_URL.trim()
+    : DEFAULT_LOCAL_API;
 const REFRESH_INTERVAL = 30_000; // 30 seconds
 const SEARCH_DEBOUNCE = 300;
 const SCROLL_TOP_THRESHOLD = 400;
@@ -2374,8 +2387,11 @@ function renderEvents(events) {
     });
     container.innerHTML = html;
 
-    // Attach scroll listener for buttons visibility
-    container.addEventListener('scroll', checkScrollButtons, { passive: true });
+    // Attach once to avoid stacking listeners on every refresh.
+    if (!container.dataset.scrollBound) {
+        container.addEventListener('scroll', checkScrollButtons, { passive: true });
+        container.dataset.scrollBound = '1';
+    }
     // Initial check
     setTimeout(checkScrollButtons, 100);
 }
@@ -2649,22 +2665,6 @@ async function refreshChartData(symbol) {
 
     // Resync overlay if exists
     if (typeof syncNewsOverlay === 'function') syncNewsOverlay();
-}
-
-function startChartRefresh(symbol) {
-    stopChartRefresh();
-    chartRefreshTimer = setInterval(() => {
-        if (document.getElementById('chartOverlay').style.display === 'block') {
-            refreshChartData(symbol);
-        }
-    }, 180000); // 3 mins
-}
-
-function stopChartRefresh() {
-    if (chartRefreshTimer) {
-        clearInterval(chartRefreshTimer);
-        chartRefreshTimer = null;
-    }
 }
 
 function updateChartStats(symbol, data) {

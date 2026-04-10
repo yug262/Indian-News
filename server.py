@@ -18,9 +18,6 @@ executor = ThreadPoolExecutor(max_workers=20)
 app = FastAPI(title="News Website API")
 SERVER_START = datetime.now(timezone.utc)
 
-# Thread pool for blocking database operations
-executor = ThreadPoolExecutor(max_workers=20)
-
 # Async helpers to run blocking DB operations
 async def run_in_executor(func, *args):
     loop = asyncio.get_event_loop()
@@ -113,7 +110,7 @@ async def get_news(source: str = Query(None, description="Filter news by source 
     params.extend([limit, offset])
     
     try:
-        articles = fetch_all(query, params)
+        articles = await run_with_timeout(lambda: fetch_all(query, params), 20)
         # Convert datetime objects to string for JSON serialization
         for article in articles:
             if isinstance(article['published'], datetime):
@@ -126,23 +123,29 @@ async def get_news(source: str = Query(None, description="Filter news by source 
             article_ids = [a['id'] for a in articles if a.get('id')]
             if article_ids:
                 placeholders = ','.join(['%s'] * len(article_ids))
-                pred_rows = fetch_all(
-                    f"""SELECT DISTINCT ON (news_id) news_id, asset, asset_display_name, direction,
-                        predicted_move_pct, status, final_move_pct, mfe_pct, mae_pct,
-                        finalized, expected_duration_label
-                    FROM predictions
-                    WHERE news_id IN ({placeholders})
-                    ORDER BY news_id, id ASC""",
-                    tuple(article_ids),
+                pred_rows = await run_with_timeout(
+                    lambda: fetch_all(
+                        f"""SELECT DISTINCT ON (news_id) news_id, asset, asset_display_name, direction,
+                            predicted_move_pct, status, final_move_pct, mfe_pct, mae_pct,
+                            finalized, expected_duration_label
+                        FROM predictions
+                        WHERE news_id IN ({placeholders})
+                        ORDER BY news_id, id ASC""",
+                        tuple(article_ids),
+                    ),
+                    10,
                 )
                 pred_map = {r['news_id']: r for r in pred_rows}
 
-                count_rows = fetch_all(
-                    f"""SELECT news_id, COUNT(*) as pred_count
-                    FROM predictions
-                    WHERE news_id IN ({placeholders})
-                    GROUP BY news_id""",
-                    tuple(article_ids),
+                count_rows = await run_with_timeout(
+                    lambda: fetch_all(
+                        f"""SELECT news_id, COUNT(*) as pred_count
+                        FROM predictions
+                        WHERE news_id IN ({placeholders})
+                        GROUP BY news_id""",
+                        tuple(article_ids),
+                    ),
+                    10,
                 )
                 count_map = {r['news_id']: r['pred_count'] for r in count_rows}
 
@@ -168,7 +171,7 @@ async def get_news(source: str = Query(None, description="Filter news by source 
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/events/global")
-def get_global_events():
+async def get_global_events():
     """Get active global events from the news."""
     query = """
     SELECT event_id, MIN(event_title) as event_title, COUNT(*) as article_count, MAX(published) as latest_update
@@ -179,7 +182,7 @@ def get_global_events():
     LIMIT 50
     """
     try:
-        events = fetch_all(query)
+        events = await run_with_timeout(lambda: fetch_all(query), 10)
         for ev in events:
             if isinstance(ev['latest_update'], datetime):
                 ev['latest_update'] = ev['latest_update'].isoformat()
@@ -188,7 +191,7 @@ def get_global_events():
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/events/india")
-def get_indian_events():
+async def get_indian_events():
     """Get active Indian market events from the indian_news."""
     query = """
     SELECT event_id, MIN(event_title) as event_title, COUNT(*) as article_count, MAX(published) as latest_update
@@ -199,7 +202,7 @@ def get_indian_events():
     LIMIT 50
     """
     try:
-        events = fetch_all(query)
+        events = await run_with_timeout(lambda: fetch_all(query), 10)
         for ev in events:
             if isinstance(ev['latest_update'], datetime):
                 ev['latest_update'] = ev['latest_update'].isoformat()
@@ -208,8 +211,8 @@ def get_indian_events():
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/indian_news")
-def get_indian_news(source: str = Query(None, description="Filter news by source name"), 
-             limit: int = Query(1000, description="Max number of articles to return"),
+async def get_indian_news(source: str = Query(None, description="Filter news by source name"), 
+             limit: int = Query(20, description="Max number of articles to return"),
              today_only: bool = Query(False, description="Only fetch today's news"),
              relevance: str = Query(None, description="Filter news by relevance"),
              analyzed_only: bool = Query(False, description="Only fetch analyzed news"),
@@ -258,7 +261,7 @@ def get_indian_news(source: str = Query(None, description="Filter news by source
     params.extend([limit, offset])
     
     try:
-        articles = fetch_all(query, params)
+        articles = await run_with_timeout(lambda: fetch_all(query, params), 20)
         # Convert datetime objects to string for JSON serialization
         for article in articles:
             if isinstance(article['published'], datetime):
@@ -1023,5 +1026,8 @@ async def analyze_single_indian_article(news_id: int):
 # API server entry point
     
 if __name__ == "__main__":
-    print("Starting API Server on http://localhost:8000")
-    uvicorn.run("server:app", host="localhost", port=8000, reload=True)
+    host = os.getenv("API_HOST", "0.0.0.0")
+    port = int(os.getenv("API_PORT", "8000"))
+    reload_enabled = os.getenv("API_RELOAD", "false").lower() in ("1", "true", "yes")
+    print(f"Starting API Server on http://{host}:{port} (reload={reload_enabled})")
+    uvicorn.run("server:app", host=host, port=port, reload=reload_enabled)
