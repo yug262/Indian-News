@@ -23,6 +23,7 @@ const CONNECTION_FAIL_THRESHOLD = 2;
 
 let currentSource = 'all';
 let searchQuery = '';
+let currentEventId = null;
 let newsData = [];
 let sourceFilters = [];
 const analyzingArticles = new Set();
@@ -32,9 +33,9 @@ let currentRelevance = 'all';
 let isFetching = false;
 let consecutiveFailures = 0;
 let searchDebounceTimer = null;
-let chartNewsByTime = {}; // Global store for news markers by time
 
 // ---- Pagination & Smart Refresh ----
+
 let totalDbArticles = 0;
 let currentPage = 0;
 const articlesPerPage = 20;
@@ -44,6 +45,9 @@ const seenArticleIds = new Set();
 
 // ---- DOM Elements ----
 const newsGrid = document.getElementById('newsGrid');
+const featuredGrid = document.getElementById('featuredGrid');
+const featuredSection = document.getElementById('featuredSection');
+const allNewsHeader = document.getElementById('allNewsHeader');
 const emptyState = document.getElementById('emptyState');
 const emptyStateTitle = document.getElementById('emptyStateTitle');
 const emptyStateMsg = document.getElementById('emptyStateMsg');
@@ -59,6 +63,15 @@ const scrollTopBtn = document.getElementById('scrollTopBtn');
 const connectionBanner = document.getElementById('connectionBanner');
 const toastContainer = document.getElementById('toastContainer');
 const themeToggle = document.getElementById('themeToggle');
+
+// ---- Mobile Menu Elements ----
+const mobileMenuTrigger = document.getElementById('mobileMenuTrigger');
+const mobileDrawer = document.getElementById('mobileDrawer');
+const drawerOverlay = document.getElementById('drawerOverlay');
+const drawerClock = document.getElementById('drawerClock');
+const drawerCount = document.getElementById('drawerCount');
+
+let isDrawerOpen = false;
 
 // ---- Theme Toggle ----
 function applyTheme(theme) {
@@ -82,7 +95,9 @@ function updateClock() {
         hour: '2-digit', minute: '2-digit', second: '2-digit',
         hour12: true, timeZone: 'Asia/Kolkata'
     };
-    clockEl.textContent = now.toLocaleTimeString('en-US', options) + ' IST';
+    const timeStr = now.toLocaleTimeString('en-US', options) + ' IST';
+    clockEl.textContent = timeStr;
+    if (drawerClock) drawerClock.textContent = timeStr;
 }
 
 setInterval(updateClock, 1000);
@@ -93,6 +108,7 @@ function timeAgo(dateStr) {
     const date = new Date(dateStr);
     const now = new Date();
     const diffMs = now - date;
+    if (diffMs < 0) return 'Just now'; // Handle clock drift gracefully
     const diffMins = Math.floor(diffMs / 60000);
     const diffHours = Math.floor(diffMs / 3600000);
 
@@ -159,22 +175,323 @@ function getMarketModeInfo(mode) {
     return { label: 'Neutral', cssClass: 'mode-neutral', icon: '⚖️' };
 }
 
-function renderRelevanceBadge(relevance) {
+// ═══════════════════════════════════════════════
+// AI ANALYSIS TOOLTIP SYSTEM
+// ═══════════════════════════════════════════════
+const AI_TOOLTIPS = {
+    signal_bucket: {
+        _title: 'Signal Strength',
+        _desc: 'How directly this news affects Indian markets.',
+        DIRECT: { color: '#00d4aa', desc: 'A named Indian company or sector is the direct subject of a confirmed event. Strongest signal.' },
+        AMBIGUOUS: { color: '#f0c040', desc: 'A real event exists, but the direction, impact size, or which company is affected is unclear.' },
+        WEAK_PROXY: { color: '#ff9f43', desc: 'The event is real but the connection to India is indirect — like a global event that may ripple into Indian markets.' },
+        NOISE: { color: '#888', desc: 'No meaningful market signal. Opinion pieces, recaps, lifestyle news, or daily wraps with nothing new.' }
+    },
+    market_bias: {
+        _title: 'Market Direction',
+        _desc: 'Which way the AI thinks this news pushes the market.',
+        bullish: { color: '#00d4aa', desc: 'The news is positive — likely to push prices up for the affected stocks or sectors.' },
+        bearish: { color: '#ff4757', desc: 'The news is negative — likely to push prices down for the affected stocks or sectors.' },
+        mixed: { color: '#f0c040', desc: 'The news has both positive and negative elements, or the price is moving opposite to the event.' },
+        neutral: { color: '#888', desc: 'No clear directional push. The news is either too weak or already reflected in prices.' },
+        unclear: { color: '#666', desc: 'Not enough information to determine a direction. More data needed.' }
+    },
+    tradeability: {
+        _title: 'Can You Trade This?',
+        _desc: 'Whether this news creates a tradeable opportunity right now.',
+        actionable_now: { color: '#00d4aa', desc: 'Strong signal, market is open, price hasn\'t fully reacted yet. There may be an opportunity to act on this right now.' },
+        wait_for_confirmation: { color: '#f0c040', desc: 'Real event, but either the market is closed, the price already moved a lot, or more clarity is needed before trading.' },
+        no_edge: { color: '#888', desc: 'No trading opportunity. The signal is too weak, already priced in, or there\'s no clear connection to any tradeable asset.' }
+    },
+    horizon: {
+        _title: 'Time Horizon',
+        _desc: 'How long the AI expects this news to influence the market.',
+        intraday: { color: '#6C63FF', desc: 'Impact expected within today\'s trading session only. Fast-moving, short-lived effect.' },
+        short_term: { color: '#00c8b4', desc: 'Impact expected over the next few days to a week. The market will digest this over multiple sessions.' },
+        medium_term: { color: '#f0c040', desc: 'Impact expected over weeks to a couple of months. A structural shift that takes time to play out.' },
+        long_term: { color: '#ff9f43', desc: 'Impact over months or longer. Significant economic or policy change with lasting effects.' }
+    },
+    category: {
+        _title: 'News Category',
+        _desc: 'What type of event this news represents.',
+        corporate_event: { desc: 'Company-specific action — earnings, deals, orders, management changes, plant events, or filings.' },
+        government_policy: { desc: 'Government or regulator decision — new rules, tax changes, policy announcements, or compliance actions.' },
+        macro_data: { desc: 'Economic data release — inflation (CPI), GDP, PMI, industrial production, or RBI data.' },
+        global_macro_impact: { desc: 'A global event that clearly affects India through trade, capital flows, risk sentiment, or interest rates.' },
+        commodity_macro: { desc: 'Oil, gas, metals, or commodity price/supply changes with meaningful impact on Indian companies.' },
+        sector_trend: { desc: 'A real shift affecting multiple companies across an entire industry — not just one stock.' },
+        institutional_activity: { desc: 'Large money movements — FII/DII flows, big stake sales/purchases, or institutional allocation changes.' },
+        sentiment_indicator: { desc: 'Market mood signals — surveys, positioning data, confidence indicators, or sentiment metrics.' },
+        price_action_noise: { desc: 'Headline mainly describes a stock or index moving without any real new trigger behind it.' },
+        routine_market_update: { desc: 'Daily wrap, recap, or summary of already-known information. Nothing new here.' },
+        other: { desc: 'Doesn\'t fit neatly into any category. A catch-all for unusual or rare event types.' }
+    },
+    relevance: {
+        _title: 'Trading Relevance',
+        _desc: 'How useful is this news for making trading decisions.',
+        'high useful': { color: '#ff6b6b', desc: 'Confirmed, new, directly relevant — the strongest signal. Think: major earnings surprise, RBI rate decision, big policy change.' },
+        useful: { color: '#00d4aa', desc: 'Confirmed event with clear economic relevance. Worth paying attention to and may present trading ideas.' },
+        medium: { color: '#f0c040', desc: 'Market-relevant but indirect, partial, or routine. Good context but not a strong standalone trade signal.' },
+        neutral: { color: '#888', desc: 'Market-related but weak. Informational only — no strong economic change expected.' },
+        noisy: { color: '#ff4757', desc: 'Speculation, commentary, recap, or price-only movement. Safe to ignore for trading purposes.' }
+    },
+    event_type: {
+        _title: 'Event Type',
+        _desc: 'What kind of business event triggered this news.',
+        earnings: { desc: 'Quarterly or annual results, profit/loss reports, revenue figures, or guidance updates.' },
+        policy: { desc: 'Government or central bank policy action — rates, regulation, taxes, subsidies, or approvals.' },
+        order_win: { desc: 'A company won a new contract, order, or deal that affects its future revenue.' },
+        macro: { desc: 'Macroeconomic data or event — GDP, inflation, trade data, employment, or fiscal numbers.' },
+        regulation: { desc: 'New rules, compliance requirements, bans, or regulatory approvals affecting industries.' },
+        disruption: { desc: 'Supply chain disruption, natural disaster, plant shutdown, or logistics interruption.' },
+        corporate_action: { desc: 'Mergers, acquisitions, buybacks, stock splits, delistings, or major restructuring.' },
+        other: { desc: 'An event that doesn\'t fit standard categories.' }
+    },
+    event_status: {
+        _title: 'Confirmation Status',
+        _desc: 'How confirmed is this event.',
+        confirmed: { color: '#00d4aa', desc: 'Officially announced, verified data, or published by a reliable source. You can trust this happened.' },
+        developing: { color: '#f0c040', desc: 'Partially confirmed — details are still emerging. The story might change as more information comes in.' },
+        rumor: { color: '#ff9f43', desc: 'Unverified, unnamed sources, or speculative language. Take with a grain of salt.' },
+        noise: { color: '#888', desc: 'No real event. Opinion, commentary, or recap of old information.' }
+    },
+    event_scope: {
+        _title: 'Impact Scope',
+        _desc: 'How wide is the impact of this event.',
+        single_stock: { color: '#6C63FF', desc: 'Affects only one specific company. The stock moved independently from its peers.' },
+        sector: { color: '#00c8b4', desc: 'Affects an entire sector or industry. Multiple companies in the same space are impacted.' },
+        broad_market: { color: '#ff9f43', desc: 'Affects the overall market — indices, broad sentiment, or macro conditions for all stocks.' }
+    },
+    impact_score: {
+        _title: 'Impact Score (0-10)',
+        _desc: 'How strong is the actual economic change from this news.',
+        '0-1': { color: '#555', desc: 'No meaningful economic change. Noise.' },
+        '2-3': { color: '#888', desc: 'Minor change — only one of: revenue, confirmation, scale, or timing is present.' },
+        '4-5': { color: '#f0c040', desc: 'Moderate — two factors confirmed. Starts becoming potentially tradeable.' },
+        '6-7': { color: '#ff9f43', desc: 'Significant — three factors confirmed. Clear company/sector affected, near-term impact expected.' },
+        '8-10': { color: '#ff4757', desc: 'Major — all four factors present: changes economics, confirmed, significant scale, near-term effect.' }
+    },
+    remaining_impact: {
+        _title: 'Remaining Edge',
+        _desc: 'How much of this news is already reflected in the stock price.',
+        untouched: { color: '#00d4aa', desc: 'Market barely reacted yet. Most of the potential price move is still ahead.' },
+        early: { color: '#26a69a', desc: 'Reaction just started. Price moved a little, but there\'s likely more to come.' },
+        partially_absorbed: { color: '#f0c040', desc: 'Some move happened already. There might be follow-through, but the easy part is done.' },
+        mostly_absorbed: { color: '#ff9f43', desc: 'Most of the obvious reaction is over. Limited upside from chasing this now.' },
+        exhausted: { color: '#ff4757', desc: 'Fully reflected in price. The market already digested this news completely. No edge left.' }
+    }
+};
+
+/**
+ * Wraps badge HTML with a data-ai-tip attribute for the floating tooltip system.
+ * No inline tooltip HTML is embedded — the single floating tooltip reads these attributes.
+ * @param {string} innerHtml - The visible badge HTML
+ * @param {string} field - Key into AI_TOOLTIPS (e.g. 'signal_bucket')
+ * @param {string} [currentValue] - The current value to highlight
+ * @returns {string} HTML string with data attributes
+ */
+function wrapTooltip(innerHtml, field, currentValue) {
+    const fieldData = AI_TOOLTIPS[field];
+    if (!fieldData) return innerHtml;
+    const safeVal = (currentValue || '').replace(/"/g, '&quot;');
+    return `<span data-ai-tip="${field}" data-ai-val="${safeVal}">${innerHtml}</span>`;
+}
+
+// ---- Floating Tooltip Engine ----
+(function initAiTooltip() {
+    // Create the single floating tooltip container
+    const tip = document.createElement('div');
+    tip.id = 'aiTooltipFloat';
+    document.body.appendChild(tip);
+
+    let hideTimer = null;
+    let activeTrigger = null;
+    const isMobile = () => window.innerWidth <= 768;
+
+    function buildTooltipContent(field, currentValue) {
+        const data = AI_TOOLTIPS[field];
+        if (!data) return '';
+
+        const title = data._title || field;
+        const desc = data._desc || '';
+        const valueKeys = Object.keys(data).filter(k => !k.startsWith('_'));
+
+        let html = `<div class="tt-title">\u2139\uFE0F ${title}</div>`;
+        html += `<div class="tt-desc">${desc}</div>`;
+
+        if (valueKeys.length > 0) {
+            html += '<div class="tt-divider"></div><div class="tt-values">';
+            valueKeys.forEach(key => {
+                const v = data[key];
+                const isActive = currentValue && key.toLowerCase() === currentValue.toLowerCase();
+                const dotColor = v.color || '#6C63FF';
+                const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                html += `<div class="tt-row">
+                    <span class="tt-dot${isActive ? ' active' : ''}" style="background:${dotColor};${isActive ? 'color:' + dotColor : ''}"></span>
+                    <span><span class="tt-vlabel${isActive ? ' active' : ''}">${label}:</span> <span class="tt-vdesc">${v.desc}</span></span>
+                </div>`;
+            });
+            html += '</div>';
+        }
+        return html;
+    }
+
+    function showTooltip(trigger) {
+        if (activeTrigger === trigger && tip.classList.contains('visible')) return;
+
+        clearTimeout(hideTimer);
+        const field = trigger.getAttribute('data-ai-tip');
+        const val = trigger.getAttribute('data-ai-val') || '';
+        const content = buildTooltipContent(field, val);
+        if (!content) return;
+
+        tip.innerHTML = content;
+        activeTrigger = trigger;
+
+        if (isMobile()) {
+            tip.style.top = '';
+            tip.style.left = '';
+            tip.classList.add('visible');
+            setTimeout(() => {
+                document.addEventListener('touchstart', closeMobileTooltip, { once: true });
+            }, 50);
+        } else {
+            tip.classList.add('visible');
+            const rect = trigger.getBoundingClientRect();
+            const tipRect = tip.getBoundingClientRect();
+
+            // Try to show above - Reduced gap to 6px
+            let top = rect.top - tipRect.height - 6;
+            let left = rect.left + rect.width / 2 - tipRect.width / 2;
+
+            if (top < 8) {
+                top = rect.bottom + 6;
+            }
+            if (left < 8) left = 8;
+            if (left + tipRect.width > window.innerWidth - 8) {
+                left = window.innerWidth - tipRect.width - 8;
+            }
+
+            tip.style.top = top + 'px';
+            tip.style.left = left + 'px';
+        }
+    }
+
+    function hideTooltip() {
+        clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+            tip.classList.remove('visible');
+            activeTrigger = null;
+        }, 200);
+    }
+
+    function closeMobileTooltip(e) {
+        if (!tip.contains(e.target)) {
+            tip.classList.remove('visible');
+            activeTrigger = null;
+        }
+    }
+
+    // Expert Event Delegation: Robust mouseover/mouseout
+    document.addEventListener('mouseover', (e) => {
+        const trigger = e.target.closest('[data-ai-tip]');
+        const isTooltip = e.target.closest('#aiTooltipFloat');
+
+        if (trigger || isTooltip) {
+            clearTimeout(hideTimer);
+            if (trigger) {
+                showTooltip(trigger);
+            }
+        }
+    });
+
+    document.addEventListener('mouseout', (e) => {
+        const trigger = e.target.closest('[data-ai-tip]');
+        const isTooltip = e.target.closest('#aiTooltipFloat');
+        const related = e.relatedTarget;
+
+        // Only trigger hide if moving to an element that is NOT part of the trigger or tooltip
+        const movingToSafe = related && (related.closest('[data-ai-tip]') || related.closest('#aiTooltipFloat'));
+
+        if (!movingToSafe) {
+            hideTooltip();
+        }
+    });
+
+    // Touch support (mobile) remains largely the same but simplified
+    document.addEventListener('touchstart', (e) => {
+        const trigger = e.target.closest('[data-ai-tip]');
+        if (trigger) {
+            e.preventDefault();
+            if (activeTrigger === trigger && tip.classList.contains('visible')) {
+                tip.classList.remove('visible');
+                activeTrigger = null;
+            } else {
+                showTooltip(trigger);
+            }
+        }
+    }, { passive: false });
+
+    document.addEventListener('scroll', (e) => {
+        if (!isMobile() && !tip.contains(e.target)) hideTooltip();
+    }, true);
+})();
+
+function renderRelevanceBadge(relevance, useRichTooltip = true) {
     if (!relevance) return '';
     const rel = relevance.toLowerCase();
     let cssClass = 'rel-neutral';
-    if (rel.includes('noisy')) cssClass = 'rel-noisy';
-    else if (rel.includes('very high')) cssClass = 'rel-very-high';
-    else if (rel.includes('crypto') || rel.includes('forex') || rel.includes('useful')) cssClass = 'rel-useful';
+
+    if (rel.includes('very high')) cssClass = 'rel-very-high';
+    else if (rel.includes('high')) cssClass = 'rel-high';
+    else if (rel.includes('useful')) cssClass = 'rel-useful';
+    else if (rel.includes('medium')) cssClass = 'rel-medium';
+    else if (rel.includes('noisy')) cssClass = 'rel-noisy';
 
     const label = relevance.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-    return `<span class="relevance-badge ${cssClass}"><span class="relevance-dot"></span>${escapeHtml(label)}</span>`;
+
+    // Get short description for title attribute
+    const tipData = AI_TOOLTIPS.relevance[rel] || {};
+    const titleAttr = tipData.desc ? ` title="${label}: ${tipData.desc}"` : '';
+
+    const badgeHtml = `<span class="relevance-badge ${cssClass}"${titleAttr}>${escapeHtml(label)}</span>`;
+
+    if (useRichTooltip) {
+        return wrapTooltip(badgeHtml, 'relevance', rel);
+    }
+    return badgeHtml;
 }
 
-function renderCategoryBadge(category) {
+function renderCategoryBadge(category, useRichTooltip = true) {
     if (!category || category.toLowerCase() === 'none') return '';
     const label = category.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-    return `<span class="category-badge">${escapeHtml(label)}</span>`;
+
+    // Get short description for title attribute
+    const tipData = AI_TOOLTIPS.category[category.toLowerCase()] || {};
+    const titleAttr = tipData.desc ? ` title="${label}: ${tipData.desc}"` : '';
+
+    const badgeHtml = `<span class="category-badge"${titleAttr}>${escapeHtml(label)}</span>`;
+
+    if (useRichTooltip) {
+        return wrapTooltip(badgeHtml, 'category', category.toLowerCase());
+    }
+    return badgeHtml;
+}
+
+function renderAllSymbolsBadge(symbols) {
+    if (!symbols) return '';
+    let symbolArr = symbols;
+    if (typeof symbols === 'string') {
+        try { symbolArr = JSON.parse(symbols); } catch { return ''; }
+    }
+    if (!Array.isArray(symbolArr) || symbolArr.length === 0) return '';
+    return symbolArr.map(sym => `
+        <span class="category-badge clickable-symbol" 
+              style="background: rgba(255, 193, 7, 0.15); color: #ffca28; border-color: rgba(255, 193, 7, 0.3); font-weight: bold; letter-spacing: 0.5px; cursor: pointer; transition: all 0.2s;"
+              onclick="event.stopPropagation(); selectChartPair('${escapeHtml(sym)}')">
+            ${escapeHtml(sym)}
+        </span>
+    `).join('');
 }
 
 function getBiasInfo(bias) {
@@ -386,42 +703,7 @@ function renderTradeActions(actions) {
 }
 
 function renderForexPairs(article) {
-    // Check both possible field names from different backend endpoints
-    const pairsRaw = article.affected_forex_pairs || article.forex_pairs;
-    if (!pairsRaw) return '';
-
-    // Handle both JSON string and array formats
-    let pairsArray = [];
-    if (Array.isArray(pairsRaw)) {
-        pairsArray = pairsRaw;
-    } else if (typeof pairsRaw === 'string') {
-        try {
-            pairsArray = JSON.parse(pairsRaw);
-        } catch (e) {
-            return '';
-        }
-    }
-
-    if (!pairsArray || !Array.isArray(pairsArray) || pairsArray.length === 0) return '';
-
-    const pairs = [...new Set(pairsArray.map(p => {
-        if (typeof p === 'string') return p.toUpperCase().replace(/[^A-Z]/g, '');
-        if (typeof p === 'object' && p !== null) return (p.symbol || p.pair || '').toUpperCase().replace(/[^A-Z]/g, '');
-        return '';
-    }).filter(p => p.length === 6))];
-
-    if (pairs.length === 0) return '';
-
-    let html = '<div class="affected-pairs-container">';
-    html += `<span class="affected-pairs-label" title="Automatically detected forex pairs affected by this news">Impact:</span>`;
-    pairs.forEach(pair => {
-        const display = pair.substring(0, 3) + '/' + pair.substring(3, 6);
-        html += `<button class="pair-pill-btn" onclick="event.stopPropagation(); selectChartPair('OANDA:${pair}')" title="Show live chart for ${display}">
-            <span class="pair-pill-icon">📉</span> ${display}
-        </button>`;
-    });
-    html += '</div>';
-    return html;
+    return '';
 }
 
 function renderNewInfoBadge(article) {
@@ -434,22 +716,53 @@ function renderNewInfoBadge(article) {
 
 
 function renderImpactBadge(article) {
-    if (!article.impact_score) {
-        const isAnalyzing = analyzingArticles.has(article.id);
-        const btnState = isAnalyzing ? 'disabled' : '';
-        const btnClass = isAnalyzing ? 'analyzing' : '';
-        const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : '✨ Analyze';
+    let badges = '';
+    const isAnalyzed = article.impact_score != null;
+    const analysis = parseJsonField(article.analysis_data);
 
-        return `
-            <button class="analyze-btn analyze-btn-sm ${btnClass}" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
-                 ${btnText}
-            </button>
-        `;
+    if (isAnalyzed) {
+        // Show Signal Bucket (High priority visual)
+        if (analysis && analysis.signal_bucket) {
+            const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
+            const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
+            const badgeHtml = `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px;">${bucket}</span>`;
+            badges += wrapTooltip(badgeHtml, 'signal_bucket', bucket);
+        }
+
+        // Show Impact Score
+        if (article.impact_score != null) {
+            const scoreClass = getScoreClass(article.impact_score);
+            const scoreRange = article.impact_score <= 1 ? '0-1' : article.impact_score <= 3 ? '2-3' : article.impact_score <= 5 ? '4-5' : article.impact_score <= 7 ? '6-7' : '8-10';
+            const badgeHtml = `<span class="impact-score-badge ${scoreClass}">⚡ ${article.impact_score}/10</span>`;
+            badges += wrapTooltip(badgeHtml, 'impact_score', scoreRange);
+        }
+    } else {
+        // Fallback or legacy impact displays
+        if (article.news_impact_level && article.news_impact_level !== 'None' && article.news_impact_level !== 'Neutral') {
+            const imp = article.news_impact_level.toLowerCase();
+            let css = 'impact-neutral';
+            if (imp === 'positive') css = 'impact-positive';
+            if (imp === 'negative') css = 'impact-negative';
+            badges += `<span class="impact-tag ${css}" style="margin-right:6px">📊 ${article.news_impact_level}</span>`;
+        }
     }
+    return badges;
+}
 
-    const scoreClass = getScoreClass(article.impact_score);
-    const scoreLabel = getScoreLabel(article.impact_score);
-    return `<span class="impact-score-badge ${scoreClass}">⚡ ${article.impact_score}/10 · ${scoreLabel}</span>`;
+function renderAnalyzeButton(article) {
+    const isAnalyzed = article.impact_score != null;
+    if (isAnalyzed) return ''; // Already analyzed, don't show another button
+
+    const isAnalyzing = analyzingArticles.has(article.id);
+    const btnState = isAnalyzing ? 'disabled' : '';
+    const btnClass = isAnalyzing ? 'analyzing' : '';
+    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : '✨ Analyze';
+
+    return `
+        <button class="analyze-btn analyze-btn-sm ${btnClass}" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
+             ${btnText}
+        </button>
+    `;
 }
 
 function renderPredictionBadge(article) {
@@ -620,33 +933,36 @@ function renderSuggestionsTab(article) {
 function renderCardAnalysis(article) {
     if (!article.impact_score) return '';
 
+    const analysis = parseJsonField(article.analysis_data);
+    const coreView = (analysis && analysis.core_view) ? analysis.core_view : {};
+
     const scoreClass = getScoreClass(article.impact_score);
-    const markets = parseAffectedMarkets(article);
-    const modeInfo = getMarketModeInfo(article.market_mode);
-    const usdInfo = getBiasInfo(article.usd_bias);
-    const cryptoInfo = getBiasInfo(article.crypto_bias);
-    const confInfo = getConfidenceInfo(article.confidence);
+    const scoreLabel = getScoreLabel(article.impact_score);
+
+    // For Indian News, show signal bucket clearly
+    const rawBucket = article.signal_bucket || (analysis && analysis.signal_bucket);
+    let bucketHtml = '';
+    if (rawBucket) {
+        const bucket = rawBucket.toUpperCase();
+        const bucketCls = `bucket-${rawBucket.toLowerCase().replace('_', '-')}`;
+        bucketHtml = `<span class="signal-bucket-badge ${bucketCls}" style="transform:scale(0.85); transform-origin:left center;">${bucket}</span>`;
+    }
+
+    const bias = (coreView.market_bias || article.usd_bias || 'Neutral').toLowerCase();
+    const biasInfo = getBiasInfo(bias);
+    const horizon = coreView.horizon || article.execution_window || article.impact_duration || 'N/A';
 
     return `
         <div class="card-analysis">
             <div class="card-analysis-header">
-                <span class="impact-score-badge ${scoreClass}">⚡ ${article.impact_score}/10</span>
-                <span class="market-mode-badge ${modeInfo.cssClass}">${modeInfo.icon} ${modeInfo.label}</span>
+                ${bucketHtml}
+                <span class="impact-score-badge ${scoreClass}" style="margin-left:auto">⚡ ${article.impact_score}/10</span>
             </div>
             <div class="card-analysis-meta">
-                <span class="bias-pill ${usdInfo.cssClass}">${usdInfo.arrow} USD ${usdInfo.label}</span>
-                <span class="bias-pill ${cryptoInfo.cssClass}">${cryptoInfo.arrow} Crypto ${cryptoInfo.label}</span>
-                <span class="confidence-pill ${confInfo.cssClass}">${confInfo.icon} ${confInfo.label}</span>
+                <span class="bias-pill ${biasInfo.cssClass}">${biasInfo.arrow} ${biasInfo.label} Bias</span>
+                <span class="confidence-pill conf-high" style="font-size:0.6rem">⏱ ${horizon}</span>
             </div>
-            <p class="card-analysis-summary">${escapeHtml(article.impact_summary || '')}</p>
-            <div class="card-analysis-footer-row">
-                <span class="execution-window-badge">⏱ ${escapeHtml(article.execution_window || article.impact_duration || 'N/A')}</span>
-                <div class="market-bars">
-                    ${renderMarketBar('Global', markets.global || 0, 'bar-global')}
-                    ${renderMarketBar('Forex', markets.forex || 0, 'bar-forex')}
-                    ${renderMarketBar('Crypto', markets.crypto || 0, 'bar-crypto')}
-                </div>
-            </div>
+            <p class="card-analysis-summary">${escapeHtml(article.executive_summary || article.impact_summary || coreView.summary || '')}</p>
         </div>
     `;
 }
@@ -692,17 +1008,71 @@ async function analyzeArticle(newsId, btnEl) {
     });
 
     try {
-        const res = await fetch(`${API_BASE}/api/analyze/${newsId}`, { method: 'POST' });
+        const res = await fetchWithTimeout(`${API_BASE}/api/indian_analyze/${newsId}`, { method: 'POST' });
         const json = await res.json();
 
         if (json.status === 'success') {
             showToast('Analysis complete — impact score assigned', 'success');
-            await fetchNews(false, true); // Use smart refresh instead of full DOM wipe
-            // Re-open modal with updated article if modal was open
+
+            // Instantly patch the local DOM and state so the user sees results immediately
             const updatedArticle = newsData.find(a => a.id === newsId);
-            if (updatedArticle && modalOverlay.classList.contains('active')) {
-                openModal(updatedArticle);
+            if (updatedArticle && json.data) {
+                const analysisResult = json.data;
+
+                // If server returned the complete updated DB row, use it (best source of truth)
+                if (json.article) {
+                    // Merge the full DB row into our local article (preserves all flat fields)
+                    Object.assign(updatedArticle, json.article);
+                    // Ensure analysis_data is the full object (not stringified)
+                    if (typeof updatedArticle.analysis_data === 'string') {
+                        try { updatedArticle.analysis_data = JSON.parse(updatedArticle.analysis_data); } catch (e) { }
+                    }
+                } else {
+                    // Fallback: manually map nested analysis to flat fields
+                    updatedArticle.analyzed = true;
+                    updatedArticle.analysis_data = analysisResult;
+
+                    const coreView = analysisResult.core_view || {};
+                    updatedArticle.impact_score = coreView.impact_score ?? analysisResult.impact_score ?? null;
+                    updatedArticle.market_bias = (coreView.market_bias || 'neutral').toLowerCase();
+                    updatedArticle.signal_bucket = (analysisResult.signal_bucket || 'NOISE').toUpperCase();
+                    updatedArticle.executive_summary = analysisResult.executive_summary || '';
+                    updatedArticle.decision_trace = analysisResult.decision_trace || {};
+
+                    const event = analysisResult.event || {};
+                    updatedArticle.news_category = event.event_type || updatedArticle.news_category || 'general';
+
+                    const score = updatedArticle.impact_score || 0;
+                    if (!updatedArticle.news_relevance || updatedArticle.news_relevance === 'None') {
+                        updatedArticle.news_relevance = score >= 6 ? 'High' : score >= 3 ? 'Medium' : 'Low';
+                    }
+
+                    const stockImpacts = analysisResult.stock_impacts || [];
+                    if (stockImpacts.length > 0 && (!updatedArticle.symbols || updatedArticle.symbols.length === 0)) {
+                        updatedArticle.symbols = stockImpacts.map(s => s.symbol).filter(Boolean);
+                    }
+                    if (stockImpacts.length > 0) {
+                        updatedArticle.primary_symbol = stockImpacts[0].symbol || null;
+                    }
+                }
+
+                // Update the card in the DOM immediately
+                const existingCard = document.getElementById(`article-card-${newsId}`);
+                if (existingCard) {
+                    const isFeatured = existingCard.classList.contains('featured-card');
+                    const newCard = createNewsCard(updatedArticle, 0, isFeatured);
+                    existingCard.innerHTML = newCard.innerHTML;
+                    existingCard.className = newCard.className;
+                    existingCard.onclick = () => openModal(updatedArticle);
+                }
+
+                // Re-open modal with updated article if modal was open
+                if (modalOverlay.classList.contains('active')) {
+                    openModal(updatedArticle);
+                }
             }
+
+            await fetchNews(false, true); // Still run just in case for backend sync
         } else {
             showToast('Analysis failed — click to retry', 'error');
             document.querySelectorAll(`.analyze-btn[data-id="${newsId}"]`).forEach(btn => {
@@ -730,325 +1100,424 @@ const modalOverlay = document.getElementById('modalOverlay');
 const modalBody = document.getElementById('modalBody');
 const modalClose = document.getElementById('modalClose');
 
-function getAnalysisData(article) {
-    let data = article.analysis_data;
-    if (!data) return null;
-    if (typeof data === 'string') {
-        try { data = JSON.parse(data); } catch { return null; }
-    }
-    if (typeof data === 'object' && data !== null) return data;
-    return null;
-}
+// ---- Indian Compact Rendering ----
+function renderIndianCompactModal(article, analysis) {
+    try {
+        if (!analysis) throw new Error("No analysis data available");
 
-function openModal(article) {
-    // Try full JSONB analysis_data first, then build from flat DB fields
-    let analysis = getAnalysisData(article);
+        const coreView = analysis.core_view || {};
+        const evidenceQuality = analysis.evidence_quality || {};
+        const stocks = analysis.stock_impacts || [];
+        const sectors = analysis.sector_impacts || [];
+        const tradeability = analysis.tradeability || {};
+        const impactTriggers = analysis.impact_triggers || {};
 
-    // If no analysis_data but article IS analyzed, build from flat DB fields
-    if (!analysis && (article.analyzed || article.impact_score)) {
-        const flatMarkets = parseAffectedMarkets(article);
-        analysis = {
-            event_metadata: { title: article.title, source: article.source },
-            event_classification: {},
-            text_signal_analysis: {},
-            core_impact_assessment: {
-                primary_impact_score: article.impact_score || 0,
-                market_category_scores: {
-                    forex: flatMarkets.forex || 0,
-                    crypto: flatMarkets.crypto || 0,
-                    global_equities: flatMarkets.global || flatMarkets.global_equities || 0
-                }
-            },
-            market_regime_context: {
-                dominant_market_regime: article.market_mode || '',
-                liquidity_condition_assumption: article.dollar_liquidity_state || '',
-                volatility_expectation: article.volatility_regime || ''
-            },
-            directional_bias: { forex: [], crypto: [], global_equities: [] },
-            time_modeling: { reaction_speed: article.execution_window || '', impact_duration: article.impact_duration || '' },
-            probability_and_confidence: {
-                direction_probability_pct: article.conviction_score || 0,
-                overall_confidence_score: article.confidence || 0,
-                confidence_breakdown: {}
-            },
-            risk_guidance: { suggested_exposure_range_pct: article.position_size_percent || '' },
-            event_fatigue_analysis: {},
-            scenario_analysis: {},
-            self_critique: {},
-            macro_linkage_reasoning: {},
-            executive_summary: article.impact_summary || '',
-            reasoning_summary: article.research_text || ''
-        };
-        if (article.usd_bias) {
-            analysis.directional_bias.forex.push({ pair: 'USD (DXY)', direction: article.usd_bias, impact_strength: article.impact_score || 0, confidence: 0, reason: '' });
-        }
-        if (article.crypto_bias) {
-            analysis.directional_bias.crypto.push({ asset: 'Crypto Market', direction: article.crypto_bias, impact_strength: article.impact_score || 0, confidence: 0, reason: '' });
-        }
-    }
+        const impactScore = coreView.impact_score || article.impact_score || 0;
+        const scoreClass = getScoreClass(impactScore);
+        const scoreLabel = getScoreLabel(impactScore);
 
-    let analysisHtml = '';
-    if (analysis) {
-        const core = analysis.core_impact_assessment || {};
-        const score = core.primary_impact_score || 0;
-        const scoreClass = getScoreClass(score);
-        const scoreLabel = getScoreLabel(score);
-        const regime = analysis.market_regime_context || {};
-        const modeInfo = getMarketModeInfo(regime.dominant_market_regime);
-        const textSig = analysis.text_signal_analysis || {};
-        const prob = analysis.probability_and_confidence || {};
-        const timeMod = analysis.time_modeling || {};
-        const risk = analysis.risk_guidance || {};
-        const fatigue = analysis.event_fatigue_analysis || {};
-        const scenario = analysis.scenario_analysis || {};
-        const critique = analysis.self_critique || {};
-        const classification = analysis.event_classification || {};
-        const directionalBias = analysis.directional_bias || {};
-        const confBreakdown = prob.confidence_breakdown || {};
-        const markets = core.market_category_scores || {};
+        const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
+        const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
 
-        // Build directional bias cards
-        let biasGroupsHtml = '';
-        for (const [marketType, items] of Object.entries(directionalBias)) {
-            if (Array.isArray(items) && items.length > 0) {
-                const validItems = items.filter(item => {
-                    const name = (item.pair || item.asset || item.index || '').toLowerCase();
-                    return name && name !== 'none' && name !== 'n/a' && name !== 'null';
-                });
-                if (validItems.length === 0) continue;
+        const bias = (coreView.market_bias || 'Neutral').toLowerCase();
+        const biasCls = bias === 'bullish' ? 'impact-positive' : bias === 'bearish' ? 'impact-negative' : 'impact-neutral';
+        const biasArrow = bias === 'bullish' ? '↑' : bias === 'bearish' ? '↓' : '→';
 
-                const rows = validItems.map(item => {
-                    const assetName = escapeHtml(item.pair || item.asset || item.index || '');
-                    const dir = item.direction || '';
-                    const dirLower = dir.toLowerCase();
-                    const dirCls = dirLower === 'bullish' ? 'dir-bullish' : dirLower === 'bearish' ? 'dir-bearish' : 'dir-neutral';
-                    const borderColor = dirLower === 'bullish' ? 'rgba(0, 212, 170, 0.4)' : dirLower === 'bearish' ? 'rgba(255, 71, 87, 0.4)' : 'rgba(255, 193, 7, 0.4)';
-                    const movePct = item.expected_move_pct || '';
-                    const cardTop = `<div class="forex-pair-card" style="border-left-color:${borderColor}">
-                        <div class="forex-pair-header">
-                            <span class="forex-pair-name">${assetName}</span>
-                            ${dir ? `<span class="forex-pair-dir ${dirCls}">${escapeHtml(dir)}</span>` : ''}
-                            ${movePct ? `<span style="margin-left:auto; font-size:0.72rem; font-weight:700; color:${dirLower === 'bullish' ? '#00d4aa' : dirLower === 'bearish' ? '#ff4757' : '#ffc107'}; background:${dirLower === 'bullish' ? 'rgba(0,212,170,0.1)' : dirLower === 'bearish' ? 'rgba(255,71,87,0.1)' : 'rgba(255,193,7,0.1)'}; padding:2px 8px; border-radius:4px;">${dirLower === 'bearish' ? '↓' : dirLower === 'bullish' ? '↑' : '→'} ${escapeHtml(String(movePct))}</span>` : ''}
-                        </div>`;
+        // Tradeability Badge
+        let tradeCls = 'trade-no-edge';
+        let tradeIcon = '⚖️';
+        const tradeClass = tradeability.classification || 'no_edge';
+        if (tradeClass === 'actionable_now') { tradeCls = 'trade-actionable'; tradeIcon = '⚡'; }
+        else if (tradeClass === 'wait_for_confirmation') { tradeCls = 'trade-potential'; tradeIcon = '🔍'; }
 
-                    const parseLevel = (val) => {
-                        if (typeof val === 'string') {
-                            const v = val.toLowerCase();
-                            if (v.includes('high')) return { pct: 90, txt: 'High' };
-                            if (v.includes('medium')) return { pct: 60, txt: 'Medium' };
-                            if (v.includes('low')) return { pct: 30, txt: 'Low' };
-                            return { pct: 50, txt: String(val) };
-                        }
-                        const num = Number(val) || 0;
-                        return null; // Signals numeric fallback
-                    };
+        // Render Entities
+        const entityChips = [
+            ...stocks.map(s => `<span class="entity-tag stock clickable-entity" onclick="event.stopPropagation(); closeModal(); selectChartPair('${escapeHtml(s.symbol)}')">${escapeHtml(s.symbol)}</span>`),
+            ...sectors.map(s => `<span class="entity-tag sector">${escapeHtml(s.sector)}</span>`)
+        ].join('');
 
-                    const rawStr = item.impact_strength;
-                    const strObj = parseLevel(rawStr) || { pct: (Number(rawStr) || 0) * 10, txt: `${Number(rawStr) || 0}/10` };
-
-                    const rawConf = item.confidence;
-                    const confObj = parseLevel(rawConf) || { pct: Number(rawConf) || 0, txt: `${Number(rawConf) || 0}%` };
-
-                    return cardTop + `
-                        <div class="trade-card-strength">
-                            <span class="trade-card-strength-label">Strength</span>
-                            <div class="trade-card-strength-track"><div class="trade-card-strength-fill" style="width:${strObj.pct}%"></div></div>
-                            <span class="trade-card-strength-val" style="text-transform: capitalize;">${strObj.txt}</span>
-                        </div>
-                        <div class="trade-card-strength">
-                            <span class="trade-card-strength-label">Confidence</span>
-                            <div class="trade-card-strength-track"><div class="trade-card-strength-fill" style="width:${confObj.pct}%"></div></div>
-                            <span class="trade-card-strength-val" style="text-transform: capitalize;">${confObj.txt}</span>
-                        </div>
-                        ${item.expected_duration ? `<div style="font-size:0.8rem; color:var(--text-secondary); margin-top:0.25rem">⏱ ${escapeHtml(item.expected_duration)}</div>` : ''}
-                        <p style="font-size:0.85rem; margin-top:0.5rem; color:var(--text-secondary)">${escapeHtml(item.reason || '')}</p>
-                        
-                        <!-- Inline Prediction Tracker Box -->
-                        <div id="inline-pred-${article.id}-${encodeURIComponent(assetName)}" style="margin-top:12px"></div>
-                    </div>`;
-                }).join('');
-                biasGroupsHtml += `
-                    <div class="analysis-sub-section">
-                        <div class="analysis-bars-title">${marketType.replace(/_/g, ' ').toUpperCase()} DIRECTIONAL BIAS</div>
-                        <div class="forex-pairs-grid">${rows}</div>
-                    </div>`;
-            }
-        }
-
-        analysisHtml = `
-            <div class="modal-divider"></div>
+        const modalBodyHtml = `
             <div class="analysis-panel">
                 <div class="analysis-panel-header">
                     <div class="analysis-panel-title">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                        AI Market Analysis
+                        Indian Market Intelligence IQ
                     </div>
                     <div class="analysis-panel-badges">
-                        ${classification.shock_type ? `<span class="new-info-badge new-info-new">${escapeHtml(classification.shock_type)}</span>` : ''}
-                        ${classification.event_type ? `<span class="new-info-badge new-info-priced">${escapeHtml(classification.event_type)}</span>` : ''}
-                        <span class="confidence-pill conf-high">Conf: ${prob.overall_confidence_score || 0}/10</span>
+                        ${wrapTooltip(`<span class="signal-bucket-badge ${bucketCls}">${bucket}</span>`, 'signal_bucket', bucket)}
+                        ${wrapTooltip(`<span class="tradeability-badge ${tradeCls}">${tradeIcon} ${escapeHtml((tradeClass).replace(/_/g, ' ').toUpperCase())}</span>`, 'tradeability', tradeClass)}
                     </div>
                 </div>
 
                 <div class="analysis-score-row">
                     <div class="analysis-score-main">
-                        <span class="analysis-score-number ${scoreClass}">${score}</span>
+                        ${wrapTooltip(`<span class="analysis-score-number ${scoreClass}">${impactScore}</span>`, 'impact_score', impactScore <= 1 ? '0-1' : impactScore <= 3 ? '2-3' : impactScore <= 5 ? '4-5' : impactScore <= 7 ? '6-7' : '8-10')}
                         <div class="analysis-score-meta">
                             <span class="analysis-score-label">${scoreLabel}</span>
-                            <span class="analysis-score-sub">out of 10</span>
+                            <span class="analysis-score-sub" style="font-weight:700; text-transform:uppercase; letter-spacing:0.5px;">impact score</span>
                         </div>
                     </div>
-                    <span class="market-mode-badge ${modeInfo.cssClass}">${modeInfo.icon} ${modeInfo.label}</span>
+                    <div class="parent-bias">
+                        ${wrapTooltip(`<span class="bias-pill ${biasCls}">${biasArrow} ${coreView.market_bias || 'Neutral'} Bias</span>`, 'market_bias', (coreView.market_bias || 'neutral'))}
+                        ${wrapTooltip(`<span style="font-size:0.7rem; color:var(--text-muted); text-transform:uppercase; font-weight:700; cursor:help;">HORIZON: ${escapeHtml(coreView.horizon || 'short_term').replace(/_/g, ' ').toUpperCase()}</span>`, 'horizon', (coreView.horizon || 'short_term'))}
+                    </div>
                 </div>
 
                 <div class="analysis-tabs">
-                    <button class="analysis-tab active" onclick="document.querySelectorAll('.analysis-tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');document.querySelectorAll('.analysis-tab-panel').forEach(p=>p.classList.remove('active'));document.getElementById('tab-overview').classList.add('active')">Overview</button>
-                    <button class="analysis-tab" onclick="document.querySelectorAll('.analysis-tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');document.querySelectorAll('.analysis-tab-panel').forEach(p=>p.classList.remove('active'));document.getElementById('tab-bias').classList.add('active')">Directional Bias</button>
-                    <button class="analysis-tab" onclick="document.querySelectorAll('.analysis-tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');document.querySelectorAll('.analysis-tab-panel').forEach(p=>p.classList.remove('active'));document.getElementById('tab-insights').classList.add('active')">Insights</button>
-                    <button class="analysis-tab" onclick="document.querySelectorAll('.analysis-tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');document.querySelectorAll('.analysis-tab-panel').forEach(p=>p.classList.remove('active'));document.getElementById('tab-suggestions').classList.add('active')">Suggestions</button>
-                    <button class="analysis-tab" id="predTabBtn" style="display:none" onclick="document.querySelectorAll('.analysis-tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');document.querySelectorAll('.analysis-tab-panel').forEach(p=>p.classList.remove('active'));document.getElementById('tab-predictions').classList.add('active')">Predictions</button>
+                    <button class="analysis-tab active" onclick="switchTab(this, 'tab-ia-overview')">OVERVIEW</button>
+                    <button class="analysis-tab" onclick="switchTab(this, 'tab-ia-impacts')">MARKET IMPACTS</button>
+                    <button class="analysis-tab" onclick="switchTab(this, 'tab-ia-setup')">TRADE SETUP</button>
+                    <button class="analysis-tab" onclick="switchTab(this, 'tab-ia-invalidations')">INVALIDATIONS</button>
+                    <button class="analysis-tab" onclick="switchTab(this, 'tab-ia-reasoning')">REASONING</button>
                 </div>
 
                 <!-- TAB 1: Overview -->
-                <div id="tab-overview" class="analysis-tab-panel active">
-                    <div class="analysis-metrics-grid">
-                        <div class="analysis-metric"><span class="analysis-metric-label">Hawkish/Dovish</span><span class="analysis-metric-value">${textSig.hawkish_dovish_score || 0}/10</span></div>
-                        <div class="analysis-metric"><span class="analysis-metric-label">Risk On/Off</span><span class="analysis-metric-value">${textSig.risk_on_off_score || 0}/10</span></div>
-                        <div class="analysis-metric"><span class="analysis-metric-label">Uncertainty</span><span class="analysis-metric-value">${textSig.uncertainty_intensity_score || 0}/10</span></div>
-                        <div class="analysis-metric"><span class="analysis-metric-label">Surprise</span><span class="analysis-metric-value">${core.perceived_surprise_score || 0}/10</span></div>
-                        <div class="analysis-metric"><span class="analysis-metric-label">Duration</span><span class="analysis-metric-value">${escapeHtml(timeMod.impact_duration || 'N/A')}</span></div>
-                        <div class="analysis-metric"><span class="analysis-metric-label">Reaction</span><span class="analysis-metric-value">${escapeHtml(timeMod.reaction_speed || 'N/A')}</span></div>
-                        <div class="analysis-metric"><span class="analysis-metric-label">Fatigue</span><span class="analysis-metric-value">${fatigue.fatigue_score || 0}/10</span></div>
-                        <div class="analysis-metric"><span class="analysis-metric-label">Exposure</span><span class="analysis-metric-value">${escapeHtml(String(risk.suggested_exposure_range_pct || 'N/A'))}</span></div>
-                        <div class="analysis-metric"><span class="analysis-metric-label">Probability</span><span class="analysis-metric-value">${prob.direction_probability_pct || 0}%</span></div>
+                <div id="tab-ia-overview" class="analysis-tab-panel active">
+                    <div class="analysis-summary-box">
+                        <p style="line-height:1.5; color:var(--text-primary); font-weight:500;">${escapeHtml(analysis.executive_summary || coreView.summary || '')}</p>
                     </div>
-                    <div class="analysis-summary-box mt-5">
-                        <p><strong>Executive Summary:</strong> ${escapeHtml(analysis.executive_summary || '')}</p>
-                        ${analysis.reasoning_summary ? `<p style="margin-top:0.5rem"><strong>Reasoning:</strong> ${escapeHtml(analysis.reasoning_summary)}</p>` : ''}
-                    </div>
-                    <div class="analysis-bars-section">
-                        <div class="analysis-bars-title">Category Impacts</div>
-                        <div class="market-bars">
-                            ${renderMarketBar('Forex', markets.forex || 0, 'bar-forex')}
-                            ${renderMarketBar('Crypto', markets.crypto || 0, 'bar-crypto')}
-                            ${renderMarketBar('Equities', markets.global_equities || 0, 'bar-equities')}
+
+                    <div class="summary-split-container">
+                        <div class="summary-split-box confirmed">
+                            <div class="summary-split-title confirmed">✓ Confirmed</div>
+                            <ul class="summary-list">
+                                ${(evidenceQuality.confirmed || []).map(item => `<li class="summary-item">${escapeHtml(item)}</li>`).join('') || '<li class="summary-item">No specific confirmations.</li>'}
+                            </ul>
+                        </div>
+                        <div class="summary-split-box unknown">
+                            <div class="summary-split-title unknown">? Unknown / Risk</div>
+                            <ul class="summary-list">
+                                ${(evidenceQuality.unknowns_risks || []).map(item => `<li class="summary-item">${escapeHtml(item)}</li>`).join('') || '<li class="summary-item">No major unknowns identified.</li>'}
+                            </ul>
                         </div>
                     </div>
-                    ${(confBreakdown.text_clarity || confBreakdown.shock_magnitude || confBreakdown.cross_asset_logic_strength) ? `
-                    <div class="analysis-bars-section" style="margin-top:8px">
-                        <div class="analysis-bars-title">Confidence Breakdown</div>
-                        <div class="market-bars">
-                            ${renderMarketBar('Text Clarity', confBreakdown.text_clarity || 0, 'bar-forex')}
-                            ${renderMarketBar('Shock Magnitude', confBreakdown.shock_magnitude || 0, 'bar-crypto')}
-                            ${renderMarketBar('Cross-Asset Logic', confBreakdown.cross_asset_logic_strength || 0, 'bar-equities')}
-                        </div>
-                    </div>` : ''}
+
+                    <div class="analysis-sub-section" style="margin-top:20px;">
+                        <div class="analysis-bars-title">Affected Entities</div>
+                        <div class="entity-tags-container">${entityChips || '<span style="color:var(--text-muted); font-size:0.75rem;">None identified</span>'}</div>
+                    </div>
                 </div>
 
-                <!-- TAB 2: Directional Bias -->
-                <div id="tab-bias" class="analysis-tab-panel">
-                    ${biasGroupsHtml || '<p style="color:var(--text-muted); font-size:0.85rem; padding:12px 0">No directional bias data available.</p>'}
+        <!-- TAB 2: Impacts -->
+        <div id="tab-ia-impacts" class="analysis-tab-panel">
+            <div class="analysis-sub-section">
+                <div class="analysis-bars-title">Stock Specific Potential</div>
+                <div class="forex-pairs-grid">
+                    ${stocks.map(s => `
+                        <div class="forex-pair-card" style="border-left: 3px solid ${(s.bias || '').toLowerCase() === 'bullish' ? 'var(--accent-2)' : (s.bias || '').toLowerCase() === 'bearish' ? '#ff4757' : 'var(--text-muted)'}; position: relative;">
+                            <button class="chart-link-btn" onclick="event.stopPropagation(); closeModal(); selectChartPair('${escapeHtml(s.symbol)}')" title="View ${escapeHtml(s.symbol)} on Chart"
+                                    style="position: absolute; top: 12px; right: 12px; background: rgba(108, 99, 255, 0.15); border: none; border-radius: 6px; width: 28px; height: 28px; color: var(--accent-1); cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.2s;">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                            </button>
+                            <div class="forex-pair-header">
+                                <span class="forex-pair-name">${escapeHtml(s.symbol)}</span>
+                                <span class="forex-pair-dir ${(s.bias || '').toLowerCase() === 'bullish' ? 'dir-bullish' : (s.bias || '').toLowerCase() === 'bearish' ? 'dir-bearish' : 'dir-neutral'}">${escapeHtml((s.bias || '').toUpperCase())}</span>
+                                <span style="margin-left:auto; font-size:0.7rem; font-weight:700; color:var(--text-muted); margin-right: 32px;">CONF: ${s.confidence}%</span>
+                            </div>
+                            <p style="font-size:0.85rem; color:var(--text-primary); font-weight:600; margin:8px 0;">${escapeHtml(s.company_name)}</p>
+                            <div style="display:flex; gap:12px; font-size:0.75rem; color:var(--text-secondary); margin-bottom:8px;">
+                                <span><strong>Reaction:</strong> ${escapeHtml(s.reaction || 'uncertain')}</span>
+                                <span><strong>Timing:</strong> ${escapeHtml(s.timing || 'short_term')}</span>
+                            </div>
+                            <p style="font-size:0.8rem; color:var(--text-secondary); line-height:1.4;">${escapeHtml(s.why || '')}</p>
+                                </div>
+                            `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No direct stock impacts.</p>'}
+                        </div>
+                    </div>
+                    <div class="analysis-sub-section" style="margin-top:24px;">
+                        <div class="analysis-bars-title">Sector Wide Impacts</div>
+                        <div class="forex-pairs-grid">
+                            ${sectors.map(sec => `
+                                <div class="forex-pair-card" style="border-left: 3px solid ${(sec.bias || '').toLowerCase() === 'bullish' ? 'var(--accent-2)' : (sec.bias || '').toLowerCase() === 'bearish' ? '#ff4757' : 'var(--text-muted)'}">
+                                    <div class="forex-pair-header">
+                                        <span class="forex-pair-name">${escapeHtml(sec.sector)}</span>
+                                        <span class="forex-pair-dir ${(sec.bias || '').toLowerCase() === 'bullish' ? 'dir-bullish' : (sec.bias || '').toLowerCase() === 'bearish' ? 'dir-bearish' : 'dir-neutral'}">${escapeHtml((sec.bias || '').toUpperCase())}</span>
+                                    </div>
+                                    <p style="font-size:0.8rem; color:var(--text-secondary); margin-top:8px; line-height:1.4;">${escapeHtml(sec.why)}</p>
+
+                                </div>
+                            `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No sector impacts.</p>'}
+                        </div>
+                    </div>
                 </div>
 
-                <!-- TAB 3: Insights -->
-                <div id="tab-insights" class="analysis-tab-panel">
-                    ${(scenario.if_event_strengthens || scenario.if_event_fades || scenario.invalidation_trigger) ? `
-                    <div class="analysis-sub-section" style="margin-bottom:12px">
-                        <div class="analysis-bars-title">Scenario & Risk</div>
-                        <div style="font-size:0.9rem; line-height:1.6; color:var(--text-secondary)">
-                            ${scenario.if_event_strengthens ? `<p><strong>If Strengthens:</strong> ${escapeHtml(scenario.if_event_strengthens)}</p>` : ''}
-                            ${scenario.if_event_fades ? `<p><strong>If Fades:</strong> ${escapeHtml(scenario.if_event_fades)}</p>` : ''}
-                            ${scenario.invalidation_trigger ? `<p><strong>Invalidation:</strong> ${escapeHtml(scenario.invalidation_trigger)}</p>` : ''}
-                        </div>
-                    </div>` : ''}
-                    ${(critique.primary_thesis_weakness || critique.strongest_counter_argument) ? `
-                    <div class="analysis-sub-section" style="margin-bottom:12px">
-                        <div class="analysis-bars-title">Self Critique</div>
-                        <div style="font-size:0.9rem; line-height:1.6; color:var(--text-secondary)">
-                            ${critique.primary_thesis_weakness ? `<p><strong>Weakness:</strong> ${escapeHtml(critique.primary_thesis_weakness)}</p>` : ''}
-                            ${critique.strongest_counter_argument ? `<p><strong>Counter:</strong> ${escapeHtml(critique.strongest_counter_argument)}</p>` : ''}
-                        </div>
-                    </div>` : ''}
-                    ${analysis.macro_linkage_reasoning?.causal_chain_explanation ? `
+                <!-- TAB 3: Setup -->
+                <div id="tab-ia-setup" class="analysis-tab-panel">
                     <div class="analysis-sub-section">
-                        <div class="analysis-bars-title">Macro Linkage</div>
-                        <p style="font-size:0.9rem; line-height:1.6; color:var(--text-secondary)">${escapeHtml(analysis.macro_linkage_reasoning.causal_chain_explanation)}</p>
-                    </div>` : ''}
+                        <div class="analysis-bars-title">Tradeability</div>
+
+                        <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:10px; padding:16px; margin-top:8px;">
+                            
+                            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+                                ${wrapTooltip(`<span class="tradeability-badge ${tradeCls}" style="font-size:0.8rem;">
+                                    ${tradeIcon} ${tradeClass.replace(/_/g, ' ').toUpperCase()}
+                                </span>`, 'tradeability', tradeClass)}
+
+                                ${tradeability.remaining_impact_state ? wrapTooltip(`
+                                    <span class="impact-state-badge state-${tradeability.remaining_impact_state.replace(/_/g, '-')}" 
+                                        style="font-size:0.65rem; padding:4px 10px; border-radius:99px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; background:rgba(255,255,255,0.05); border:1px solid var(--border-color); cursor:help;">
+                                        🎯 ${tradeability.remaining_impact_state.replace(/_/g, ' ')}
+                                    </span>
+                                `, 'remaining_impact', tradeability.remaining_impact_state) : ''}
+                            </div>
+
+                            ${tradeability.priced_in_assessment ? `
+                            <div style="background:linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.05)); border:1px solid rgba(99,102,241,0.25); border-radius:10px; padding:14px 16px; margin-bottom:14px;">
+                                <div style="font-size:0.7rem; color:#818cf8; font-weight:700; text-transform:uppercase; margin-bottom:6px; letter-spacing:0.5px;">
+                                    ⏱️ Remaining Impact Assessment
+                                </div>
+                                <div style="font-size:0.88rem; color:var(--text-primary); line-height:1.55;">
+                                    ${escapeHtml(tradeability.priced_in_assessment)}
+                                </div>
+                            </div>` : ''}
+
+                            <p style="font-size:0.9rem; color:var(--text-primary); line-height:1.5; margin-bottom:12px;">
+                                <strong>What to do:</strong> ${escapeHtml(tradeability.what_to_do || 'No trade.')}
+                            </p>
+
+                            <p style="font-size:0.85rem; color:var(--text-secondary); line-height:1.5;">
+                                <strong>Reason:</strong> ${escapeHtml(tradeability.reason || 'Awaiting further data.')}
+                            </p>
+
+                        </div>
+                    </div>
                 </div>
 
-                <!-- TAB 4: Suggestions -->
-                <div id="tab-suggestions" class="analysis-tab-panel">
-                    ${renderSuggestionsTab(article)}
+                <!-- TAB 4: Invalidations -->
+                <div id="tab-ia-invalidations" class="analysis-tab-panel">
+                    <div class="analysis-sub-section">
+                        <div class="analysis-bars-title" style="color:#ff6b7a;">Impact Killers (Negate Thesis)</div>
+                        <div class="forex-pairs-grid" style="margin-top:12px;">
+                            ${(impactTriggers.impact_killers || []).map(k => `
+                                <div class="forex-pair-card" style="border-left: 3px solid #ff4757; background: rgba(255, 71, 87, 0.03);">
+                                    <div class="forex-pair-header">
+                                        <span class="forex-pair-name" style="color:#ff6b7a;">${escapeHtml(k.trigger)}</span>
+                                    </div>
+                                    <div style="font-size:0.85rem; color:var(--text-primary); margin:8px 0; line-height:1.4;">
+                                        ${escapeHtml(k.why || '')}
+                                    </div>
+                                </div>
+                            `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No impact killers identified.</p>'}
+                        </div>
+                    </div>
+                    <div class="analysis-sub-section" style="margin-top:24px;">
+                        <div class="analysis-bars-title" style="color:var(--accent-2);">Impact Amplifiers (Strengthen Thesis)</div>
+                        <div class="forex-pairs-grid" style="margin-top:12px;">
+                            ${(impactTriggers.impact_amplifiers || []).map(a => `
+                                <div class="forex-pair-card" style="border-left: 3px solid var(--accent-2); background: rgba(0, 212, 170, 0.03);">
+                                    <div class="forex-pair-header">
+                                        <span class="forex-pair-name" style="color:var(--accent-2);">${escapeHtml(a.trigger)}</span>
+                                    </div>
+                                    <div style="font-size:0.85rem; color:var(--text-primary); margin:8px 0; line-height:1.4;">
+                                        ${escapeHtml(a.why || '')}
+                                    </div>
+                                </div>
+                            `).join('') || '<p style="color:var(--text-muted); font-size:0.85rem;">No amplifiers identified.</p>'}
+                        </div>
+                    </div>
                 </div>
 
-                <!-- TAB 5: Predictions (Populated async) -->
-                <div id="tab-predictions" class="analysis-tab-panel">
-                    <div id="predictionsLoader" class="analyzing-spinner-sm" style="margin:20px auto; border-color:var(--text-secondary); border-top-color:var(--accent);"></div>
-                    <div id="predictionsContent"></div>
+                <!-- TAB 5: Reasoning -->
+                <div id="tab-ia-reasoning" class="analysis-tab-panel">
+                    <div class="analysis-sub-section">
+                        <div class="analysis-bars-title" style="color:var(--accent-1);">Agent Decision Trace</div>
+                        <div class="reasoning-trace-container" style="margin-top:12px; display:flex; flex-direction:column; gap:12px;">
+                            ${(() => {
+                const dt = parseJsonField(article.decision_trace) || analysis.decision_trace || {};
+                const steps = [
+                    { key: 'event_identification', label: '1. Event Identification', icon: '🔍' },
+                    { key: 'entity_mapping', label: '2. Entity Mapping', icon: '🎯' },
+                    { key: 'impact_scoring', label: '3. Impact Scoring', icon: '⚡' },
+                    { key: 'remaining_impact', label: '4. Remaining Impact', icon: '⏱️' },
+                    { key: 'tradeability_reasoning', label: '5. Tradeability Reasoning', icon: '⚖️' }
+                ];
+                return steps.map(step => `
+                                    <div class="reasoning-step-card" style="background:rgba(255,255,255,0.03); border:1px solid var(--border-color); border-radius:8px; padding:12px;">
+                                        <div style="font-size:0.75rem; color:var(--accent-1); font-weight:700; margin-bottom:6px; display:flex; align-items:center; gap:6px;">
+                                            <span>${step.icon}</span> ${step.label.toUpperCase()}
+                                        </div>
+                                        <div style="font-size:0.88rem; color:var(--text-secondary); line-height:1.5;">${escapeHtml(dt[step.key] || 'No log for this step.')}</div>
+                                    </div>
+                                `).join('');
+            })()}
+                        </div>
+                    </div>
                 </div>
             </div>
         `;
-    } else {
-        // Not analyzed — show analyze button
-        const isAnalyzing = analyzingArticles.has(article.id);
-        const btnState = isAnalyzing ? 'disabled' : '';
-        const btnClass = isAnalyzing ? 'analyzing' : '';
-        const btnText = isAnalyzing ? '<div class="analyzing-spinner"></div> Analyzing…' : '✨ Analyze This Article';
-        analysisHtml = `
-            <div class="modal-divider"></div>
-            <div class="modal-analyze-wrapper">
-                <button class="analyze-btn analyze-btn-lg ${btnClass}" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">${btnText}</button>
+
+        modalBody.innerHTML = `
+            ${article.image_url ? `<img class="modal-image" src="${escapeHtml(article.image_url)}" alt="" onerror="this.style.display='none'">` : ''}
+            <div class="card-header-row" style="margin-bottom: 12px; margin-top: 8px;">
+                <div class="card-header-left">
+                    ${renderRelevanceBadge(article.news_relevance, true)}
+                    ${renderCategoryBadge(article.news_category, true)}
+                </div>
+                <div class="card-header-right">
+                    <span class="card-time">${formatTime(article.published)}</span>
+                </div>
+            </div>
+            
+            <h2 class="modal-title">${escapeHtml(article.title)}</h2>
+            
+            <div class="modal-timestamps-premium" style="margin-bottom: 24px; margin-top: 20px;">
+                <div class="ts-row"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
+                <div class="ts-row"><strong>We Posted:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
+            </div>
+
+            <div class="modal-description" style="margin-bottom: 24px;">${escapeHtml(article.description || '')}</div>
+            
+            ${modalBodyHtml}
+
+            <div class="modal-action-footer" style="margin-top: 32px;">
+                <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" style="text-align:center; padding:16px; border-radius:12px; font-weight:700; background:linear-gradient(90deg, #6366f1, #00d4aa); color:#fff; text-decoration:none; display:block; border:none; width:100%; box-shadow: 0 4px 15px rgba(99, 102, 241, 0.25);">
+                    Read Full Article →
+                </a>
+            </div>
+        `;
+
+        const modalEl = modalOverlay.querySelector('.modal');
+        modalEl.classList.add('modal-expanded');
+        modalOverlay.classList.add('active');
+        document.body.style.overflow = 'hidden';
+
+    } catch (err) {
+        console.error("Error rendering Indian compact modal:", err);
+        modalBody.innerHTML = `<div style="padding:20px; color:var(--bearish); background:rgba(255,71,87,0.05); border:1px solid var(--bearish); border-radius:8px;">
+            <h3 style="margin-top:0">⚠️ Rendering Error</h3>
+            <p>Failed to display analysis details. The data might be malformed or missing required fields.</p>
+            <pre style="font-size:0.75rem; white-space:pre-wrap; margin-top:10px; opacity:0.8;">${err.message}</pre>
+        </div>`;
+    }
+}
+
+
+/**
+ * Switch between tabs in the analysis panel.
+ * @param {HTMLElement} btn - The button element that was clicked.
+ * @param {string} tabId - The ID of the tab panel to display.
+ */
+function switchTab(btn, tabId) {
+    // 1. Get the container (analysis-panel)
+    const container = btn.closest('.analysis-panel');
+    if (!container) return;
+
+    // 2. Update button states
+    const tabs = container.querySelectorAll('.analysis-tab');
+    tabs.forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+
+    // 3. Update panel visibility
+    const panels = container.querySelectorAll('.analysis-tab-panel');
+    panels.forEach(p => p.classList.remove('active'));
+
+    const activePanel = container.querySelector(`#${tabId}`);
+    if (activePanel) {
+        activePanel.classList.add('active');
+    }
+}
+
+
+
+function getAnalysisData(article) {
+    if (!article || !article.analysis_data) return null;
+    let data = article.analysis_data;
+    if (typeof data === 'string') {
+        try {
+            data = JSON.parse(data);
+        } catch (e) {
+            console.error("Failed to parse analysis_data:", e);
+            return null;
+        }
+    }
+    return data;
+}
+
+function openModal(article) {
+    // Try full JSONB analysis_data first
+    let analysis = getAnalysisData(article);
+
+    // Detect if this is the new Indian Compact Schema
+    const isIndianCompact = analysis && (analysis.core_view !== undefined || analysis.stock_impacts !== undefined);
+
+    if (isIndianCompact) {
+        renderIndianCompactModal(article, analysis);
+        return;
+    }
+
+    const isAnalyzing = analyzingArticles.has(article.id);
+    const btnState = isAnalyzing ? 'disabled' : '';
+    const btnClass = isAnalyzing ? 'analyzing' : '';
+    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing...' : '✨ Analyze Now';
+
+    // Match "IA Flat Display" / "Intelligence Section" from Image 6
+    let classificationHtml = '';
+    if (article.news_relevance && article.news_relevance !== 'None') {
+        const imp = (article.news_impact_level || 'Neutral').toLowerCase();
+        let css = 'impact-neutral';
+        if (imp === 'positive') css = 'impact-positive';
+        if (imp === 'negative') css = 'impact-negative';
+
+        classificationHtml = `
+            <div class="ia-flat-display" style="margin-top:20px; border-top:1px solid var(--border); padding-top:20px;">
+                <span class="impact-tag ${css}" style="margin-bottom:12px; display:inline-block;">📊 ${article.news_impact_level || 'Neutral'} Impact</span>
+                <div class="ia-reason-box" style="border-left:4px solid #6c63ff; background:rgba(108, 99, 255, 0.05); padding:16px; border-radius:0 8px 8px 0;">
+                    <div class="reason-label" style="color:#6c63ff; font-weight:800; text-transform:uppercase; font-size:0.7rem; margin-bottom:8px; opacity:0.8;">Market Intelligence Reason</div>
+                    <div class="ia-reason-text" style="font-size:0.9rem; line-height:1.5; color:var(--text-secondary);">${escapeHtml(article.news_reason || 'Analysis details not available.')}</div>
+                </div>
             </div>
         `;
     }
 
-    let descriptionHtml = '';
-    if (article.description) {
-        descriptionHtml = `<p class="modal-description">${escapeHtml(article.description)}</p>`;
-    }
+    let descriptionHtml = article.description ? `<p class="modal-description" style="font-size:1.05rem; line-height:1.6; color:var(--text-primary); margin-bottom:24px;">${escapeHtml(article.description)}</p>` : '';
 
     modalBody.innerHTML = `
         ${article.image_url ? `<img class="modal-image" src="${escapeHtml(article.image_url)}" alt="" onerror="this.style.display='none'">` : ''}
-        <div class="card-header-row" style="margin-bottom: 12px; margin-top: 8px;">
-            <div class="card-header-left">
+        
+        <div class="modal-header-top">
+            <div class="modal-badges-row" style="display:flex; gap:8px;">
                 ${renderRelevanceBadge(article.news_relevance)}
                 ${renderCategoryBadge(article.news_category)}
             </div>
-            <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
+            <span class="card-source" style="color:#00d4aa; font-weight:700; margin-left:auto; text-transform:uppercase; font-size:0.8rem;">• ${escapeHtml(article.source || 'Unknown')}</span>
         </div>
         <h2 class="modal-title">${escapeHtml(article.title)}</h2>
-        ${renderForexPairs(article)}
         <div class="modal-timestamps">
-            <span class="modal-timestamp-line"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</span>
+            <span class="modal-timestamp-line"><strong>Source Posted:</strong> ${timeAgo(article.published > article.created_at ? article.created_at : article.published)} · ${formatTime(article.published > article.created_at ? article.created_at : article.published)}</span>
             <span class="modal-timestamp-line"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</span>
         </div>
-        ${descriptionHtml}
-        
-        <div class="initial-classification-box">
-            <div class="ic-header">
-                <span class="ic-title">INITIAL CLASSIFICATION</span>
-            </div>
-            <div class="ic-reason">
-                <strong>Reason:</strong> ${escapeHtml(article.news_reason || 'No initial reason provided.')}
-            </div>
-        </div>
 
-        ${analysisHtml}
-        <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn">
-            Read Full Article →
-        </a>
+        ${descriptionHtml}
+
+        ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
+                    <div class="modal-affected-stocks" style="display:flex; align-items:center; gap:10px; margin-bottom: 8px;">
+                        <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span>
+                        <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center;">
+                            ${renderAllSymbolsBadge(article.symbols)}
+                        </div>
+                    </div>
+                    ` : ''}
+        
+        ${classificationHtml}
+        
+        
+
+        <div class="modal-action-footer" style="margin-top:32px; display:flex; flex-direction:column; gap:16px;">
+            <div class="modal-analyze-center" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:12px 0;">
+                
+                <button class="analyze-btn analyze-btn-sm ${btnClass}" style="padding:12px 40px; font-size:1rem; border-radius:99px; font-weight:700;" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
+                    ${btnText}
+                </button>
+            </div>
+            <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn" style="text-align:center; padding:16px; border-radius:12px; font-weight:700; background:linear-gradient(90deg, #6366f1, #00d4aa); color:#fff; text-decoration:none;">
+                Read Full Article →
+            </a>
+        </div>
     `;
 
     const modalEl = modalOverlay.querySelector('.modal');
-    if (analysis) {
-        modalEl.classList.add('modal-expanded');
-        // Fetch predictions if analysis exists
-        if (article.prediction_count > 0 || article.impact_score) {
-            fetchPredictionsForModal(article.id);
-        }
-    } else {
-        modalEl.classList.remove('modal-expanded');
-    }
+    modalEl.classList.remove('modal-expanded');
+
     modalOverlay.classList.add('active');
     document.body.style.overflow = 'hidden';
 }
@@ -1060,7 +1529,7 @@ async function fetchPredictionsForModal(newsId) {
         const content = document.getElementById('predictionsContent');
         if (!predTabBtn || !loader || !content) return;
 
-        const res = await fetch(`${API_BASE}/api/predictions?news_id=${newsId}`);
+        const res = await fetchWithTimeout(`${API_BASE}/api/predictions?news_id=${newsId}`);
         const json = await res.json();
 
         loader.style.display = 'none';
@@ -1290,29 +1759,90 @@ document.addEventListener('keydown', (e) => {
 
 // ---- Card Timestamp Rendering ----
 function renderCardTimestamps(article) {
+    // Ensure logical display: Source Posted cannot be after Scraped
+    const pubTime = article.published > article.created_at ? article.created_at : article.published;
+
     return `
         <div class="card-timestamps">
-            <span class="card-timestamp-line"><strong>Published:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</span>
-            <span class="card-timestamp-line"><strong>Posted:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</span>
+            <span class="card-timestamp-line"><strong>Source Posted:</strong> ${timeAgo(pubTime)} · ${formatTime(pubTime)}</span>
+            <span class="card-timestamp-line"><strong>Scraped:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</span>
         </div>
     `;
 }
 
-// ---- Render News Cards (supports Prepend, Append, and Full Refresh) ----
+
+// ---- Render News Card ----
+function createNewsCard(article, index, isFeatured = false) {
+    const card = document.createElement('div');
+    card.id = `article-card-${article.id}`;
+    card.className = isFeatured ? 'news-card featured-card' : 'news-card';
+    card.style.animationDelay = `${index * 0.05}s`;
+
+    const imageHtml = article.image_url ?
+        `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
+    if (!article.image_url) card.classList.add('no-image');
+
+    const featuredBadge = isFeatured ? `<span class="featured-type-badge">${article.featuredType}</span>` : '';
+
+    card.innerHTML = `
+        ${imageHtml}
+        <div class="card-header-row">
+            <div class="card-header-left">
+                ${renderImpactBadge(article)}
+                ${renderRelevanceBadge(article.news_relevance)}
+                ${renderCategoryBadge(article.news_category)}
+                ${featuredBadge}
+            </div>
+            <span class="card-source"><span style="color:var(--accent-1); margin-right:4px;">•</span> ${escapeHtml(article.source || 'Unknown')}</span>
+        </div>
+        
+        <h2 class="card-title">${escapeHtml(article.title)}</h2>
+        ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
+        
+        ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
+        <div class="card-affected-stocks" style="display:block; padding:10px; background-color:rgba(108, 99, 255, 0.08); align-items:center; gap:10px; margin: 16px 0 12px 0;">
+            <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span><br>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
+                ${renderAllSymbolsBadge(article.symbols)}
+            </div>
+        </div>
+        ` : ''}
+
+        <hr style="border:0; border-top:1px solid var(--border-color); margin:12px 0; opacity:0.15;">
+        
+        <div class="card-footer" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <div class="card-timestamps-premium" style="margin:0;">
+                <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
+                <div class="ts-row" style="font-size:0.65rem;"><strong>We Posted:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
+            </div>
+            <div class="card-footer-right">
+                ${renderAnalyzeButton(article)}
+            </div>
+        </div>
+        
+        <div class="card-action-row" style="margin-top:auto;">
+            <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-now-btn-premium" onclick="event.stopPropagation()" 
+               style="display:flex; align-items:center; justify-content:center; width:100%; padding:12px; border-radius:12px; background:linear-gradient(135deg, #6c63ff, #00d4aa); color:white; font-weight:800; text-decoration:none; transition:all 0.3s; box-shadow: 0 4px 15px rgba(108, 99, 255, 0.2);">
+                Read Now →
+            </a>
+        </div>
+    `;
+
+    card.onclick = () => openModal(article);
+    return card;
+}
+
+// ---- Render News (supports Prepend, Append, and Full Refresh) ----
 function renderNews(articles, prepend = false, append = false) {
     if (!prepend && !append) {
         newsGrid.innerHTML = '';
-        const featuredSection = document.getElementById('featuredSection');
-        const featuredGrid = document.getElementById('featuredGrid');
-        const allNewsHeader = document.getElementById('allNewsHeader');
-        if (featuredGrid) featuredGrid.innerHTML = '';
+        featuredGrid.innerHTML = '';
+        featuredSection.style.display = 'none';
+        allNewsHeader.style.display = 'none';
 
         if (!articles || articles.length === 0) {
-            if (featuredSection) featuredSection.style.display = 'none';
-            if (allNewsHeader) allNewsHeader.style.display = 'none';
+            emptyState.style.display = 'flex';
             newsGrid.style.display = 'none';
-            emptyState.style.display = 'block';
-
             if (searchQuery) {
                 emptyStateTitle.textContent = `No results for "${searchQuery}"`;
                 emptyStateMsg.textContent = 'Try a different search term or clear the filter.';
@@ -1320,8 +1850,6 @@ function renderNews(articles, prepend = false, append = false) {
                 emptyStateTitle.textContent = 'No articles yet';
                 emptyStateMsg.textContent = 'The monitor is fetching news. Articles will appear here automatically.';
             }
-
-            articleCount.textContent = '0 articles';
             return;
         }
     }
@@ -1331,19 +1859,16 @@ function renderNews(articles, prepend = false, append = false) {
     emptyState.style.display = 'none';
     newsGrid.style.display = 'grid';
 
+    // Update article count
     if (!prepend && !append) {
-        articleCount.textContent = `${articles.length} article${articles.length !== 1 ? 's' : ''}`;
+        updateDisplayCounts();
     }
 
-    const featuredSection = document.getElementById('featuredSection');
-    const featuredGrid = document.getElementById('featuredGrid');
-    const allNewsHeader = document.getElementById('allNewsHeader');
+    // Handle Featured Articles (ONLY on the first page/initial load/refresh when not searching)
+    if (!prepend && !append && !searchQuery) {
+        let regularArticles = [...articles];
+        let featured = [];
 
-    // Separate featured articles (only when NOT searching and NOT prepending/appending)
-    let regularArticles = [...articles];
-    let featured = [];
-
-    if (!searchQuery && !prepend && !append) {
         // 1. Find Latest (Scraped within last 20 minutes)
         const TWENTY_MINS_MS = 20 * 60 * 1000;
         const now = Date.now();
@@ -1362,7 +1887,7 @@ function renderNews(articles, prepend = false, append = false) {
 
         // 2. Find Most Impacted from remaining
         let mostImpactedIdx = -1;
-        let highestScore = 3; // Must be at least 4 to be featured
+        let highestScore = 3;
 
         regularArticles.forEach((a, idx) => {
             if (a.impact_score && a.impact_score > highestScore) {
@@ -1377,149 +1902,42 @@ function renderNews(articles, prepend = false, append = false) {
             featured.unshift(mostImpacted);
         }
 
-        // Render Featured
         if (featured.length > 0) {
-            if (featuredSection) featuredSection.style.display = 'block';
-            if (allNewsHeader) allNewsHeader.style.display = 'block';
-
-            featured.forEach((article, index) => {
-                const card = document.createElement('div');
-                card.className = 'news-card featured-card';
-                card.style.animationDelay = `${index * 0.1}s`;
-
-                const imageHtml = article.image_url ?
-                    `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
-                if (!article.image_url) card.classList.add('no-image');
-
-                card.innerHTML = `
-                    ${imageHtml}
-                    <div class="card-header-row">
-                        <div class="card-header-left">
-                            ${renderRelevanceBadge(article.news_relevance)}
-                            ${renderCategoryBadge(article.news_category)}
-                            <span class="featured-type-badge">${article.featuredType}</span>
-                        </div>
-                        <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
-                    </div>
-                    <h2 class="card-title">${escapeHtml(article.title)}</h2>
-                    ${renderForexPairs(article)}
-                    ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
-                    <div class="card-footer">
-                        ${renderCardTimestamps(article)}
-                        <div class="card-footer-right">
-                            ${renderImpactBadge(article)}
-                        </div>
-                    </div>
-                    <div class="card-action-row">
-                        <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
-                            Read Now →
-                        </a>
-                    </div>
-                `;
-
-                card.addEventListener('click', () => openModal(article));
-                if (featuredGrid) featuredGrid.appendChild(card);
+            featuredSection.style.display = 'block';
+            allNewsHeader.style.display = 'block';
+            featured.forEach((art, idx) => {
+                featuredGrid.appendChild(createNewsCard(art, idx, true));
             });
-        } else {
-            if (featuredSection) featuredSection.style.display = 'none';
-            if (allNewsHeader) allNewsHeader.style.display = 'none';
         }
-    }
 
-    // Render Regular
-    if (prepend) {
-        for (let i = regularArticles.length - 1; i >= 0; i--) {
-            const article = regularArticles[i];
-            const card = document.createElement('div');
-            card.className = 'news-card';
-            card.id = `article-card-${article.id}`;
-            card.style.animation = 'none';
-
-            const imageHtml = article.image_url ?
-                `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
-            if (!article.image_url) card.classList.add('no-image');
-
-            card.innerHTML = `
-                ${imageHtml}
-                <div class="card-header-row">
-                    <div class="card-header-left">
-                        ${renderRelevanceBadge(article.news_relevance)}
-                        ${renderCategoryBadge(article.news_category)}
-                    </div>
-                    <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
-                </div>
-                <h2 class="card-title">${escapeHtml(article.title)}</h2>
-                ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
-                ${renderForexPairs(article)}
-                <div class="card-footer">
-                    ${renderCardTimestamps(article)}
-                    <div class="card-footer-right">
-                        ${renderImpactBadge(article)}
-                    </div>
-                </div>
-                <div class="card-action-row">
-                    <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
-                        Read Now →
-                    </a>
-                </div>
-            `;
-
-            card.addEventListener('click', () => openModal(article));
-            newsGrid.insertBefore(card, newsGrid.firstChild);
-        }
-    } else {
+        // Render the remaining regular articles
         regularArticles.forEach((article, index) => {
-            const card = document.createElement('div');
-            card.className = 'news-card';
-            card.id = `article-card-${article.id}`;
-            if (!append) card.style.animationDelay = `${index * 0.05}s`;
-
-            const imageHtml = article.image_url ?
-                `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
-            if (!article.image_url) card.classList.add('no-image');
-
-            card.innerHTML = `
-                ${imageHtml}
-                <div class="card-header-row">
-                    <div class="card-header-left">
-                        ${renderRelevanceBadge(article.news_relevance)}
-                        ${renderCategoryBadge(article.news_category)}
-                    </div>
-                    <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
-                </div>
-                <h2 class="card-title">${escapeHtml(article.title)}</h2>
-                ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
-                ${renderForexPairs(article)}
-                <div class="card-footer">
-                    ${renderCardTimestamps(article)}
-                    <div class="card-footer-right">
-                        ${renderImpactBadge(article)}
-                    </div>
-                </div>
-                <div class="card-action-row">
-                    <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" onclick="event.stopPropagation()">
-                        Read Now →
-                    </a>
-                </div>
-            `;
-
-            card.addEventListener('click', () => openModal(article));
-            newsGrid.appendChild(card);
+            newsGrid.appendChild(createNewsCard(article, index));
         });
+    } else {
+        // Standard Prepended or Appended rendering (for load more and search results)
+        if (prepend) {
+            for (let i = articles.length - 1; i >= 0; i--) {
+                const card = createNewsCard(articles[i], i);
+                card.style.animation = 'none'; // skip animation for silent auto-updates
+                newsGrid.insertBefore(card, newsGrid.firstChild);
+            }
+        } else {
+            articles.forEach((article, index) => {
+                const card = createNewsCard(article, index);
+                newsGrid.appendChild(card);
+            });
+        }
     }
 }
 
 // ---- Fetch Sources ----
 async function fetchSources() {
     try {
-        const res = await fetch(`${API_BASE}/api/sources`);
+        const res = await fetchWithTimeout(`${API_BASE}/api/indian_sources`);
         const json = await res.json();
-        if (json.status === 'success' && Array.isArray(json.data)) {
-            // Skip DOM rebuild if sources list hasn't changed
-            const newSources = json.data;
-            if (JSON.stringify(sourceFilters) === JSON.stringify(newSources)) return;
-            sourceFilters = newSources;
 
+        if (json.status === 'success') {
             // Keep the "All Sources" button
             const allBtn = filtersContainer.querySelector('[data-source="all"]');
 
@@ -1528,16 +1946,18 @@ async function fetchSources() {
             existingPills.forEach(p => p.remove());
 
             // Add new pills from API
-            newSources.forEach(source => {
-                const pill = document.createElement('button');
-                pill.className = 'filter-pill';
-                pill.dataset.source = source;
-                pill.textContent = source;
-                pill.setAttribute('role', 'tab');
-                pill.setAttribute('aria-selected', source === currentSource ? 'true' : 'false');
-                if (source === currentSource) pill.classList.add('active');
-                filtersContainer.appendChild(pill);
-            });
+            if (Array.isArray(json.data)) {
+                json.data.forEach(source => {
+                    const pill = document.createElement('button');
+                    pill.className = 'filter-pill';
+                    pill.dataset.source = source;
+                    pill.textContent = source;
+                    pill.setAttribute('role', 'tab');
+                    pill.setAttribute('aria-selected', source === currentSource ? 'true' : 'false');
+                    if (source === currentSource) pill.classList.add('active');
+                    filtersContainer.appendChild(pill);
+                });
+            }
 
             // Ensure "All Sources" is active if currentSource is 'all'
             if (currentSource === 'all' && allBtn) {
@@ -1600,12 +2020,18 @@ function formatSymbol(sym) {
     return sym;
 }
 
-// ---- Fetch News (with Smart Refresh) ----
+// ---- Fetch News (with Pagination & Smart Refresh) ----
 async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
     if (isFetching || (isLoadMore && !hasMoreArticles)) return;
 
     if (!isBackgroundRefresh && !isLoadMore) {
         showRefreshIndicator();
+    }
+
+    if (isLoadMore) {
+        isLoadingMore = true;
+        const indicator = document.getElementById('loadMoreIndicator');
+        if (indicator) indicator.style.display = 'flex';
     }
 
     isFetching = true;
@@ -1615,7 +2041,7 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         const fetchOffset = isBackgroundRefresh ? 0 : offset;
         const fetchLimit = isBackgroundRefresh ? 20 : articlesPerPage;
 
-        let url = `${API_BASE}/api/news?today_only=false&limit=${fetchLimit}&offset=${fetchOffset}`;
+        let url = `${API_BASE}/api/indian_news?today_only=true&limit=${fetchLimit}&offset=${fetchOffset}`;
 
         if (currentSource && currentSource !== 'all') {
             url += `&source=${encodeURIComponent(currentSource)}`;
@@ -1626,98 +2052,90 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         if (showOnlyAnalyzed) {
             url += `&analyzed_only=true`;
         }
+        if (currentEventId) {
+            url += `&event_id=${encodeURIComponent(currentEventId)}`;
+        }
         if (searchQuery) {
             url += `&search=${encodeURIComponent(searchQuery)}`;
         }
 
-        const res = await fetch(url);
+        const res = await fetchWithTimeout(url, {}, 15000);
         const json = await res.json();
 
         if (json.status === 'success') {
-            let newArticles = json.data || [];
-
-            // Client-side analyzed filter just in case
-            if (showOnlyAnalyzed) {
-                newArticles = newArticles.filter(a => a.impact_score != null);
-            }
+            const newArticles = json.data || [];
 
             if (isBackgroundRefresh) {
                 const trulyNew = [];
                 newArticles.forEach(a => {
                     if (!seenArticleIds.has(a.id)) {
                         trulyNew.push(a);
-                    } else {
-                        // Patch updates silently
-                        const existIdx = newsData.findIndex(x => x.id === a.id);
-                        if (existIdx !== -1) {
-                            const oldA = newsData[existIdx];
-                            if (oldA.analyzed !== a.analyzed || oldA.impact_score !== a.impact_score || oldA.prediction_count !== a.prediction_count) {
-                                a.featuredType = oldA.featuredType;
-                                newsData[existIdx] = a;
-                                const existingCard = document.getElementById(`article-card-${a.id}`);
-                                if (existingCard) {
-                                    const isFeatured = existingCard.classList.contains('featured-card');
-                                    // Use innerHTML patching to preserve DOM node
-                                    // Note: createNewsCard equivalent for app.js is manually rendering HTML. We'll simply let next full reload fix it if needed, or re-render this card.
-                                    // Since we don't have a createNewsCard helper like indian_app.js, we skip direct DOM patching here to avoid duplication.
-                                    // Full details will update next reload.
-                                }
-                            }
-                        }
                     }
                 });
 
                 if (trulyNew.length > 0) {
-                    console.log(`[Smart Refresh] Found ${trulyNew.length} new articles`);
-                    trulyNew.forEach(a => seenArticleIds.add(a.id));
                     newsData = [...trulyNew, ...newsData];
-                    renderNews(trulyNew, true); // prepend = true
+                    trulyNew.forEach(a => seenArticleIds.add(a.id));
+                    renderNews(newsData);
                 }
             } else if (isLoadMore) {
-                if (newArticles.length < articlesPerPage) hasMoreArticles = false;
+                newsData = [...newsData, ...newArticles];
+                newArticles.forEach(a => seenArticleIds.add(a.id));
                 currentPage++;
-
-                const uniqueNew = newArticles.filter(a => !seenArticleIds.has(a.id));
-                newsData = [...newsData, ...uniqueNew];
-                uniqueNew.forEach(a => seenArticleIds.add(a.id));
-
-                renderNews(uniqueNew, false, true); // append = true
+                renderNews(newsData);
             } else {
                 newsData = newArticles;
                 seenArticleIds.clear();
                 newArticles.forEach(a => seenArticleIds.add(a.id));
                 currentPage = 0;
-                hasMoreArticles = newArticles.length >= articlesPerPage;
                 renderNews(newsData);
             }
 
-            if (consecutiveFailures > 0) {
-                hideConnectionBanner();
-                showToast('Connection restored', 'success');
-            }
+            hasMoreArticles = newArticles.length === fetchLimit;
             consecutiveFailures = 0;
-        } else {
-            console.error('API error:', json.message);
+            hideConnectionBanner?.();
+            updateDisplayCounts();
         }
     } catch (err) {
+        console.error('Failed to fetch news', err);
         consecutiveFailures++;
-        console.error('Failed to fetch news:', err);
         if (consecutiveFailures >= CONNECTION_FAIL_THRESHOLD) {
-            showConnectionBanner();
+            showConnectionBanner?.();
         }
     } finally {
         isFetching = false;
-        if (!isBackgroundRefresh && !isLoadMore) hideRefreshIndicator();
+        isLoadingMore = false;
+        hideRefreshIndicator();
+        const indicator = document.getElementById('loadMoreIndicator');
+        if (indicator) indicator.style.display = 'none';
+
+        const sentinel = document.getElementById('infiniteScrollSentinel');
+        if (sentinel) sentinel.style.display = hasMoreArticles ? 'block' : 'block';
     }
+}
+
+
+
+// ---- Display Counts Helper ----
+function updateDisplayCounts() {
+    const displayCount = searchQuery ? newsData.length : totalDbArticles;
+    const suffix = searchQuery ? ' results' : ' articles';
+
+    const formattedCount = displayCount.toLocaleString();
+    if (articleCount) articleCount.textContent = `${formattedCount}${suffix}`;
+    if (drawerCount) drawerCount.textContent = `${formattedCount}${suffix}`;
 }
 
 // ---- Fetch Footer Stats ----
 async function fetchStats() {
     try {
-        const res = await fetch(`${API_BASE}/api/stats`);
+        const res = await fetchWithTimeout(`${API_BASE}/api/indian_stats`);
         const json = await res.json();
         if (json.status === 'success') {
             const d = json.data;
+            totalDbArticles = d.total_articles;
+            updateDisplayCounts();
+
             document.getElementById('footerTotal').textContent = d.total_articles.toLocaleString();
             document.getElementById('footerAnalyzed').textContent = d.analyzed_articles.toLocaleString();
             document.getElementById('footerSources').textContent = d.source_count.toLocaleString();
@@ -1750,6 +2168,9 @@ searchInput.addEventListener('input', () => {
     searchDebounceTimer = setTimeout(() => {
         searchQuery = searchInput.value.trim();
         searchClear.style.display = searchQuery ? 'flex' : 'none';
+        currentPage = 0; // Reset to first page for new search
+        hasMoreArticles = true;
+        seenArticleIds.clear();
         fetchNews();
     }, SEARCH_DEBOUNCE);
 });
@@ -1758,6 +2179,9 @@ searchClear.addEventListener('click', () => {
     searchInput.value = '';
     searchQuery = '';
     searchClear.style.display = 'none';
+    currentPage = 0; // Reset to first page
+    hasMoreArticles = true;
+    seenArticleIds.clear();
     fetchNews();
     searchInput.focus();
 });
@@ -1798,6 +2222,32 @@ if (relevanceFilter) {
     });
 }
 
+// ---- Mobile Drawer Toggle ----
+function toggleMobileMenu() {
+    isDrawerOpen = !isDrawerOpen;
+    if (isDrawerOpen) {
+        mobileMenuTrigger.classList.add('active');
+        mobileDrawer.classList.add('active');
+        drawerOverlay.classList.add('active');
+        document.body.style.overflow = 'hidden'; // Stop background scroll
+    } else {
+        mobileMenuTrigger.classList.remove('active');
+        mobileDrawer.classList.remove('active');
+        drawerOverlay.classList.remove('active');
+        document.body.style.overflow = '';
+    }
+}
+
+if (mobileMenuTrigger) mobileMenuTrigger.addEventListener('click', toggleMobileMenu);
+if (drawerOverlay) drawerOverlay.addEventListener('click', toggleMobileMenu);
+
+// Close drawer on link click
+document.querySelectorAll('.drawer-link').forEach(link => {
+    link.addEventListener('click', () => {
+        if (isDrawerOpen) toggleMobileMenu();
+    });
+});
+
 if (analyzedToggle) {
     analyzedToggle.addEventListener('click', () => {
         showOnlyAnalyzed = !showOnlyAnalyzed;
@@ -1815,27 +2265,165 @@ async function init() {
     if (relevanceFilter) {
         relevanceFilter.value = 'all';
     }
-    await Promise.all([fetchSources(), fetchNews(), fetchStats()]);
+
+    const sentinel = document.getElementById('infiniteScrollSentinel');
+    if (sentinel) {
+        const observer = new IntersectionObserver((entries) => {
+            if (entries[0].isIntersecting && hasMoreArticles && !isFetching && !isLoadingMore) {
+                fetchNews(true);
+            }
+        }, { threshold: 0.1 });
+        observer.observe(sentinel);
+    }
+
+    fetchSources();
+    fetchEvents();
+    fetchNews();
+
+    setTimeout(() => fetchStats(), 100);
+    setTimeout(() => fetchHolidays(), 200);
+}
+
+async function fetchWithTimeout(url, options = {}, timeout = 12000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+
+    try {
+        const response = await fetch(url, {
+            ...options,
+            signal: controller.signal
+        });
+        return response;
+    } finally {
+        clearTimeout(id);
+    }
 }
 
 init();
 
-// ---- Auto-refresh ----
+// ---- Auto-refresh (Smart Refresh) ----
 setInterval(() => {
     fetchSources();
-    fetchNews(false, true); // (isLoadMore=false, isBackgroundRefresh=true)
+    fetchNews(false, true); // isLoadMore=false, isBackgroundRefresh=true
     fetchStats();
+    fetchEvents();
 }, REFRESH_INTERVAL);
 
-// ---- Infinite Scroll ----
-const observer = new IntersectionObserver((entries) => {
-    if (entries[0].isIntersecting && !isFetching && hasMoreArticles && !searchQuery) {
-        fetchNews(true); // isLoadMore = true
+// ---- Fetch Events ----
+async function fetchEvents() {
+    try {
+        const res = await fetchWithTimeout(`${API_BASE}/api/events/india`);
+        const json = await res.json();
+        if (json.status === 'success') {
+            renderEvents(json.data);
+        }
+    } catch (e) {
+        console.error("Failed to fetch events", e);
     }
-}, { rootMargin: '200px' });
+}
 
-const sentinel = document.getElementById('infiniteScrollSentinel');
-if (sentinel) observer.observe(sentinel);
+function renderEvents(events) {
+    const section = document.getElementById('eventsSection');
+    const container = document.getElementById('eventsContainer');
+
+    if (!events || events.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+
+    section.style.display = 'block';
+
+    let html = '';
+    events.forEach(ev => {
+        const timeAgoStr = timeAgo(ev.latest_update);
+        const isActive = currentEventId === ev.event_id;
+        // Dynamic "Live" indicator if updated in last 4 hours (Indian market is more volatile)
+        const lastUpdate = new Date(ev.latest_update).getTime();
+        const fourHoursAgo = Date.now() - (4 * 60 * 60 * 1000);
+        const isLive = lastUpdate > fourHoursAgo;
+
+        html += `
+            <div class="event-card ${isActive ? 'active' : ''}" 
+                 data-event-id="${ev.event_id}"
+                 data-event-title="${escapeHtml(ev.event_title)}"
+                 data-article-count="${ev.article_count}"
+                 data-latest-update="${ev.latest_update}"
+                 onclick="showEventDetail('${ev.event_id}', '${escapeHtml(ev.event_title)}', ${ev.article_count}, '${ev.latest_update}'); event.stopPropagation();"
+                 style="cursor: pointer; transition: all 0.2s ease;"
+                 title="Click to see all articles for this event">
+                <div class="event-card-header">
+                    <span class="event-label">EVENT TRACKER</span>
+                    <span class="event-time">${timeAgoStr}</span>
+                </div>
+                <h3 class="event-card-title">${escapeHtml(ev.event_title)}</h3>
+                <div class="event-footer">
+                    <div class="event-updates">
+                        <span class="event-pulse" style="display: ${isLive ? 'flex' : 'none'}"></span>
+                        <span>${ev.article_count} articles</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+    container.innerHTML = html;
+
+    // Attach once to avoid stacking listeners on every refresh.
+    if (!container.dataset.scrollBound) {
+        container.addEventListener('scroll', checkScrollButtons, { passive: true });
+        container.dataset.scrollBound = '1';
+    }
+    // Initial check
+    setTimeout(checkScrollButtons, 100);
+}
+
+function checkScrollButtons() {
+    const container = document.getElementById('eventsContainer');
+    const leftBtn = document.querySelector('.scroll-btn.left');
+    const rightBtn = document.querySelector('.scroll-btn.right');
+    if (!container || !leftBtn || !rightBtn) return;
+
+    leftBtn.style.display = container.scrollLeft > 20 ? 'flex' : 'none';
+
+    const atEnd = container.scrollLeft + container.clientWidth >= container.scrollWidth - 20;
+    rightBtn.style.display = atEnd ? 'none' : 'flex';
+}
+
+window.filterByEvent = function (eventId, eventName) {
+    if (currentEventId === eventId) {
+        clearEventFilter(); // Toggle off if clicked again
+        return;
+    }
+    currentEventId = eventId;
+    document.getElementById('activeEventFilterPill').style.display = 'flex';
+    document.getElementById('activeEventName').textContent = eventName;
+
+    const header = document.getElementById('allNewsHeader');
+    if (header) header.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    fetchNews();
+    fetchEvents();
+};
+
+window.scrollEvents = function (direction) {
+    const container = document.getElementById('eventsContainer');
+    if (!container) return;
+
+    // Calculate scroll amount based on card width
+    const firstCard = container.querySelector('.event-card');
+    const scrollAmount = firstCard ? firstCard.offsetWidth + 20 : 340;
+
+    container.scrollBy({
+        left: direction * scrollAmount,
+        behavior: 'smooth'
+    });
+}
+
+window.clearEventFilter = function () {
+    currentEventId = null;
+    document.getElementById('activeEventFilterPill').style.display = 'none';
+    fetchNews();
+    fetchEvents();
+};
 
 
 // ============================================
@@ -1923,14 +2511,14 @@ function startChartRefresh(symbol) {
 // ---- Load first pair that has candle data ----
 async function loadFirstAvailablePair() {
     try {
-        const res = await fetch(`${API_BASE}/api/forex/pairs?q=EURUSD`);
+        const res = await fetchWithTimeout(`${API_BASE}/api/nse/pairs?q=TCS`);
         const json = await res.json();
         if (json.status === 'success' && json.data.length > 0) {
             await loadChart(json.data[0]);
             return;
         }
         // fallback: get any pair
-        const res2 = await fetch(`${API_BASE}/api/forex/pairs`);
+        const res2 = await fetchWithTimeout(`${API_BASE}/api/nse/pairs`);
         const json2 = await res2.json();
         if (json2.status === 'success' && json2.data.length > 0) {
             await loadChart(json2.data[0]);
@@ -1951,7 +2539,7 @@ async function doChartSearch(query) {
         return;
     }
     try {
-        const url = `${API_BASE}/api/forex/pairs?q=${encodeURIComponent(query)}`;
+        const url = `${API_BASE}/api/nse/pairs?q=${encodeURIComponent(query)}`;
         const res = await fetch(url);
         const json = await res.json();
         if (json.status !== 'success' || !json.data.length) {
@@ -1979,20 +2567,24 @@ async function doChartSearch(query) {
 }
 
 function selectChartPair(symbol) {
-    console.log('[CHART] Selecting pair:', symbol);
+    if (!symbol) return;
 
-    // Update global state first to prevent race condition
-    currentChartSymbol = symbol;
+    // Sanitize symbol: NSE stocks usually don't need "/" etc.
+    let cleanSymbol = symbol.split(':').pop().toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-    // Open the chart panel (which will call loadChart(currentChartSymbol))
-    if (typeof openChartPanel === 'function') {
-        openChartPanel();
-    }
+    console.log('[CHART] Selecting pair:', symbol, '-> Clean:', cleanSymbol);
+    currentChartSymbol = cleanSymbol;
+
+    // Open the chart panel
+    openChartPanel();
 
     const drop = document.getElementById('chartSearchDrop');
     const input = document.getElementById('chartSearchInput');
     if (drop) drop.style.display = 'none';
-    if (input) input.value = symbol.split(':')[1] || symbol;
+    if (input) input.value = cleanSymbol;
+
+    // Trigger loadChart directly to ensure immediate visual feedback
+    loadChart(cleanSymbol);
 
     // Scroll to chart container
     const chartContainer = document.getElementById('lwChartContainer');
@@ -2042,8 +2634,9 @@ async function loadChart(symbol) {
 
 // Refresh only adds new candles to existing chart
 async function refreshChartData(symbol) {
+    if (!symbol || !lwCandleSeries) return;
     const data = await fetchCandleData(symbol);
-    if (!data || !lwCandleSeries) return;
+    if (!data) return;
     // Update all data (handles new candles at end)
     window.chartCandleData = data;
     lwCandleSeries.setData(data);
@@ -2054,16 +2647,41 @@ async function refreshChartData(symbol) {
     if (typeof syncNewsOverlay === 'function') syncNewsOverlay();
 }
 
+function updateChartStats(symbol, data) {
+    const label = document.getElementById('chartSymbolLabel');
+    const price = document.getElementById('chartLastPrice');
+    const change = document.getElementById('chartPriceChange');
+    if (!label || !price || !change) return;
+
+    if (!data || data.length < 1) {
+        label.textContent = symbol;
+        price.textContent = '—';
+        change.textContent = '—';
+        return;
+    }
+
+    const last = data[data.length - 1];
+    const prev = data.length > 1 ? data[data.length - 2] : last;
+    const diff = last.close - prev.close;
+    const pct = ((diff / prev.close) * 100).toFixed(2);
+
+    label.textContent = symbol.toUpperCase();
+    price.textContent = last.close.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    change.textContent = (diff >= 0 ? '+' : '') + pct + '%';
+    change.style.color = diff >= 0 ? '#00d4aa' : '#ff4757';
+}
+
 // ---- Fetch news markers for overlay ----
 async function fetchNewsMarkers(symbol) {
     try {
-        // Extract just the pair name without exchange prefix (e.g., EURUSD from OANDA:EURUSD)
+        // Extract just the pair name without exchange prefix (e.g., TCS from OANDA:TCS)
         let pairOnly = symbol;
         if (symbol && symbol.includes(':')) {
             pairOnly = symbol.split(':')[1];
         }
 
-        const url = `${API_BASE}/api/forex/news-markers?symbol=${encodeURIComponent(pairOnly)}`;
+        const url = `${API_BASE}/api/nse/news-markers?symbol=${encodeURIComponent(pairOnly)}`;
         console.log('[NEWS MARKERS] Fetching from URL:', url);
         const res = await fetch(url);
         const json = await res.json();
@@ -2366,11 +2984,10 @@ function displayNewsPanel(newsMarkers) {
         panel = document.createElement('div');
         panel.id = 'chartNewsPanel';
         panel.style.cssText = `
-            margin-top: 0;
+            margin-top: 30px;
             background: var(--bg-card, rgba(18, 18, 28, 0.75));
             border: 1px solid rgba(108, 99, 255, 0.2);
-            border-top: none;
-            border-radius: 0 0 12px 12px;
+            border-radius:12px;
             padding: 16px;
             max-height: 280px;
             overflow-y: auto;
@@ -2392,8 +3009,8 @@ function displayNewsPanel(newsMarkers) {
         const timeStr = new Date(news.published).toLocaleString('en-US', {
             month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true
         });
-        const pairsStr = Array.isArray(news.affected_forex_pairs)
-            ? news.affected_forex_pairs.join(', ')
+        const pairsStr = Array.isArray(news.affected_stocks)
+            ? news.affected_stocks.join(', ')
             : 'N/A';
 
         html += `
@@ -2434,7 +3051,7 @@ async function fetchCandleData(symbol) {
     const loadingMsg = document.getElementById('chartLoadingMsg');
 
     try {
-        const url = `${API_BASE}/api/forex/candles?symbol=${encodeURIComponent(symbol)}&limit=500`;
+        const url = `${API_BASE}/api/nse/candles?symbol=${encodeURIComponent(symbol)}&limit=500`;
         const res = await fetch(url);
         const json = await res.json();
 
@@ -2445,7 +3062,7 @@ async function fetchCandleData(symbol) {
                     <div style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:40px;">
                         <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="rgba(108,99,255,0.4)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
                         <div style="color:#f59e0b;font-weight:600;font-size:0.92rem;">No data for <strong style="color:#f0f0f0;">${symbol.split(':')[1] || symbol}</strong></div>
-                        <div style="color:#888;font-size:0.8rem;text-align:center;max-width:280px;">The pipeline is still collecting candles for this pair. Try again in a few minutes or select a major pair like EURUSD.</div>
+                        <div style="color:#888;font-size:0.8rem;text-align:center;max-width:280px;">The pipeline is still collecting candles for this pair. Try again in a few minutes or select a major pair like TCS.</div>
                     </div>`;
             }
             if (container) container.style.display = 'none';
@@ -2739,3 +3356,307 @@ function updateChartStats(symbol, candles) {
     `;
     document.head.appendChild(style);
 })();
+
+
+
+
+// ---- Market Status Check ----
+let dynamicHolidays = null;
+
+async function fetchHolidays() {
+    try {
+        const res = await fetchWithTimeout(`${API_BASE}/api/nse/holidays`);
+        const json = await res.json();
+        if (json.status === 'success') {
+            dynamicHolidays = json.data;
+        }
+    } catch (e) {
+        console.error('Failed to fetch holidays:', e);
+    }
+}
+
+function updateMarketStatus() {
+    const badge = document.getElementById('chartLiveBadge');
+    if (!badge) return;
+
+    // Use dynamically fetched holidays if available, else a minimal fallback list
+    const holidays = dynamicHolidays || {
+        "2026-03-31": "Shri Mahavir Jayanti"
+    };
+
+    // Get current time in IST
+    const now = new Date();
+    const istTimeString = now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+    const istTime = new Date(istTimeString);
+
+    const year = istTime.getFullYear();
+    const month = String(istTime.getMonth() + 1).padStart(2, '0');
+    const date = String(istTime.getDate()).padStart(2, '0');
+    const dateStr = `${year}-${month}-${date}`;
+
+    const day = istTime.getDay(); // 0 is Sunday, 6 is Saturday
+    const hours = istTime.getHours();
+    const minutes = istTime.getMinutes();
+
+    // Convert to minutes since midnight for easy comparison
+    const timeInMins = hours * 60 + minutes;
+    const openInMins = 9 * 60 + 15; // 9:15 AM
+    const closeInMins = 15 * 60 + 32; // 3:32 PM
+
+    const isWeekend = (day === 0 || day === 6);
+    const isMarketHours = (timeInMins >= openInMins && timeInMins <= closeInMins);
+    const holidayName = holidays[dateStr];
+
+    if (holidayName) {
+        badge.innerHTML = `<span style="width:7px;height:7px;border-radius:50%;background:#ef5350;"></span>CLOSED (${holidayName})`;
+        badge.style.color = '#ef5350';
+        badge.style.background = 'rgba(239,83,80,0.12)';
+        badge.style.borderColor = 'rgba(239,83,80,0.3)';
+    } else if (isWeekend || !isMarketHours) {
+        badge.innerHTML = `<span style="width:7px;height:7px;border-radius:50%;background:#ef5350;"></span>CLOSED`;
+        badge.style.color = '#ef5350';
+        badge.style.background = 'rgba(239,83,80,0.12)';
+        badge.style.borderColor = 'rgba(239,83,80,0.3)';
+    } else {
+        badge.innerHTML = `<span style="width:7px;height:7px;border-radius:50%;background:#00d464;animation:livePulse 1.4s infinite;"></span>LIVE`;
+        badge.style.color = '#00d464';
+        badge.style.background = 'rgba(0,212,100,0.12)';
+        badge.style.borderColor = 'rgba(0,212,100,0.3)';
+    }
+}
+
+// Call on load and check every minute
+setInterval(updateMarketStatus, 60000);
+setTimeout(updateMarketStatus, 500);
+
+// ====================================
+// EVENT DETAIL PANEL FUNCTIONS (NEW)
+// ====================================
+
+let eventDetailData = {
+    eventId: null,
+    eventTitle: null,
+    articles: [],
+    filteredArticles: []
+};
+
+function showEventDetail(eventId, eventTitle, articleCount, latestUpdate) {
+    const overlay = document.getElementById('eventDetailOverlay');
+    const titleEl = document.getElementById('eventDetailTitle');
+    const metaEl = document.getElementById('eventDetailMeta');
+    const countEl = document.getElementById('eventDetailArticleCount');
+    const updateEl = document.getElementById('eventDetailLatestUpdate');
+
+    eventDetailData.eventId = eventId;
+    eventDetailData.eventTitle = eventTitle;
+
+    titleEl.textContent = eventTitle;
+    countEl.textContent = articleCount;
+
+    const updateDate = new Date(latestUpdate);
+    const timeStr = updateDate.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Asia/Kolkata'
+    });
+    updateEl.textContent = timeStr + ' IST';
+
+    const updateTime = timeAgo(latestUpdate);
+    metaEl.innerHTML = `<span>${articleCount} articles</span><span>Updated ${updateTime}</span>`;
+
+    // Fetch event-specific news
+    fetchEventNews(eventId);
+
+    overlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeEventDetail() {
+    const overlay = document.getElementById('eventDetailOverlay');
+    overlay.classList.remove('active');
+    document.body.style.overflow = '';
+    eventDetailData.eventId = null;
+}
+
+async function fetchEventNews(eventId) {
+    try {
+        const response = await fetchWithTimeout(`${API_BASE}/api/indian_news?event_id=${encodeURIComponent(eventId)}&limit=100`);
+        const json = await response.json();
+
+        if (json.status === 'success' && json.data) {
+            eventDetailData.articles = json.data;
+            eventDetailData.filteredArticles = json.data;
+            renderEventNews(eventDetailData.filteredArticles);
+        }
+    } catch (e) {
+        console.error("Failed to fetch event news", e);
+    }
+}
+
+function renderEventNews(articles) {
+    const grid = document.getElementById('eventDetailNewsGrid');
+    const emptyState = document.getElementById('eventDetailEmptyState');
+
+    if (!articles || articles.length === 0) {
+        grid.innerHTML = '';
+        emptyState.style.display = 'flex';
+        return;
+    }
+
+    emptyState.style.display = 'none';
+
+    let html = '';
+    articles.forEach((article, idx) => {
+        if (!article || !article.id) return; // Skip invalid articles
+
+        const timeAgo_str = timeAgo(article.published);
+        const relevance = (article.news_relevance || 'neutral').toLowerCase();
+        const relevanceEmoji = getRelevanceEmoji(relevance);
+        const sourceDisplay = escapeHtml(article.source || 'News Source');
+        const titleDisplay = escapeHtml(article.title || 'Untitled Article');
+        // Show full description without truncation
+        const fullDesc = article.description || article.summary || 'No description available';
+        const descDisplay = escapeHtml(fullDesc);
+        const hasImage = article.image_url && article.image_url.trim().length > 0;
+        const imageUrl = hasImage ? `url('${escapeHtml(article.image_url)}')` : '';
+        const impactLevel = article.news_impact_level ? escapeHtml(article.news_impact_level).toLowerCase() : 'neutral';
+        let impactClass = 'impact-neutral';
+        if (impactLevel === 'positive' || impactLevel === 'high') impactClass = 'impact-positive';
+        if (impactLevel === 'negative' || impactLevel === 'low') impactClass = 'impact-negative';
+
+        // Get category
+        const category = article.news_category || article.category || 'General';
+        const categoryDisplay = escapeHtml(category);
+        let categoryClass = 'category-general';
+        const catLower = category.toLowerCase();
+        if (catLower.includes('market') || catLower.includes('stock')) categoryClass = 'category-market';
+        if (catLower.includes('tech') || catLower.includes('technology')) categoryClass = 'category-tech';
+        if (catLower.includes('economy') || catLower.includes('macro')) categoryClass = 'category-economy';
+        if (catLower.includes('crypto')) categoryClass = 'category-crypto';
+        if (catLower.includes('forex') || catLower.includes('currency')) categoryClass = 'category-forex';
+
+        // Map relevance to CSS class
+        let relevanceClass = 'neutral';
+        if (relevance.includes('noisy') || relevance.includes('noise')) relevanceClass = 'noisy';
+        else if (relevance.includes('useful')) relevanceClass = 'useful';
+        else if (relevance.includes('medium')) relevanceClass = 'medium';
+        else if (relevance.includes('very high')) relevanceClass = 'useful';
+
+        // Mark noisy articles
+        const isNoisy = relevance === 'noisy' || relevance === 'noise';
+        const noiseClass = isNoisy ? ' noisy-article' : '';
+
+        html += `
+            <div class="event-news-card${noiseClass}" data-article-id="${article.id}" data-relevance="${relevance}" onclick="openArticleDetail(event, ${idx})">
+                ${hasImage ? `<div class="event-news-card-image" style="background-image: ${imageUrl}; background-size: cover; background-position: center;"></div>` : ''}
+                <div class="event-news-card-content">
+                    <div class="event-news-card-meta">
+                        <span class="event-news-source">${sourceDisplay}</span>
+                        <span class="event-news-time">${timeAgo_str}</span>
+                    </div>
+                    <div class="event-news-card-badges">
+                        <span class="badge-category ${categoryClass}">${categoryDisplay}</span>
+                        <span class="badge-relevance ${relevanceClass}">${relevanceEmoji} ${relevance}</span>
+                    </div>
+                    <h3 class="event-news-card-title">${titleDisplay}</h3>
+                    <p class="event-news-card-desc">${descDisplay}</p>
+                    
+                </div>
+                <div class="event-news-card-action">
+                    <button class="read-more-btn" onclick="event.stopPropagation();">Read Full →</button>
+                </div>
+            </div>
+        `;
+    });
+
+    grid.innerHTML = html;
+}
+
+function openArticleDetail(event, articleIdx) {
+    event.stopPropagation();
+    if (articleIdx < 0 || articleIdx >= eventDetailData.articles.length) return;
+    const article = eventDetailData.articles[articleIdx];
+    openModal(article);
+}
+
+function getRelevanceEmoji(relevance) {
+    const map = {
+        'high useful': '🔥',
+        'useful': '🟢',
+        'medium': '🟡',
+        'neutral': '⚖️',
+        'noisy': '🔴'
+    };
+    return map[relevance] || '📊';
+}
+
+// Event detail panel search
+document.addEventListener('DOMContentLoaded', () => {
+    const searchInput = document.getElementById('eventDetailSearchInput');
+    const relevanceSelect = document.getElementById('eventDetailRelevanceFilter');
+
+    if (searchInput) {
+        searchInput.addEventListener('input', debounce(filterEventNews, SEARCH_DEBOUNCE));
+    }
+
+    if (relevanceSelect) {
+        relevanceSelect.addEventListener('change', filterEventNews);
+    }
+
+    // Close on overlay click
+    const overlay = document.getElementById('eventDetailOverlay');
+    if (overlay) {
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) {
+                closeEventDetail();
+            }
+        });
+    }
+});
+
+function filterEventNews() {
+    const searchInput = document.getElementById('eventDetailSearchInput');
+    const relevanceSelect = document.getElementById('eventDetailRelevanceFilter');
+
+    const searchQuery = (searchInput?.value || '').toLowerCase();
+    const relevanceFilter = relevanceSelect?.value || 'all';
+
+    eventDetailData.filteredArticles = eventDetailData.articles.filter(article => {
+        const matchSearch = !searchQuery ||
+            article.title.toLowerCase().includes(searchQuery) ||
+            (article.description || '').toLowerCase().includes(searchQuery) ||
+            (article.source || '').toLowerCase().includes(searchQuery);
+
+        const matchRelevance = relevanceFilter === 'all' ||
+            (article.news_relevance || '').toLowerCase() === relevanceFilter.toLowerCase();
+
+        return matchSearch && matchRelevance;
+    });
+
+    renderEventNews(eventDetailData.filteredArticles);
+}
+
+// Update renderEvents to call the new event detail function
+function updateEventRenderFunction() {
+    // This modifies the event click handler to show detail panel instead
+    const events = document.querySelectorAll('.event-card');
+    events.forEach(card => {
+        card.style.cursor = 'pointer';
+        card.addEventListener('click', function () {
+            const eventId = this.getAttribute('data-event-id');
+            const eventTitle = this.getAttribute('data-event-title');
+            const articleCount = this.getAttribute('data-article-count');
+            const latestUpdate = this.getAttribute('data-latest-update');
+
+            showEventDetail(eventId, eventTitle, articleCount, latestUpdate);
+        });
+    });
+}
+
+function debounce(func, wait) {
+    let timeout;
+    return function (...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+}

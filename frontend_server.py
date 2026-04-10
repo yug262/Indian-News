@@ -71,12 +71,17 @@ class FrontendHandler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/static/"):
             self.path = self.path.replace("/static/", "/", 1)
         
-        # Route logic for clean URLs if needed
         clean_path = self.path.split('?')[0]
-        if clean_path == "/" or clean_path == "/indian":
-            self.path = "/indian_news.html"
-        # elif clean_path == "/global":
-        #     self.path = "/index.html"
+        
+        # Mask legacy global routes
+        if clean_path in ["/global", "/predictions", "/predictions.html", "/indian", "/indian_news.html"]:
+            self.send_response(302)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+            
+        if clean_path == "/":
+            self.path = "/index.html"
             
         return super().do_GET()
 
@@ -103,8 +108,7 @@ if __name__ == "__main__":
         print(f"  🔗 Backend API expected at:  http://localhost:8000")
         print(f"  --------------------------------------------------")
         print(f"  Page Routes:")
-        print(f"  - Home (Indian):  http://localhost:{PORT}/")
-        # print(f"  - Global Feed:    http://localhost:{PORT}/global")
+        print(f"  - Home Platform:  http://localhost:{PORT}/")
         print(f"  --------------------------------------------------\n")
         try:
             httpd.serve_forever()
