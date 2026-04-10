@@ -11,7 +11,6 @@ Notes:
   - escalation detection
   - duplicate / priced-in checks
 """
-
 from __future__ import annotations
 
 from zoneinfo import ZoneInfo
