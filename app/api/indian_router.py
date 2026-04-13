@@ -6,7 +6,7 @@ import json
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from app.core.db import fetch_all, fetch_one
-from app.core.agent import analyze_indian_news, save_indian_analysis
+from app.agents.agent import analyze_indian_news, save_indian_analysis
 
 # Thread pool for blocking database operations
 executor = ThreadPoolExecutor(max_workers=40)

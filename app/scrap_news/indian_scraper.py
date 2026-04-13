@@ -15,8 +15,7 @@ from typing import List, Dict, Any
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
 from app.core.db import execute_query, fetch_one, execute_returning
-from app.core.realtime import trigger_news_created
-from app.core.agent import filter_indian_news
+from app.agents.agent import filter_indian_news
 from app.core.event_engine import process_event_grouping
 
 # ══════════════════════════════════════════════════════
@@ -231,7 +230,7 @@ async def save_article(article):
         # ... existing logic ...
         
         # 5. Notify all devices of new arrival via Pusher
-        await asyncio.to_thread(trigger_news_created, new_id)
+        # await asyncio.to_thread(trigger_news_created, new_id)
 
         return 1  # New article added
         

@@ -26,10 +26,10 @@ from google import genai
 from google.genai import types
 
 from app.core.db import execute_query, fetch_one
-from app.core.planner import run_planner
-from app.core.prompt import INDIAN_MARKET_CLASSIFY_PROMPT, INDIAN_SYSTEM_PROMPT, build_compact_prompt
-from app.core.schema import SCHEMA_TEMPLATE
-from app.core.tools import (
+from app.agents.planner import run_planner
+from app.agents.prompt import INDIAN_MARKET_CLASSIFY_PROMPT, INDIAN_SYSTEM_PROMPT, build_compact_prompt
+from app.schemas.schema import SCHEMA_TEMPLATE
+from app.agents.tools import (
     get_source_credibility,
     get_market_status,
     get_stock_context,
@@ -361,7 +361,7 @@ async def filter_indian_news(title: str, description: str = "") -> Optional[Dict
         if not company_mentions:
             resolved_symbols = []
         else:
-            from app.core.tools import strict_resolve_symbols
+            from app.agents.tools import strict_resolve_symbols
             resolved_symbols = strict_resolve_symbols(company_mentions)
             
         # 4. Final Output Formation
