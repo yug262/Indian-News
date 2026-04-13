@@ -1,2 +1,13 @@
-venv
+venv/
+logs/
 .env
+__pycache__
+image_generate_temp/
+app/scrap_news/__pycache__
+/news.zip
+/project.zip
+/tmp
+/test
+/reassign_all_events.py
+/verify_events.py
+/fix_script2.py

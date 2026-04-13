@@ -1,127 +1,94 @@
-# schema.py
+# app/ind/schema.py
+"""
+Indian Equities Analysis Schema — V6.1
+
+Compact schema with impact triggers (killers + amplifiers).
+"""
 
 SCHEMA_TEMPLATE = {
-  "event_metadata": {
-    "title": "",
-    "summary": "",
-    "source": "",
-    "timestamp_utc": "",
-    "analysis_timestamp_utc": ""
-  },
+    "signal_bucket": "",        # DIRECT | AMBIGUOUS | WEAK_PROXY | NOISE
 
-  "event_classification": {
-    "event_type": "",
-    "shock_type": "",
-    "geographic_scope": ""
-  },
+    "event": {
+        "title": "",
+        "event_type": "",       # earnings | policy | order_win | macro | regulation | disruption | corporate_action | other
+        "status": "",           # confirmed | developing | rumor | noise
+        "scope": ""             # single_stock | sector | broad_market
+    },
 
-  "text_signal_analysis": {
-    "hawkish_dovish_score": 0,
-    "risk_on_off_score": 0,
-    "uncertainty_intensity_score": 0,
-    "narrative_shift_score": 0
-  },
+    "core_view": {
+        "market_bias": "",      # bullish | bearish | mixed | neutral
+        "impact_score": 0,      # 0-10
+        "confidence": 0,        # 0-85
+        "horizon": ""           # intraday | short_term | medium_term
+    },
 
-  "core_impact_assessment": {
-    "primary_impact_score": 0,
-    "perceived_surprise_score": 0,
-    "structural_vs_temporary": "",
-
-    "market_category_scores": {
-      "forex": 0,
-      "crypto": 0,
-      "global_equities": 0
-    }
-  },
-
-  "market_regime_context": {
-    "dominant_market_regime": "",
-    "liquidity_condition_assumption": "",
-    "volatility_expectation": ""
-  },
-
-  "directional_bias": {
-    "forex": [
-      {
-        "pair": "",
-        "direction": "",
-        "impact_strength": 0,
-        "confidence": 0,
-        "expected_move_pct": "",
-        "expected_duration": "",
-        "reason": ""
-      }
+    "stock_impacts": [
+        {
+            "symbol": "",           # NSE ticker (e.g. RELIANCE, INFY)
+            "company_name": "",
+            "bias": "",             # bullish | bearish | mixed | neutral
+            "reaction": "",         # weak | moderate | strong | uncertain
+            "timing": "",           # open | intraday | short_term
+            "why": "",
+            "confidence": 0         # 0-85
+        }
     ],
-    "crypto": [
-      {
-        "asset": "",
-        "direction": "",
-        "impact_strength": 0,
-        "confidence": 0,
-        "expected_move_pct": "",
-        "expected_duration": "",
-        "reason": ""
-      }
+
+    "sector_impacts": [
+        {
+            "sector": "",
+            "bias": "",             # bullish | bearish | mixed | neutral
+            "why": ""
+        }
     ],
-    "global_equities": [
-      {
-        "index": "",
-        "direction": "",
-        "impact_strength": 0,
-        "confidence": 0,
-        "expected_move_pct": "",
-        "expected_duration": "",
-        "reason": ""
-      }
-    ]
-  },
 
-  "time_modeling": {
-    "reaction_speed": "",
-    "impact_duration": "",
-    "time_decay_risk": ""
-  },
+    "impact_triggers": {
+        "impact_killers": [         # events that would NEGATE the current thesis
+            {
+                "trigger": "",      # what to watch (specific, observable)
+                "why": ""           # why it breaks the thesis
+            }
+        ],
+        "impact_amplifiers": [      # events that would STRENGTHEN the current thesis
+            {
+                "trigger": "",      # what to watch (specific, observable)
+                "why": ""           # why it amplifies the thesis
+            }
+        ]
+    },
 
-  "probability_and_confidence": {
-    "direction_probability_pct": 0,
-    "overall_confidence_score": 0,
-    "confidence_breakdown": {
-      "text_clarity": 0,
-      "shock_magnitude": 0,
-      "cross_asset_logic_strength": 0
-    }
-  },
+    "evidence_quality": {
+        "confirmed": [],            # list of strings: facts explicitly stated/verified in the news
+        "unknowns_risks": []        # list of strings: missing info, assumptions, or risks not yet confirmed
+    },
 
-  "risk_guidance": {
-    "suggested_exposure_range_pct": "",
-    "risk_profile": "",
-    "event_cluster_risk": "",
-    "volatility_warning": ""
-  },
+    "tradeability": {
+        "classification": "",       # actionable_now | wait_for_confirmation | no_edge
+        "priced_in_assessment": "", # REMAINING IMPACT: Has the move already happened? What % of impact is left? What to expect NOW.
+        "remaining_impact_state": "",   # untouched | early | partially_absorbed | mostly_absorbed | exhausted
+        "reason": "",               # why this classification — 1-2 sentences
+        "what_to_do": "",           # plain-English action plan for RIGHT NOW, given the time elapsed since news broke
+    },
 
-  "event_fatigue_analysis": {
-    "similar_events_last_7_days": 0,
-    "fatigue_score": 0
-  },
+    "decision_trace": {
+        "event_identification": "",
+        "entity_mapping": "",
+        "impact_scoring": "",
+        "remaining_impact": "",
+        "tradeability_reasoning": ""
+    },
 
-  "scenario_analysis": {
-    "if_event_strengthens": "",
-    "if_event_fades": "",
-    "invalidation_trigger": ""
-  },
-
-  "self_critique": {
-    "primary_thesis_weakness": "",
-    "strongest_counter_argument": "",
-    "confidence_adjustment_reason": ""
-  },
-
-  "macro_linkage_reasoning": {
-    "causal_chain_explanation": ""
-  },
-
-  "executive_summary": "",
-  "reasoning_summary": ""
+    "executive_summary": ""
 }
 
 REQUIRED_TOP_LEVEL_KEYS = list(SCHEMA_TEMPLATE.keys())
+
+ALLOWED_ENUMS = {
+    "signal_bucket": ["DIRECT", "AMBIGUOUS", "WEAK_PROXY", "NOISE"],
+    "event_type": ["earnings", "policy", "order_win", "macro", "regulation", "disruption", "corporate_action", "other"],
+    "event_status": ["confirmed", "developing", "rumor", "noise"],
+    "event_scope": ["single_stock", "sector", "broad_market"],
+    "bias": ["bullish", "bearish", "mixed", "neutral"],
+    "horizon": ["intraday", "short_term", "medium_term"],
+    "tradeability": ["actionable_now", "wait_for_confirmation", "no_edge"],
+}

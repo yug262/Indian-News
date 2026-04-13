@@ -1,1134 +1,730 @@
-# agent.py
+# app/ind/agent.py
 """
-Macro Trading Intelligence Agent (Gemini)
-- Takes title + optional summary + published timestamp + source
-- Pulls market data via tools
-- Measures what's already priced since publish (reaction vs ATR)
-- Outputs remaining impact from NOW
-- Saves agent outputs into DB columns (impact_score, confidence, etc.)
-"""
+Indian Equities Analysis Agent — V6
 
-import os
+Architecture: Planner → Tool Executor → Analysis LLM → Minimal Post-Processing
+
+Changes vs V5:
+- Removed 150+ lines of post-processing overrides. If we need that much correction, the prompt is broken.
+- Kept only: symbol verification, confidence cap, NOISE enforcement.
+- normalize_to_schema() shrunk from 250→60 lines (matches simplified schema).
+- Tool registry updated for merged get_stock_context().
+"""
+from __future__ import annotations
+
 import json
+import os
 import time
+import asyncio
+import logging
 import traceback
-import re
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Optional, Dict
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from app.core.prompt import SYSTEM_PROMPT
+from app.core.db import execute_query, fetch_one
+from app.core.planner import run_planner
+from app.core.prompt import INDIAN_MARKET_CLASSIFY_PROMPT, INDIAN_SYSTEM_PROMPT, build_compact_prompt
 from app.core.schema import SCHEMA_TEMPLATE
-
 from app.core.tools import (
-    get_crypto_prices,
-    get_forex_prices,
-    get_global_markets,
-    get_market_sentiment,
-    search_recent_news,
-    get_macro_context,
-    get_economic_calendar,
-    get_interest_rate_differentials,
-    get_news_source_credibility,
-    calculate_reaction,
-    get_asset_atr,
-    classify_reaction_status,
-    detect_reaction_headline
+    get_source_credibility,
+    get_market_status,
+    get_stock_context,
+    classify_novelty,
+    get_peer_reaction,
+    get_broad_market_snapshot,
+    resolve_company,
 )
+
 
 load_dotenv()
 
 BASE_DELAY = 5
 MAX_RETRIES = 3
-MODEL_NAME = os.getenv("MODEL_NAME")
+MODEL_NAME = os.getenv("MODEL_NAME", "").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-def _log(msg: str):
+
+# =========================================================
+# HELPERS
+# =========================================================
+
+def _log(msg: str) -> None:
     try:
         print(msg, flush=True)
     except UnicodeEncodeError:
         print(msg.encode("ascii", "replace").decode(), flush=True)
 
-def _calculate_news_age(published_iso: str) -> tuple[str, str, float]:
+
+def _safe_float(value: Any) -> float | None:
     try:
-        pub_dt = datetime.fromisoformat(published_iso.strip())
-        if pub_dt.tzinfo is None:
-            pub_dt = pub_dt.replace(tzinfo=timezone.utc)
-        hours_old = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600.0
-        minutes = int(hours_old * 60)
-
-        if minutes < 60:
-            human = f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-        elif hours_old < 24:
-            h = int(hours_old)
-            human = f"{h} hour{'s' if h != 1 else ''} ago"
-        else:
-            d = int(hours_old / 24)
-            human = f"{d} day{'s' if d != 1 else ''} ago"
-
-        if hours_old < 1:
-            label = "Fresh"
-        elif hours_old < 4:
-            label = "Recent"
-        elif hours_old < 12:
-            label = "Stale"
-        else:
-            label = "Old"
-
-        return label, human, hours_old
+        if value is None or value == "":
+            return None
+        return float(value)
     except Exception:
-        return "Fresh", "just now", 0.0
-
-MAJOR_FOREX_PAIRS = [
-    "EUR/USD", "USD/JPY", "GBP/USD", "USD/CHF",
-    "AUD/USD", "USD/CAD", "NZD/USD", "DXY",
-]
-
-TOP_CRYPTO = [
-    "bitcoin", "ethereum", "solana", "ripple",
-    "cardano", "dogecoin", "avalanche-2", "chainlink",
-]
-
-_HEADLINE_ASSET_MAP = {
-    # Crypto
-    "bitcoin": "BTC-USD", "btc": "BTC-USD",
-    "ethereum": "ETH-USD", "eth": "ETH-USD",
-    "solana": "SOL-USD", "sol": "SOL-USD",
-    "ripple": "XRP-USD", "xrp": "XRP-USD",
-    "cardano": "ADA-USD", "ada": "ADA-USD",
-    "dogecoin": "DOGE-USD", "doge": "DOGE-USD",
-    # Macro
-    "gold": "GC=F",
-    "oil": "CL=F", "crude": "CL=F",
-    "dollar": "DX-Y.NYB", "dxy": "DX-Y.NYB",
-    "s&p": "^GSPC", "nasdaq": "^IXIC", "dow": "^DJI",
-    "nikkei": "^N225", "dax": "^GDAXI",
-}
-
-def _detect_assets_from_title(title: str) -> list[str]:
-    tl = (title or "").lower()
-    found = []
-    used = set()
-    for k, sym in _HEADLINE_ASSET_MAP.items():
-        if k in tl and sym not in used:
-            found.append(sym)
-            used.add(sym)
-    return found[:5]
-
-def fetch_all_market_data() -> dict:
-    out = {}
-    try:
-        out["forex"] = get_forex_prices(MAJOR_FOREX_PAIRS)
-    except Exception as e:
-        _log(f"⚠️ forex: {e}")
-        out["forex"] = {}
-
-    try:
-        out["crypto"] = get_crypto_prices(TOP_CRYPTO)
-    except Exception as e:
-        _log(f"⚠️ crypto: {e}")
-        out["crypto"] = {}
-
-    try:
-        out["markets"] = get_global_markets()
-    except Exception as e:
-        _log(f"⚠️ markets: {e}")
-        out["markets"] = {}
-
-    try:
-        out["sentiment"] = get_market_sentiment()
-    except Exception as e:
-        _log(f"⚠️ sentiment: {e}")
-        out["sentiment"] = {}
-
-    try:
-        out["macro"] = get_macro_context()
-    except Exception as e:
-        _log(f"⚠️ macro: {e}")
-        out["macro"] = {}
-
-    return out
-
-def _check_recent_movements(symbols: list[str], published_iso: str) -> dict:
-    movements = {}
-    for sym in symbols:
-        try:
-            reaction = calculate_reaction(sym, published_iso)
-            atr = get_asset_atr(sym)
-
-            if not reaction or "reaction_pct" not in reaction:
-                continue
-
-            reaction_pct = float(reaction["reaction_pct"])
-            atr_pct = float(atr.get("atr_pct_reference") or 1.0)
-            status = classify_reaction_status(reaction_pct, atr_pct)
-
-            key = sym.replace("-USD", "").replace("=F", "").replace("^", "")
-            movements[key] = {
-                "symbol": sym,
-                "reaction_pct": round(reaction_pct, 4),
-                "news_price": reaction.get("news_price"),
-                "current_price": reaction.get("current_price"),
-                "atr_pct_reference": round(atr_pct, 4),
-                "reaction_status": status,
-            }
-        except Exception:
-            continue
-    return movements
-
-CLASSIFY_PROMPT = """You are an institutional trading news filter and classifier for forex and cryptocurrency markets.
-Your job is to determine whether a headline represents a genuine market-moving event or low-value news content.
-You must first determine whether the news represents a real catalyst before assigning a category.
-Do NOT rely on keywords alone.
-You must interpret the actual economic meaning of the headline.
-STEP 1 — AUTHENTICITY CHECK
-Determine whether the headline represents one of the following:
-REAL_CATALYST
-A genuine market event that introduces new information which could influence market expectations or capital flows.
-CONTEXT_ONLY
-Background commentary, previews of scheduled events, sector analysis, or sentiment discussion.
-RECYCLED_NEWS
-Old information being repeated without a new development.
-PRICE_REPORT
-Headlines that only describe price movement that already happened.
-OPINION_OR_SPECULATION
-Articles expressing opinions, speculation, or predictions without new data or institutional research.
-STEP 2 — CATEGORY CLASSIFICATION
-If the headline is a REAL_CATALYST or CONTEXT_ONLY event, classify it into ONE of these categories:
-macro_data_release
-Unexpected economic data releases (CPI, NFP, GDP, inflation surprises).
-central_bank_policy
-Official monetary policy decisions (rate hikes/cuts, QE changes).
-central_bank_guidance
-Forward guidance or speeches from central bank officials.
-institutional_research
-Market outlook or analysis from major financial institutions (Goldman Sachs, JPMorgan, MUFG, OCBC).
-regulatory_policy
-Government or regulatory actions affecting financial or crypto markets.
-crypto_ecosystem_event
-Major blockchain developments, integrations, protocol upgrades, or institutional partnerships.
-liquidity_flows
-Institutional capital flows such as ETF inflows/outflows or sovereign investments.
-geopolitical_event
-Wars, sanctions, political conflicts affecting markets.
-systemic_risk_event
-Financial system instability such as bank failures or liquidity crises.
-commodity_supply_shock
-Supply disruptions impacting commodities (OPEC cuts, mining shutdowns).
-market_structure_event
-Structural changes such as new ETFs, exchange rule changes, derivatives launches.
-sector_trend_analysis
-Broad sector or market trend analysis.
-sentiment_indicator
-Investor sentiment indicators or positioning data.
-routine_market_update
-Expected or low-impact market updates.
-If the headline is PRICE_REPORT, RECYCLED_NEWS, or OPINION_OR_SPECULATION, classify it as:
-price_action_noise
-IMPORTANT RULES
-Headlines describing price movement after the fact are always price_action_noise.
-Articles explaining why markets moved earlier are also price_action_noise.
-Opinion pieces without new data or institutional research are price_action_noise.
-If a headline repeats old news without a new development, treat it as RECYCLED_NEWS → price_action_noise.
-Always identify the primary event, not keywords.
-Respond ONLY with valid JSON:
-{
-    "authenticity": "REAL_CATALYST | CONTEXT_ONLY | RECYCLED_NEWS | PRICE_REPORT | OPINION_OR_SPECULATION",
-    "impact_level": "high | medium | low | none",
-    "category": "macro_data_release | central_bank_policy | central_bank_guidance | institutional_research | regulatory_policy | crypto_ecosystem_event | liquidity_flows | geopolitical_event | systemic_risk_event | commodity_supply_shock | market_structure_event | sector_trend_analysis | sentiment_indicator | routine_market_update | price_action_noise",
-    "reason": "one short sentence explaining the classification"
-}"""
-
-def classify_news_relevance(title: str, description: str = "") -> dict:
-    """
-    Lightweight Gemini call to classify a news article's category, impact_level, and reason
-    for forex/crypto trading. Returns a dict with these fields.
-    Falls back to a default 'none' impact dict on any error.
-    """
-    default_resp = {"category": "error", "impact_level": "none", "reason": "Classification failed or skipped"}
-    if not os.getenv("GEMINI_API_KEY") or not client:
-        return default_resp
-    try:
-        user_msg = f"Title: {title}"
-        if description:
-            user_msg += f"\nDescription: {description[:300]}"
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[user_msg],
-            config=types.GenerateContentConfig(
-                system_instruction=CLASSIFY_PROMPT,
-                temperature=0.1,
-                max_output_tokens=300,
-            ),
-        )
-        text = (response.text or "").strip()
-        # Extract JSON from response — handle markdown blocks and potential trailing text
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-        
-        result = default_resp.copy()
-        if json_match:
-            try:
-                json_str = json_match.group(0)
-                # If the match is incomplete (e.g. missing closing brace due to truncation), try to fix it
-                if json_str.count('{') > json_str.count('}'):
-                    json_str += '}' * (json_str.count('{') - json_str.count('}'))
-                data = json.loads(json_str)
-                category = data.get("category", "unclassified")
-                impact_level = data.get("impact_level", "none").lower()
-                reason = data.get("reason", "")
-                result = {
-                    "category": category,
-                    "impact_level": impact_level,
-                    "reason": reason
-                }
-            except Exception:
-                pass
-        
-        # Log for diagnostics
-        try:
-            os.makedirs("logs", exist_ok=True)
-            with open("logs/classification.log", "a", encoding="utf-8") as f:
-                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                f.write(f"[{timestamp}] TITLE: {title}\n")
-                f.write(f"[{timestamp}] RAW: {text}\n")
-                f.write(f"[{timestamp}] FINAL: {result}\n")
-                f.write("-" * 40 + "\n")
-        except:
-            pass
-            
-        return result
-    except Exception as e:
-        print(f"[CLASSIFY] Error classifying '{title[:50]}...': {e}", flush=True)
-        return default_resp
-def classify_batch(items: list[tuple[str, str]]) -> list[dict]:
-    """
-    Classify a batch of (title, description) pairs in parallel.
-    Returns list of relevance dicts in the same order.
-    """
-    if not items:
-        return []
-    
-    default_resp = {"category": "error", "impact_level": "none", "reason": "Classification failed or skipped"}
-    results = [default_resp] * len(items)
-    def _classify(idx, title, desc):
-        return idx, classify_news_relevance(title, desc)
-    with ThreadPoolExecutor(max_workers=min(len(items), 5)) as executor:
-        futures = {
-            executor.submit(_classify, i, title, desc): i
-            for i, (title, desc) in enumerate(items)
-        }
-        for future in as_completed(futures):
-            try:
-                idx, label = future.result()
-                results[idx] = label
-            except Exception:
-                pass
-    return results
-    
-def analyze_news(title: str, published_iso: str, summary: str = "", source: str = "") -> dict | None:
-
-    """
-    Returns JSON matching schema template.
-    """
-    analysis_time = datetime.now(timezone.utc).isoformat()
-
-    age_label, age_human, hours_old = _calculate_news_age(published_iso)
-
-    # priced-in duplicate check using DB
-    news_check = search_recent_news(title, hours_back=48)
-    priced_in_by_history = bool(news_check.get("priced_in", False))
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            _log(f"[ATTEMPT {attempt+1}/{MAX_RETRIES}] {title[:80]}")
-
-            market_data = fetch_all_market_data()
-
-            # movement since publish (dynamic)
-            symbols = _detect_assets_from_title(title)
-            movements = _check_recent_movements(symbols, published_iso) if symbols else {}
-
-            # choose a dominant movement (largest abs move)
-            dominant = None
-            for k, mv in movements.items():
-                if dominant is None or abs(mv["reaction_pct"]) > abs(dominant["reaction_pct"]):
-                    dominant = mv
-
-            reaction_pct = dominant["reaction_pct"] if dominant else 0.0
-            atr_pct_reference = dominant["atr_pct_reference"] if dominant else 0.0
-            reaction_status = dominant["reaction_status"] if dominant else "normal_reaction"
-
-            # source credibility (use real DB source)
-            source_cred = get_news_source_credibility(source)
-
-            # extra data (only when relevant)
-            extra_data = {}
-            tl = title.lower()
-            if any(w in tl for w in ["rate", "cpi", "inflation", "nfp", "jobs", "gdp", "pmi", "fed", "ecb", "boj", "rbi"]):
-                extra_data["economic_calendar"] = get_economic_calendar()
-                extra_data["rate_differentials"] = get_interest_rate_differentials()
-
-            schema_text = json.dumps(SCHEMA_TEMPLATE, indent=2)
-
-            movement_text = "None"
-            if movements:
-                lines = []
-                for name, mv in movements.items():
-                    direction = "down" if mv["reaction_pct"] < 0 else "up"
-                    lines.append(
-                        f"{name}: {direction} {abs(mv['reaction_pct']):.2f}% since publish "
-                        f"(ATR {mv['atr_pct_reference']:.2f}%, status {mv['reaction_status']})"
-                    )
-                movement_text = "\n".join(lines)
-
-            prompt = f"""
-Return JSON matching this exact template (all keys must exist, unknown = "" or 0 or []):
-{schema_text}
-
-NEWS:
-- title: {title}
-- summary: {summary}
-- source: {source}
-- timestamp_utc: {published_iso}
-- analysis_timestamp_utc: {analysis_time}
-
-DYNAMIC REACTION INPUTS (computed from market data):
-- reaction_pct: {reaction_pct}
-- atr_pct_reference: {atr_pct_reference}
-- reaction_status: {reaction_status}
-- already_priced_in_by_history: {priced_in_by_history}
-- db_duplicate_check: {json.dumps(news_check, default=str)}
-
-LIVE MARKET DATA (use these; do NOT fabricate):
-- forex: {json.dumps(market_data.get("forex", {}), default=str)}
-- crypto: {json.dumps(market_data.get("crypto", {}), default=str)}
-- global_markets: {json.dumps(market_data.get("markets", {}), default=str)}
-- sentiment: {json.dumps(market_data.get("sentiment", {}), default=str)}
-- macro: {json.dumps(market_data.get("macro", {}), default=str)}
-- source_credibility: {json.dumps(source_cred, default=str)}
-{f"- economic_calendar: {json.dumps(extra_data.get('economic_calendar', {}), default=str)}" if "economic_calendar" in extra_data else ""}
-{f"- rate_differentials: {json.dumps(extra_data.get('rate_differentials', {}), default=str)}" if "rate_differentials" in extra_data else ""}
-
-RECENT MOVEMENTS SINCE PUBLISH (what already happened):
-{movement_text}
-
-RULE REMINDER:
-- Your impact_score + expected_move_pct MUST be REMAINING impact from NOW onward.
-- If reaction_status=fully_priced, cap primary_impact_score at 4 unless crisis.
-- If news is Old (>12h), cap primary_impact_score at 3.
-- Headline-only mode: if summary empty, cap direction_probability_pct at 70 unless explicit action.
-Return STRICT JSON only. No markdown. No extra text.
-"""
-
-            resp = model.generate_content(prompt)
-            text = resp.text
-
-            try:
-                result = json.loads(text)
-            except json.JSONDecodeError:
-                m = re.search(r"\{.*\}", text, re.DOTALL)
-                if not m:
-                    continue
-                result = json.loads(m.group(0))
-
-            # inject simple timing info
-            result.setdefault("event_metadata", {})
-            result["event_metadata"]["analysis_timestamp_utc"] = analysis_time
-
-            # tag priced-in info (for DB)
-            result["_meta"] = {
-                "news_age_label": age_label,
-                "news_age_human": age_human,
-                "news_hours_old": round(hours_old, 2),
-                "priced_in_by_history": priced_in_by_history,
-                "reaction_status": reaction_status,
-                "reaction_pct": reaction_pct,
-                "atr_pct_reference": atr_pct_reference,
-            }
-
-            return result
-
-        except Exception as e:
-            _log(f"ERROR: {e}")
-            traceback.print_exc()
-            time.sleep(BASE_DELAY * (attempt + 1))
-
-    return None
-
-
-def save_analysis(news_id: int, analysis: dict):
-    """
-    Saves the agent's output into existing DB columns your UI reads.
-    """
-    from db import execute_query
-
-    core = analysis.get("core_impact_assessment", {})
-    regime = analysis.get("market_regime_context", {})
-    prob = analysis.get("probability_and_confidence", {})
-    time_mod = analysis.get("time_modeling", {})
-    directional = analysis.get("directional_bias", {})
-    meta = analysis.get("_meta", {})
-
-    forex_items = directional.get("forex", []) or []
-    crypto_items = directional.get("crypto", []) or []
-
-    query = """
-        UPDATE news SET
-            analyzed               = TRUE,
-            analysis_data          = %s,
-            impact_score           = %s,
-            impact_summary         = %s,
-            affected_markets       = %s,
-            impact_duration        = %s,
-            market_mode            = %s,
-            usd_bias               = %s,
-            crypto_bias            = %s,
-            execution_window       = %s,
-            confidence             = %s,
-            conviction_score       = %s,
-            volatility_regime      = %s,
-            dollar_liquidity_state = %s,
-            news_age_label         = %s,
-            news_age_human         = %s,
-            news_priced_in         = %s
-        WHERE id = %s
-    """
-
-    params = (
-        json.dumps(analysis),
-        int(core.get("primary_impact_score", 0) or 0),
-        (analysis.get("executive_summary", "") or "")[:500],
-        json.dumps(core.get("market_category_scores", {}) or {}),
-        (time_mod.get("impact_duration", "") or "")[:100],
-        (regime.get("dominant_market_regime", "") or "")[:50],
-        (forex_items[0].get("direction", "") if forex_items else "")[:20],
-        (crypto_items[0].get("direction", "") if crypto_items else "")[:20],
-        (time_mod.get("reaction_speed", "") or "")[:50],
-        str(prob.get("overall_confidence_score", ""))[:50],
-        int(prob.get("direction_probability_pct", 0) or 0),
-        (regime.get("volatility_expectation", "") or "")[:50],
-        (regime.get("liquidity_condition_assumption", "") or "")[:50],
-        (meta.get("news_age_label", "Fresh") or "")[:20],
-        (meta.get("news_age_human", "") or "")[:50],
-        bool(meta.get("priced_in_by_history", False) or (meta.get("reaction_status") == "fully_priced")),
-        news_id,
-    )
-
-    execute_query(query, params)
-    _log(f"[SAVE] news_id={news_id}")
-
-def _log(msg: str):
-    try:
-        print(msg, flush=True)
-    except UnicodeEncodeError:
-        print(msg.encode("ascii", "replace").decode(), flush=True)
-
-def _calculate_news_age(published_iso: str) -> tuple[str, str, float]:
-    try:
-        pub_dt = datetime.fromisoformat(published_iso.strip())
-        if pub_dt.tzinfo is None:
-            pub_dt = pub_dt.replace(tzinfo=timezone.utc)
-        hours_old = (datetime.now(timezone.utc) - pub_dt).total_seconds() / 3600.0
-        minutes = int(hours_old * 60)
-
-        if minutes < 60:
-            human = f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-        elif hours_old < 24:
-            h = int(hours_old)
-            human = f"{h} hour{'s' if h != 1 else ''} ago"
-        else:
-            d = int(hours_old / 24)
-            human = f"{d} day{'s' if d != 1 else ''} ago"
-
-        if hours_old < 1:
-            label = "Fresh"
-        elif hours_old < 4:
-            label = "Recent"
-        elif hours_old < 12:
-            label = "Stale"
-        else:
-            label = "Old"
-
-        return label, human, hours_old
-    except Exception:
-        return "Fresh", "just now", 0.0
-
-MAJOR_FOREX_PAIRS = [
-    "EUR/USD", "USD/JPY", "GBP/USD", "USD/CHF",
-    "AUD/USD", "USD/CAD", "NZD/USD", "DXY",
-]
-
-TOP_CRYPTO = [
-    "bitcoin", "ethereum", "solana", "ripple",
-    "cardano", "dogecoin", "avalanche-2", "chainlink",
-]
-
-_HEADLINE_ASSET_MAP = {
-    # Crypto
-    "bitcoin": "BTC-USD", "btc": "BTC-USD",
-    "ethereum": "ETH-USD", "eth": "ETH-USD",
-    "solana": "SOL-USD", "sol": "SOL-USD",
-    "ripple": "XRP-USD", "xrp": "XRP-USD",
-    "cardano": "ADA-USD", "ada": "ADA-USD",
-    "dogecoin": "DOGE-USD", "doge": "DOGE-USD",
-    # Macro
-    "gold": "GC=F",
-    "oil": "CL=F", "crude": "CL=F",
-    "dollar": "DX-Y.NYB", "dxy": "DX-Y.NYB",
-    "s&p": "^GSPC", "nasdaq": "^IXIC", "dow": "^DJI",
-    "nikkei": "^N225", "dax": "^GDAXI",
-}
-
-def _detect_assets_from_title(title: str) -> list[str]:
-    tl = (title or "").lower()
-    found = []
-    used = set()
-    for k, sym in _HEADLINE_ASSET_MAP.items():
-        if k in tl and sym not in used:
-            found.append(sym)
-            used.add(sym)
-    return found[:5]
-
-def fetch_all_market_data() -> dict:
-    out = {}
-    try:
-        out["forex"] = get_forex_prices(MAJOR_FOREX_PAIRS)
-    except Exception as e:
-        _log(f"⚠️ forex: {e}")
-        out["forex"] = {}
-
-    try:
-        out["crypto"] = get_crypto_prices(TOP_CRYPTO)
-    except Exception as e:
-        _log(f"⚠️ crypto: {e}")
-        out["crypto"] = {}
-
-    try:
-        out["markets"] = get_global_markets()
-    except Exception as e:
-        _log(f"⚠️ markets: {e}")
-        out["markets"] = {}
-
-    try:
-        out["sentiment"] = get_market_sentiment()
-    except Exception as e:
-        _log(f"⚠️ sentiment: {e}")
-        out["sentiment"] = {}
-
-    try:
-        out["macro"] = get_macro_context()
-    except Exception as e:
-        _log(f"⚠️ macro: {e}")
-        out["macro"] = {}
-
-    return out
-
-def _check_recent_movements(symbols: list[str], published_iso: str) -> dict:
-    movements = {}
-    for sym in symbols:
-        try:
-            reaction = calculate_reaction(sym, published_iso)
-            atr = get_asset_atr(sym)
-
-            if not reaction or "reaction_pct" not in reaction:
-                continue
-
-            reaction_pct = float(reaction["reaction_pct"])
-            atr_pct = float(atr.get("atr_pct_reference") or 1.0)
-            status = classify_reaction_status(reaction_pct, atr_pct)
-
-            key = sym.replace("-USD", "").replace("=F", "").replace("^", "")
-            movements[key] = {
-                "symbol": sym,
-                "reaction_pct": round(reaction_pct, 4),
-                "news_price": reaction.get("news_price"),
-                "current_price": reaction.get("current_price"),
-                "atr_pct_reference": round(atr_pct, 4),
-                "reaction_status": status,
-            }
-        except Exception:
-            continue
-    return movements
-
-def analyze_news(title: str, published_iso: str, summary: str = "", source: str = "") -> dict | None:
-    """
-    Returns JSON matching schema template.
-    """
-    analysis_time = datetime.now(timezone.utc).isoformat()
-
-    age_label, age_human, hours_old = _calculate_news_age(published_iso)
-
-    # priced-in duplicate check using DB
-    news_check = search_recent_news(title, hours_back=48)
-    priced_in_by_history = bool(news_check.get("priced_in", False))
-
-    for attempt in range(MAX_RETRIES):
-        try:
-            _log(f"[ATTEMPT {attempt+1}/{MAX_RETRIES}] {title[:80]}")
-
-            market_data = fetch_all_market_data()
-
-            # movement since publish (dynamic)
-            symbols = _detect_assets_from_title(title)
-            movements = _check_recent_movements(symbols, published_iso) if symbols else {}
-
-            # choose a dominant movement (largest abs move)
-            dominant = None
-            for k, mv in movements.items():
-                if dominant is None or abs(mv["reaction_pct"]) > abs(dominant["reaction_pct"]):
-                    dominant = mv
-
-            reaction_pct = dominant["reaction_pct"] if dominant else 0.0
-            atr_pct_reference = dominant["atr_pct_reference"] if dominant else 0.0
-            reaction_status = dominant["reaction_status"] if dominant else "normal_reaction"
-
-            # ✅ Reaction-headline override (already moved headlines like "surge 8%")
-            rh = detect_reaction_headline(title)
-
-            reaction_headline = rh["reaction_headline"]
-            headline_move_pct = rh["headline_move_pct"]
-            has_new_catalyst = rh["has_new_catalyst"]
-
-            # If headline itself says a big realized move, treat as post-move commentary
-            # unless it clearly contains a new confirmed catalyst.
-            if reaction_headline and headline_move_pct is not None and headline_move_pct >= 3 and not has_new_catalyst:
-                # force priced-in logic
-                reaction_status = "fully_priced"
-
-            # source credibility (use real DB source)
-            source_cred = get_news_source_credibility(source)
-
-            # extra data (only when relevant)
-            extra_data = {}
-            tl = title.lower()
-            if any(w in tl for w in ["rate", "cpi", "inflation", "nfp", "jobs", "gdp", "pmi", "fed", "ecb", "boj", "rbi"]):
-                extra_data["economic_calendar"] = get_economic_calendar()
-                extra_data["rate_differentials"] = get_interest_rate_differentials()
-
-            schema_text = json.dumps(SCHEMA_TEMPLATE, indent=2)
-
-            movement_text = "None"
-            if movements:
-                lines = []
-                for name, mv in movements.items():
-                    direction = "down" if mv["reaction_pct"] < 0 else "up"
-                    lines.append(
-                        f"{name}: {direction} {abs(mv['reaction_pct']):.2f}% since publish "
-                        f"(ATR {mv['atr_pct_reference']:.2f}%, status {mv['reaction_status']})"
-                    )
-                movement_text = "\n".join(lines)
-
-            prompt = f"""
-Return JSON matching this exact template (all keys must exist, unknown = "" or 0 or []):
-{schema_text}
-
-NEWS:
-- title: {title}
-- summary: {summary}
-- source: {source}
-- timestamp_utc: {published_iso}
-- analysis_timestamp_utc: {analysis_time}
-
-DYNAMIC REACTION INPUTS (computed from market data):
-- reaction_pct: {reaction_pct}
-- atr_pct_reference: {atr_pct_reference}
-- reaction_status: {reaction_status}
-- already_priced_in_by_history: {priced_in_by_history}
-- db_duplicate_check: {json.dumps(news_check, default=str)}
-
-LIVE MARKET DATA (use these; do NOT fabricate):
-- forex: {json.dumps(market_data.get("forex", {}), default=str)}
-- crypto: {json.dumps(market_data.get("crypto", {}), default=str)}
-- global_markets: {json.dumps(market_data.get("markets", {}), default=str)}
-- sentiment: {json.dumps(market_data.get("sentiment", {}), default=str)}
-- macro: {json.dumps(market_data.get("macro", {}), default=str)}
-- source_credibility: {json.dumps(source_cred, default=str)}
-{f"- economic_calendar: {json.dumps(extra_data.get('economic_calendar', {}), default=str)}" if "economic_calendar" in extra_data else ""}
-{f"- rate_differentials: {json.dumps(extra_data.get('rate_differentials', {}), default=str)}" if "rate_differentials" in extra_data else ""}
-
-RECENT MOVEMENTS SINCE PUBLISH (what already happened):
-{movement_text}
-
-REACTION-HEADLINE OVERRIDE (IMPORTANT):
-- reaction_headline: {reaction_headline}
-- headline_move_pct: {headline_move_pct}
-- has_new_catalyst: {has_new_catalyst}
-
-Rules:
-- If reaction_headline=true AND headline_move_pct >= 3 AND has_new_catalyst=false:
-  treat as post-move commentary.
-  Bias should default to stabilization.
-  primary_impact_score should be capped at 3–4.
-  expected remaining move should be small.
-
-RULE REMINDER:
-- Your impact_score + expected_move_pct MUST be REMAINING impact from NOW onward.
-- If reaction_status=fully_priced, cap primary_impact_score at 4 unless crisis.
-- If news is Old (>12h), cap primary_impact_score at 3.
-- Headline-only mode: if summary empty, cap direction_probability_pct at 70 unless explicit action.
-Return STRICT JSON only. No markdown. No extra text.
-"""
-
-            resp = client.models.generate_content(
-                model=MODEL_NAME,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    temperature=0.4,
-                    response_mime_type="application/json",
-                )
-            )
-            text = resp.text
-
-            try:
-                result = json.loads(text)
-            except json.JSONDecodeError:
-                m = re.search(r"\{.*\}", text, re.DOTALL)
-                if not m:
-                    continue
-                result = json.loads(m.group(0))
-
-            # inject simple timing info
-            result.setdefault("event_metadata", {})
-            result["event_metadata"]["analysis_timestamp_utc"] = analysis_time
-
-            # tag priced-in info (for DB)
-            result["_meta"] = {
-                "news_age_label": age_label,
-                "news_age_human": age_human,
-                "news_hours_old": round(hours_old, 2),
-                "priced_in_by_history": priced_in_by_history,
-                "reaction_status": reaction_status,
-                "reaction_pct": reaction_pct,
-                "atr_pct_reference": atr_pct_reference,
-                "reaction_headline": reaction_headline,
-                "headline_move_pct": headline_move_pct,
-                "has_new_catalyst": has_new_catalyst,
-            }
-
-            return result
-
-        except Exception as e:
-            _log(f"ERROR: {e}")
-            traceback.print_exc()
-            time.sleep(BASE_DELAY * (attempt + 1))
-
-    return None
-
-
-def save_analysis(news_id: int, analysis: dict):
-    """
-    Saves the agent's output into existing DB columns your UI reads.
-    """
-    from db import execute_query
-
-    core = analysis.get("core_impact_assessment", {})
-    regime = analysis.get("market_regime_context", {})
-    prob = analysis.get("probability_and_confidence", {})
-    time_mod = analysis.get("time_modeling", {})
-    directional = analysis.get("directional_bias", {})
-    meta = analysis.get("_meta", {})
-
-    forex_items = directional.get("forex", []) or []
-    crypto_items = directional.get("crypto", []) or []
-
-    query = """
-        UPDATE news SET
-            analyzed               = TRUE,
-            analyzed_at            = NOW(),
-            analysis_data          = %s,
-            impact_score           = %s,
-            impact_summary         = %s,
-            affected_markets       = %s,
-            impact_duration        = %s,
-            market_mode            = %s,
-            usd_bias               = %s,
-            crypto_bias            = %s,
-            execution_window       = %s,
-            confidence             = %s,
-            conviction_score       = %s,
-            volatility_regime      = %s,
-            dollar_liquidity_state = %s,
-            news_age_label         = %s,
-            news_age_human         = %s,
-            news_priced_in         = %s
-        WHERE id = %s
-    """
-
-    params = (
-        json.dumps(analysis),
-        int(core.get("primary_impact_score", 0) or 0),
-        (analysis.get("executive_summary", "") or "")[:500],
-        json.dumps(core.get("market_category_scores", {}) or {}),
-        (time_mod.get("impact_duration", "") or "")[:100],
-        (regime.get("dominant_market_regime", "") or "")[:50],
-        (forex_items[0].get("direction", "") if forex_items else "")[:20],
-        (crypto_items[0].get("direction", "") if crypto_items else "")[:20],
-        (time_mod.get("reaction_speed", "") or "")[:50],
-        str(prob.get("overall_confidence_score", ""))[:50],
-        int(prob.get("direction_probability_pct", 0) or 0),
-        (regime.get("volatility_expectation", "") or "")[:50],
-        (regime.get("liquidity_condition_assumption", "") or "")[:50],
-        (meta.get("news_age_label", "Fresh") or "")[:20],
-        (meta.get("news_age_human", "") or "")[:50],
-        bool(meta.get("priced_in_by_history", False) or (meta.get("reaction_status") == "fully_priced")),
-        news_id,
-    )
-
-    execute_query(query, params)
-    _log(f"[SAVE] news_id={news_id}")
-
-    # Auto-create predictions from directional bias
-    try:
-        create_predictions(news_id, analysis)
-    except Exception as pred_err:
-        _log(f"[PRED] Failed to create predictions for news_id={news_id}: {pred_err}")
-
-
-# ── Asset normalization for predictions ──────────────────────
-
-_CRYPTO_SYMBOL_MAP = {
-    "bitcoin": "BTC-USD", "btc": "BTC-USD",
-    "ethereum": "ETH-USD", "eth": "ETH-USD",
-    "solana": "SOL-USD", "sol": "SOL-USD",
-    "ripple": "XRP-USD", "xrp": "XRP-USD",
-    "cardano": "ADA-USD", "ada": "ADA-USD",
-    "dogecoin": "DOGE-USD", "doge": "DOGE-USD",
-    "avalanche": "AVAX-USD", "avax": "AVAX-USD",
-    "chainlink": "LINK-USD", "link": "LINK-USD",
-    "polkadot": "DOT-USD", "dot": "DOT-USD",
-    "litecoin": "LTC-USD", "ltc": "LTC-USD",
-    "uniswap": "UNI-USD", "uni": "UNI-USD",
-    "shiba inu": "SHIB-USD", "shib": "SHIB-USD",
-    "polygon": "MATIC-USD", "matic": "MATIC-USD",
-}
-
-_FOREX_SYMBOL_MAP = {
-    "eur/usd": "EURUSD=X", "eurusd": "EURUSD=X",
-    "usd/jpy": "USDJPY=X", "usdjpy": "USDJPY=X",
-    "gbp/usd": "GBPUSD=X", "gbpusd": "GBPUSD=X",
-    "usd/chf": "USDCHF=X", "usdchf": "USDCHF=X",
-    "aud/usd": "AUDUSD=X", "audusd": "AUDUSD=X",
-    "usd/cad": "USDCAD=X", "usdcad": "USDCAD=X",
-    "nzd/usd": "NZDUSD=X", "nzdusd": "NZDUSD=X",
-    "dxy": "DX-Y.NYB", "dollar index": "DX-Y.NYB",
-    "dollar": "DX-Y.NYB", "usd": "DX-Y.NYB",
-}
-
-_EQUITIES_SYMBOL_MAP = {
-    "gold": "GC=F", "xau": "GC=F",
-    "oil": "CL=F", "crude": "CL=F", "wti": "CL=F",
-    "silver": "SI=F", "xag": "SI=F",
-    "s&p": "^GSPC", "s&p 500": "^GSPC", "s&p500": "^GSPC", "spx": "^GSPC",
-    "nasdaq": "NQ=F", "qqq": "^IXIC",
-    "dow": "^DJI", "dow jones": "^DJI",
-    "nikkei": "^N225",
-    "dax": "^GDAXI",
-    "ftse": "^FTSE",
-}
-
-_DURATION_MAP = {
-    "short-term": 360,
-    "intraday": 720,
-    "medium-term": 1440,
-    "multi-day": 4320,
-    "long-term": 10080,
-}
-
-
-def _normalize_asset_symbol(asset_name: str, asset_class: str) -> str | None:
-    """Convert human-readable asset name to a yfinance-compatible symbol."""
-    name = (asset_name or "").strip().lower()
-    if not name:
         return None
 
-    # Already looks like a ticker
-    if name.endswith("-usd") or "=" in name or name.startswith("^"):
-        return asset_name.upper()
 
-    if asset_class == "crypto":
-        return _CRYPTO_SYMBOL_MAP.get(name)
-    elif asset_class == "forex":
-        return _FOREX_SYMBOL_MAP.get(name)
-    elif asset_class == "global_equities":
-        return _EQUITIES_SYMBOL_MAP.get(name)
-
-    # Try all maps as fallback
-    return (
-        _CRYPTO_SYMBOL_MAP.get(name)
-        or _FOREX_SYMBOL_MAP.get(name)
-        or _EQUITIES_SYMBOL_MAP.get(name)
-    )
-
-
-def _parse_move_pct(raw: str | int | float) -> float:
-    """Parse expected_move_pct from string like '0.5%' or '1-2%' to float."""
-    if isinstance(raw, (int, float)):
-        return abs(float(raw))
-    s = str(raw).strip().replace("%", "")
-    # Handle ranges like "1-2" → take average
-    if "-" in s:
-        parts = s.split("-")
-        try:
-            return abs(sum(float(p.strip()) for p in parts) / len(parts))
-        except ValueError:
-            pass
+def _safe_json_loads(text: str) -> dict:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Empty JSON response")
     try:
-        return abs(float(s))
-    except ValueError:
-        return 0.5  # fallback
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find('{')
+        if start == -1:
+            raise ValueError("LLM did not return valid JSON")
+        for end in range(len(text), start, -1):
+            try:
+                return json.loads(text[start:end])
+            except json.JSONDecodeError:
+                continue
+        raise ValueError("LLM did not return valid JSON")
 
 
-_DURATION_MAP = {
-    # Exact labels the agent emits
-    "intraday": 60,
-    "short-term": 360,        # 6 hours
-    "medium-term": 2880,      # 2 days
-    "long-term": 10080,       # 7 days
-    # Common synonyms
-    "hours": 60,
-    "days": 1440,
-    "weeks": 10080,
-    # Specific ones the agent might write
-    "1 hour": 60,
-    "2 hours": 120,
-    "4 hours": 240,
-    "6 hours": 360,
-    "8 hours": 480,
-    "12 hours": 720,
-    "1 day": 1440,
-    "2 days": 2880,
-    "3 days": 4320,
-    "1 week": 10080,
-    "2 weeks": 20160,
-    "1 month": 43200,
-    # Agent sometimes says these
-    "day": 1440,
-    "week": 10080,
-    "month": 43200,
-    "hour": 60,
-    "minute": 1,
+def _validate_nse_symbol(symbol: str) -> bool:
+    """Check if a symbol exists in the companies DB."""
+    try:
+        row = fetch_one("SELECT nse_symbol FROM companies WHERE nse_symbol = %s LIMIT 1", (symbol,))
+        return row is not None
+    except Exception:
+        return False
+
+
+def _get_text_response(response) -> str:
+    if not response or not response.candidates:
+        return ""
+    texts = []
+    for part in response.candidates[0].content.parts:
+        if hasattr(part, "text") and part.text:
+            texts.append(part.text)
+    return "\n".join(texts).strip()
+
+
+# =========================================================
+# SCHEMA NORMALIZATION (compact — matches V6 schema)
+# =========================================================
+
+def normalize_to_schema(data: dict) -> dict:
+    """Validate and normalize LLM output to match V6 schema."""
+    valid_bias = {"bullish", "bearish", "mixed", "neutral"}
+    valid_buckets = {"DIRECT", "AMBIGUOUS", "WEAK_PROXY", "NOISE"}
+
+    # signal_bucket
+    bucket = str(data.get("signal_bucket", "") or "").strip().upper()
+    data["signal_bucket"] = bucket if bucket in valid_buckets else "AMBIGUOUS"
+
+    # core_view
+    cv = data.get("core_view", {}) or {}
+    cv["impact_score"] = int(max(0, min(10, int(cv.get("impact_score", 0) or 0))))
+    cv["confidence"] = int(max(0, min(85, int(cv.get("confidence", 0) or 0))))
+
+    bias = str(cv.get("market_bias", "neutral") or "neutral").strip().lower()
+    cv["market_bias"] = bias if bias in valid_bias else "neutral"
+
+    horizon = str(cv.get("horizon", "short_term") or "short_term").strip().lower()
+    if horizon not in {"intraday", "short_term", "medium_term"}:
+        horizon = "short_term"
+    cv["horizon"] = horizon
+    data["core_view"] = cv
+
+    # stock_impacts — basic cleanup
+    cleaned_stocks = []
+    for item in data.get("stock_impacts", []) or []:
+        item = dict(item)
+        item["symbol"] = str(item.get("symbol", "") or "").strip().upper()
+        item["company_name"] = str(item.get("company_name", "") or "").strip()
+        b = str(item.get("bias", "neutral") or "neutral").strip().lower()
+        if b == "positive": b = "bullish"
+        elif b == "negative": b = "bearish"
+        item["bias"] = b if b in valid_bias else "neutral"
+        item["confidence"] = int(max(0, min(85, int(item.get("confidence", 0) or 0))))
+        item["why"] = str(item.get("why", "") or "").strip()
+        item["reaction"] = str(item.get("reaction", "") or "uncertain").strip().lower()
+        if item["reaction"] not in {"weak", "moderate", "strong", "uncertain"}:
+            item["reaction"] = "uncertain"
+        item["timing"] = str(item.get("timing", "") or "short_term").strip().lower()
+        if item["timing"] not in {"open", "intraday", "short_term"}:
+            item["timing"] = "short_term"
+
+        # Skip empty symbols or headline-as-company-name
+        if not item["symbol"] or not item["company_name"] or len(item["company_name"].split()) > 12:
+            continue
+        cleaned_stocks.append(item)
+    data["stock_impacts"] = cleaned_stocks
+
+    # sector_impacts — basic cleanup
+    cleaned_sectors = []
+    for item in data.get("sector_impacts", []) or []:
+        item = dict(item)
+        sector_name = str(item.get("sector", "") or "").strip()
+        if not sector_name:
+            continue
+        b = str(item.get("bias", "neutral") or "neutral").strip().lower()
+        if b == "positive": b = "bullish"
+        elif b == "negative": b = "bearish"
+        item["bias"] = b if b in valid_bias else "neutral"
+        item["why"] = str(item.get("why", "") or "").strip()
+        cleaned_sectors.append({"sector": sector_name, "bias": item["bias"], "why": item["why"]})
+    data["sector_impacts"] = cleaned_sectors
+
+    # tradeability — normalize to object
+    trade_raw = data.get("tradeability", {})
+    if isinstance(trade_raw, str):
+        trade_raw = {"classification": trade_raw}
+    if not isinstance(trade_raw, dict):
+        trade_raw = {}
+    classification = str(trade_raw.get("classification", "no_edge") or "no_edge").strip().lower()
+    if classification not in {"actionable_now", "wait_for_confirmation", "no_edge"}:
+        classification = "no_edge"
+    data["tradeability"] = {
+        "classification": classification,
+        "priced_in_assessment": str(trade_raw.get("priced_in_assessment", "") or "").strip()[:500],
+        "remaining_impact_state": str(trade_raw.get("remaining_impact_state", "") or "untouched").strip().lower(),
+        "reason": str(trade_raw.get("reason", "") or "").strip()[:500],
+        "what_to_do": str(trade_raw.get("what_to_do", "") or "").strip()[:500],
+    }
+    # Enforce: no_edge means empty assessment
+    if classification == "no_edge":
+        data["tradeability"]["what_to_do"] = data["tradeability"]["what_to_do"] or "No trade."
+        data["tradeability"]["priced_in_assessment"] = ""
+
+    # impact_triggers — validate structure
+    triggers = data.get("impact_triggers", {}) or {}
+    if not isinstance(triggers, dict):
+        triggers = {}
+    killers = triggers.get("impact_killers", []) or []
+    amplifiers = triggers.get("impact_amplifiers", []) or []
+
+    # Clean killers
+    clean_killers = []
+    for item in killers:
+        if isinstance(item, dict) and str(item.get("trigger", "")).strip():
+            clean_killers.append({
+                "trigger": str(item["trigger"]).strip()[:300],
+                "why": str(item.get("why", "") or "").strip()[:300]
+            })
+    # Clean amplifiers
+    clean_amplifiers = []
+    for item in amplifiers:
+        if isinstance(item, dict) and str(item.get("trigger", "")).strip():
+            clean_amplifiers.append({
+                "trigger": str(item["trigger"]).strip()[:300],
+                "why": str(item.get("why", "") or "").strip()[:300]
+            })
+
+    # Enforce limits by impact_score
+    score = data.get("core_view", {}).get("impact_score", 0)
+    if score == 0:
+        clean_killers, clean_amplifiers = [], []
+    elif score <= 2:
+        clean_killers = clean_killers[:1]
+        clean_amplifiers = clean_amplifiers[:1]
+    else:
+        clean_killers = clean_killers[:3]
+        clean_amplifiers = clean_amplifiers[:3]
+
+    data["impact_triggers"] = {
+        "impact_killers": clean_killers,
+        "impact_amplifiers": clean_amplifiers
+    }
+
+    # evidence_quality — validate structure
+    eq = data.get("evidence_quality", {}) or {}
+    if not isinstance(eq, dict):
+        eq = {}
+    confirmed = eq.get("confirmed", []) or []
+    unknowns = eq.get("unknowns_risks", []) or []
+    clean_confirmed = [str(x).strip()[:200] for x in confirmed if isinstance(x, str) and str(x).strip()][:4]
+    clean_unknowns = [str(x).strip()[:200] for x in unknowns if isinstance(x, str) and str(x).strip()][:3]
+    data["evidence_quality"] = {"confirmed": clean_confirmed, "unknowns_risks": clean_unknowns}
+
+    # executive_summary
+    data["executive_summary"] = str(data.get("executive_summary", "") or "").strip()
+
+    # decision_trace — normalize structure
+    dt_raw = data.get("decision_trace", {}) or {}
+    data["decision_trace"] = {
+        "event_identification": str(dt_raw.get("event_identification", "") or "").strip()[:1000],
+        "entity_mapping": str(dt_raw.get("entity_mapping", "") or "").strip()[:1000],
+        "impact_scoring": str(dt_raw.get("impact_scoring", "") or "").strip()[:1000],
+        "remaining_impact": str(dt_raw.get("remaining_impact", "") or "").strip()[:1000],
+        "tradeability_reasoning": str(dt_raw.get("tradeability_reasoning", "") or "").strip()[:1000],
+    }
+
+    return data
+
+# =========================================================
+# INDIAN NEWS FILTER
+# =========================================================
+async def filter_indian_news(title: str, description: str = "") -> Optional[Dict[str, Any]]:
+    """
+    Analyzes Indian news using Gemini and the provided strict prompt.
+    """
+    logger = logging.getLogger("india_agent")
+    logger.setLevel(logging.INFO)
+
+    if not logger.handlers:
+        _ch = logging.StreamHandler()
+        _ch.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S UTC"))
+        logger.addHandler(_ch)
+
+    if not os.getenv("GEMINI_API_KEY") or not client:
+        logger.error("Gemini API key not configured.")
+        return None
+
+    try:
+        user_msg = f"Headline: {title}\nDescription: {description[:500]}"
+        
+        response = None
+        for attempt in range(3):
+            try:
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=MODEL_NAME,
+                    contents=[user_msg],
+                    config=types.GenerateContentConfig(
+                        system_instruction=INDIAN_MARKET_CLASSIFY_PROMPT,
+                        temperature=0.1,
+                        max_output_tokens=300,
+                        response_mime_type="application/json"
+                    )
+                )
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    logger.info(f"[TOKEN USAGE - INDIAN_FILTER] In: {response.usage_metadata.prompt_token_count} | Out: {response.usage_metadata.candidates_token_count} | Total: {response.usage_metadata.total_token_count}")
+                break
+            except Exception as e:
+                err_msg = str(e).lower()
+                # Retry on transient network errors or Gemini API overloads
+                is_transient = any(x in err_msg for x in ["503", "unavailable", "overload", "getaddrinfo", "timeout", "connection", "11001"])
+                
+                if attempt < 2 and is_transient:
+                    logger.warning(f"Transient error during analysis ({type(e).__name__}). Retrying {attempt+1}/3 in 3s...")
+                    await asyncio.sleep(3)
+                    continue
+                else:
+                    raise e
+
+        if not response or not response.text:
+            logger.warning(f"Empty response from Gemini for: {title[:50]}...")
+            return None
+
+        # Clean markdown code blocks if the model wrapped it
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"):
+            raw_text = raw_text[7:]
+        elif raw_text.startswith("```"):
+            raw_text = raw_text[3:]
+            
+        if raw_text.endswith("```"):
+            raw_text = raw_text[:-3]
+            
+        raw_text = raw_text.strip()
+        logger.info(f"RAW TEXT FROM GEMINI: {raw_text}")
+
+        try:
+            data = json.loads(raw_text)
+        except json.JSONDecodeError:
+            import ast
+            logger.error("Failed standard JSON parse, attempting literal_eval fallback")
+            data = ast.literal_eval(raw_text)
+        
+        # 1. Validation & Enum Clamping
+        ALLOWED_CATEGORIES = {"corporate_event", "government_policy", "macro_data", "global_macro_impact", "commodity_macro", "sector_trend", "institutional_activity", "sentiment_indicator", "price_action_noise", "routine_market_update", "other"}
+        ALLOWED_RELEVANCE = {"High Useful", "Useful", "Medium", "Neutral", "Noisy"}
+
+        category = str(data.get("category", "routine_market_update")).strip()
+        if category not in ALLOWED_CATEGORIES:
+            category = "other"
+
+        relevance = str(data.get("relevance", "Noisy")).strip()
+        if relevance not in ALLOWED_RELEVANCE:
+            relevance = "Noisy"
+
+        # 2. Strict Parse Mentions
+        company_mentions = data.get("company_mentions", [])
+        if not isinstance(company_mentions, list):
+            company_mentions = []
+            
+        # 3. Call Resolver safely
+        if not company_mentions:
+            resolved_symbols = []
+        else:
+            from app.core.tools import strict_resolve_symbols
+            resolved_symbols = strict_resolve_symbols(company_mentions)
+            
+        # 4. Final Output Formation
+        return {
+            "category": category,
+            "relevance": relevance,
+            "reason": str(data.get("reason", "No specific reason provided.")),
+            "symbols": resolved_symbols
+        }
+
+    except Exception as e:
+        logger.error(f"Error during Indian news analysis: {e}")
+        return None
+
+# =========================================================
+# TOOL REGISTRY + EXECUTOR
+# =========================================================
+
+TOOL_REGISTRY = {
+    "source_credibility": get_source_credibility,
+    "novelty": classify_novelty,
+    "market_snapshot": get_broad_market_snapshot,
+    "stock_context": get_stock_context,
+    "peer_reaction": get_peer_reaction,
+    "resolve_company": resolve_company,
 }
 
 
-def _parse_duration_minutes(label: str) -> int:
-    """Map duration label (from the agents) to minutes with regex fallback."""
-    import re
-    key = (label or "").strip().lower()
-
-    # Direct map lookup first
-    if key in _DURATION_MAP:
-        return _DURATION_MAP[key]
-
-    # Try regex: patterns like "4 hours", "1-2 days", "30 minutes"
-    # Handle ranges like "1-2 days" → take the midpoint
-    unit_to_min = {"minute": 1, "hour": 60, "day": 1440, "week": 10080, "month": 43200}
-    m = re.search(r"([\d]+)\s*[-–to]+\s*([\d]+)\s*(minute|hour|day|week|month)", key)
-    if m:
-        low, high, unit = int(m.group(1)), int(m.group(2)), m.group(3)
-        return int((low + high) / 2 * unit_to_min.get(unit, 60))
-
-    m = re.search(r"([\d.]+)\s*(minute|hour|day|week|month)", key)
-    if m:
-        qty, unit = float(m.group(1)), m.group(2)
-        return int(qty * unit_to_min.get(unit, 60))
-
-    return 360  # fallback 6 hours
+def _resolve_args(args: dict, results: dict) -> dict:
+    """Resolve dependency chains like symbol_from → resolve_company output."""
+    resolved = dict(args)
+    if "symbol_from" in resolved:
+        ref = resolved.pop("symbol_from", "")
+        if ref.startswith("resolve_company:"):
+            target_name = ref.split(":", 1)[1].strip().lower()
+            for res in results.get("resolved_companies", []):
+                if isinstance(res, dict) and res.get("status") == "resolved":
+                    if res.get("input_name", "").lower() == target_name:
+                        resolved["symbol"] = res.get("symbol")
+                        break
+    return resolved
 
 
-def create_predictions(news_id: int, analysis: dict):
-    """
-    Parse directional_bias from analysis and insert prediction rows.
-    Called automatically after save_analysis.
-    """
-    from db import execute_query as _exec, fetch_one as _fetch_one
-    from tools import _safe_last_close
+def execute_tool_plan(plan: dict, published_iso: str, source: str, title: str, summary: str) -> tuple[dict, list[str]]:
+    """Execute the Planner's tool calls. Returns (results_dict, valid_symbols)."""
+    results = {}
+    valid_symbols = []
 
-    directional = analysis.get("directional_bias", {})
-    if not directional:
-        return
+    for tool_call in plan.get("tools", []):
+        if not isinstance(tool_call, dict):
+            continue
+        name = tool_call.get("name")
+        args = tool_call.get("args", {})
 
-    time_mod = analysis.get("time_modeling", {})
-    default_duration_label = time_mod.get("impact_duration", "Short-term") or "Short-term"
-
-    # Use the exact moment analysis was triggered (just saved as analyzed_at)
-    # This ensures start_time is the analyst's click time, not publish time
-    news_row = _fetch_one("SELECT analyzed_at FROM news WHERE id = %s", (news_id,))
-    now = (news_row["analyzed_at"] if news_row and news_row.get("analyzed_at") 
-           else datetime.now(timezone.utc))
-    created = 0
-
-    for asset_class in ("crypto", "forex", "global_equities"):
-        items = directional.get(asset_class, []) or []
-        for item in items:
-            try:
-                raw_asset = item.get("asset") or item.get("pair") or item.get("index") or ""
-                direction = item.get("direction", "Neutral") or "Neutral"
-
-                # Skip neutral with no expected move
-                raw_move = item.get("expected_move_pct", "0.5%")
-                predicted_move = _parse_move_pct(raw_move)
-                if predicted_move == 0 and direction.lower() == "neutral":
-                    continue
-
-                symbol = _normalize_asset_symbol(raw_asset, asset_class)
-                if not symbol:
-                    _log(f"[PRED] Could not normalize asset '{raw_asset}' ({asset_class}), skipping")
-                    continue
-
-                # Duration
-                duration_label = item.get("expected_duration") or default_duration_label
-                duration_minutes = _parse_duration_minutes(duration_label)
-
-                # Fetch start price
-                start_price = _safe_last_close(symbol)
-                if start_price is None:
-                    # CoinGecko fallback for crypto
-                    if asset_class == "crypto":
-                        try:
-                            from tools import get_crypto_prices
-                            cg_name = raw_asset.strip().lower()
-                            prices = get_crypto_prices([cg_name])
-                            if cg_name in prices:
-                                start_price = float(prices[cg_name])
-                        except Exception:
-                            pass
-                    if start_price is None:
-                        _log(f"[PRED] No price for {symbol}, skipping")
-                        continue
-
-                # Target price
-                if direction.lower() in ("positive", "bullish"):
-                    target_price = start_price * (1 + predicted_move / 100)
-                elif direction.lower() in ("negative", "bearish"):
-                    target_price = start_price * (1 - predicted_move / 100)
-                else:
-                    target_price = start_price
-
-                # Insert
-                _exec(
-                    """INSERT INTO predictions
-                        (news_id, asset, asset_class, direction,
-                         predicted_move_pct, expected_duration_label, expected_duration_minutes,
-                         start_time, start_price, target_price)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (news_id, symbol, asset_class, direction,
-                     predicted_move, duration_label, duration_minutes,
-                     now, start_price, round(target_price, 6)),
-                )
-                created += 1
-                _log(f"[PRED] Created: {symbol} {direction} {predicted_move}% "
-                     f"({duration_label}) start={start_price}")
-
-            except Exception as e:
-                _log(f"[PRED] Error creating prediction for {raw_asset}: {e}")
+        if name not in TOOL_REGISTRY:
+            # Handle legacy tool names from planner
+            if name == "price":
+                name = "stock_context"
+            elif name == "reaction":
+                name = "stock_context"
+            elif name == "relative_performance":
+                name = "stock_context"
+            else:
                 continue
 
-    _log(f"[PRED] Created {created} prediction(s) for news_id={news_id}")
+        # Inject hidden dependencies
+        if name == "source_credibility":
+            args["source"] = source
+        elif name == "novelty":
+            args["title"] = title
+            args["summary"] = summary
+        elif name == "stock_context":
+            args["published_iso"] = published_iso
+        elif name == "peer_reaction":
+            args["published_iso"] = published_iso
+
+        args_resolved = _resolve_args(args, results)
+
+        # Symbol validation gate for stock tools
+        if name in {"stock_context", "peer_reaction"}:
+            symbol = args_resolved.get("symbol")
+            if not symbol or not _validate_nse_symbol(symbol.upper()):
+                _log(f"   [TOOL REJECTED] {name}: invalid symbol {symbol}")
+                continue
+
+        try:
+            result = TOOL_REGISTRY[name](**args_resolved)
+
+            if name == "novelty":
+                results["novelty_context"] = result
+            elif name == "source_credibility":
+                results["source_context"] = result
+            elif name == "market_snapshot":
+                results["broad_market"] = result
+            elif name == "stock_context":
+                results.setdefault("stock_context", {})[args_resolved["symbol"].upper()] = result
+            elif name == "peer_reaction":
+                results.setdefault("peer_reaction", {})[args_resolved["symbol"].upper()] = result
+            elif name == "resolve_company":
+                results.setdefault("resolved_companies", []).append(result)
+
+            # Track valid symbols
+            if name == "resolve_company" and result.get("symbol"):
+                valid_symbols.append(result["symbol"].upper())
+            elif name in {"stock_context", "peer_reaction"} and args_resolved.get("symbol"):
+                valid_symbols.append(args_resolved["symbol"].upper())
+
+        except Exception as e:
+            _log(f"   [TOOL ERROR] {name}({args_resolved}) failed: {e}")
+
+    return results, list(set(valid_symbols))
 
 
+# =========================================================
+# SINGLE-PASS ANALYSIS
+# =========================================================
 
+def _run_analysis(title: str, summary: str, published_iso: str, source: str) -> dict:
+    """Planner → Tools → LLM → Minimal Post-Processing."""
+    if not client or not MODEL_NAME:
+        raise ValueError("Missing MODEL_NAME or GEMINI_API_KEY")
+
+    # 1. Planner
+    plan = run_planner(title=title, summary=summary)
+
+    # 2. Execute tools
+    tool_results, valid_symbols = execute_tool_plan(plan, published_iso, source, title, summary)
+    tool_results["_market_status"] = get_market_status()
+    _log(f"   [EXECUTOR] Valid symbols: {valid_symbols}")
+
+    # 3. Build prompt — inject analysis time context
+    analysis_now = datetime.now(timezone.utc)
+    analysis_ist = analysis_now.astimezone(__import__('zoneinfo').ZoneInfo('Asia/Kolkata'))
+    time_elapsed_minutes = None
+    if published_iso:
+        try:
+            pub_dt = datetime.fromisoformat(published_iso.replace('Z', '+00:00'))
+            time_elapsed_minutes = int((analysis_now - pub_dt).total_seconds() / 60)
+        except Exception:
+            pass
+
+    hard_facts = {
+        "title": title or "",
+        "summary": summary or "",
+        "published_iso": published_iso or "",
+        "source": source or "",
+        "analysis_time_ist": analysis_ist.strftime("%Y-%m-%d %H:%M IST"),
+        "time_elapsed_minutes": time_elapsed_minutes,
+    }
+    schema_text = str(SCHEMA_TEMPLATE)
+    user_prompt = build_compact_prompt(hard_facts, schema_text)
+    user_prompt += f"\n\nEVIDENCE BUNDLE:\n```json\n{json.dumps(tool_results, indent=2, default=str)}\n```\n"
+
+    # 4. LLM call
+    config = types.GenerateContentConfig(
+        system_instruction=INDIAN_SYSTEM_PROMPT,
+        temperature=0.25,
+        response_mime_type="application/json",
+    )
+    contents = [types.Content(role="user", parts=[types.Part(text=user_prompt)])]
+
+    _log("   [AGENT] Single-pass LLM call...")
+    response = client.models.generate_content(model=MODEL_NAME, contents=contents, config=config)
+
+    usage = response.usage_metadata
+    if usage:
+        p_in = usage.prompt_token_count or 0
+        p_out = usage.candidates_token_count or 0
+        _log(f"   [TOKENS] In: {p_in} | Out: {p_out} | Total: {p_in + p_out}")
+
+    text = _get_text_response(response)
+    result = _safe_json_loads(text)
+    result = normalize_to_schema(result)
+
+    # 5. MINIMAL post-processing (only 3 rules)
+
+    # Rule 1: NOISE enforcement
+    if result.get("signal_bucket") == "NOISE":
+        result["core_view"]["impact_score"] = 0
+        result["tradeability"] = {
+            "classification": "no_edge", "priced_in_assessment": "",
+            "reason": "No actionable event.",
+            "what_to_do": "No trade.", "entry_trigger": "",
+            "exit_trigger": "", "invalidation": ""
+        }
+        result["stock_impacts"] = []
+        result["sector_impacts"] = []
+        result["impact_triggers"] = {"impact_killers": [], "impact_amplifiers": []}
+        result["evidence_quality"] = {"confirmed": [], "unknowns_risks": []}
+
+    # Rule 2: Symbol hallucination check
+    valid_set = set(valid_symbols)
+    verified_stocks = []
+    for st in result.get("stock_impacts", []):
+        sym = st.get("symbol", "").upper()
+        if not sym:
+            continue
+        if sym in valid_set or _validate_nse_symbol(sym):
+            verified_stocks.append(st)
+        else:
+            _log(f"   [REJECTED] Hallucinated symbol: {sym}")
+    result["stock_impacts"] = verified_stocks
+
+    # Rule 3: Confidence cap
+    result["core_view"]["confidence"] = min(result["core_view"].get("confidence", 0), 85)
+
+    # Rule 4: Low impact cleanup
+    if result["core_view"]["impact_score"] < 4:
+        # Keep at most 1 stock if DIRECT with capped confidence
+        if result.get("signal_bucket") == "DIRECT" and result.get("stock_impacts"):
+            result["stock_impacts"] = result["stock_impacts"][:1]
+            result["stock_impacts"][0]["confidence"] = min(result["stock_impacts"][0].get("confidence", 0), 30)
+        else:
+            result["stock_impacts"] = []
+        result["sector_impacts"] = []
+
+    result["_meta"] = {"planner_output": plan, "orchestrator": "v6"}
+    return result
+
+
+# =========================================================
+# PUBLIC ENTRYPOINT
+# =========================================================
+
+def analyze_indian_news(
+    title: str,
+    published_iso: str,
+    summary: str = "",
+    source: str = "",
+    current_news_id: int | None = None,
+) -> dict | None:
+    """Main entrypoint for Indian news analysis."""
+    if not client or not MODEL_NAME:
+        _log("[INDIA ANALYZE] Missing MODEL_NAME or GEMINI_API_KEY")
+        return None
+
+    for attempt in range(MAX_RETRIES):
+        try:
+            _log(f"[INDIA ATTEMPT {attempt + 1}/{MAX_RETRIES}] {title[:120]}")
+            result = _run_analysis(title=title, summary=summary, published_iso=published_iso, source=source)
+
+            # Timestamp
+            meta = result.get("_meta", {})
+            meta["analysis_timestamp_utc"] = datetime.now(timezone.utc).isoformat()
+            result["_meta"] = meta
+
+            # Sanitize event_type
+            event = result.get("event", {}) or {}
+            if "price_action" in str(event.get("event_type", "")).lower():
+                event["event_type"] = "other"
+            result["event"] = event
+
+            return result
+
+        except Exception as e:
+            _log(f"[INDIA ERROR] {e}")
+            traceback.print_exc()
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(BASE_DELAY * (attempt + 1))
+    return None
+
+
+# =========================================================
+# SAVE FLOW
+# =========================================================
+
+def save_indian_analysis(news_id: int, analysis: dict) -> None:
+    """Save analysis to DB. All rich data in analysis_data JSONB."""
+    event = analysis.get("event", {}) or {}
+    core_view = analysis.get("core_view", {}) or {}
+    stock_impacts = analysis.get("stock_impacts", [])
+    primary_symbol = stock_impacts[0].get("symbol", "")[:50] if stock_impacts else None
+
+    query = """
+        UPDATE indian_news SET
+            analyzed          = TRUE,
+            analyzed_at       = NOW(),
+            analysis_data     = %s,
+            impact_score      = %s,
+            market_bias       = %s,
+            signal_bucket     = %s,
+            news_category     = %s,
+            news_relevance    = %s,
+            primary_symbol    = %s,
+            executive_summary = %s,
+            decision_trace    = %s
+        WHERE id = %s
+    """
+
+    impact_score_val = int(core_view.get("impact_score", 0) or 0)
+    market_bias_val = (core_view.get("market_bias") or "neutral").lower()
+    bucket_val = (analysis.get("signal_bucket") or "unclassified").upper()
+
+    params = (
+        json.dumps(analysis),
+        impact_score_val,
+        market_bias_val[:20],
+        bucket_val[:20],
+        (event.get("event_type", "general"))[:100],
+        "High" if impact_score_val >= 6 else "Medium" if impact_score_val >= 3 else "Low",
+        primary_symbol,
+        (analysis.get("executive_summary", "") or "")[:2000],
+        json.dumps(analysis.get("decision_trace", {})),
+        news_id,
+    )
+
+    execute_query(query, params)
+    _log(f"[INDIA SAVE] news_id={news_id}")
+
+
+#     try:
+#         create_watchlists(news_id, analysis)
+#     except Exception as e:
+#         _log(f"[INDIA SUG] Failed for news_id={news_id}: {e}")
+
+
+# def create_watchlists(news_id: int, analysis: dict) -> None:
+#     """Create watchlist/suggestion rows from stock_impacts."""
+#     stock_impacts = analysis.get("stock_impacts", []) or []
+#     core_view = analysis.get("core_view", {}) or {}
+#     horizon = str(core_view.get("horizon", "short_term") or "short_term").strip()
+#     trade_obj = analysis.get("tradeability", {}) or {}
+#     tradeability = trade_obj.get("classification", "no_edge") if isinstance(trade_obj, dict) else str(trade_obj)
+
+#     if tradeability == "no_edge" or not stock_impacts:
+#         return
+
+#     try:
+#         execute_query("DELETE FROM suggestions WHERE news_id = %s", (news_id,))
+#     except Exception:
+#         pass
+
+#     created = 0
+#     for item in stock_impacts[:5]:
+#         try:
+#             asset = (item.get("symbol") or "").strip().upper()
+#             if not asset:
+#                 continue
+
+#             direction = _normalize_direction(item.get("bias", "unclear"))
+#             confidence = int(item.get("confidence", 0) or 0)
+#             why = (item.get("why") or "").strip()
+
+#             if direction == "bullish" and confidence >= 70:
+#                 sug_type = "buy"
+#             elif direction == "bearish" and confidence >= 70:
+#                 sug_type = "sell"
+#             elif direction in {"bullish", "bearish", "mixed"} and confidence >= 40:
+#                 sug_type = "watch"
+#             else:
+#                 sug_type = "avoid"
+
+#             reasoning = why or "Signal exists but conviction is limited."
+#             reaction = (item.get("reaction") or "uncertain").strip()
+#             timing = (item.get("timing") or "short_term").strip()
+#             market_logic = f"Reaction: {reaction}. Timing: {timing}. Horizon: {horizon}."
+
+#             execute_query(
+#                 """INSERT INTO suggestions
+#                     (news_id, suggestion_type, asset, direction, reasoning, market_logic,
+#                      time_window, invalidation, confidence)
+#                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+#                 (news_id, sug_type, asset,
+#                  direction if direction in {"bullish", "bearish", "mixed", "neutral"} else "",
+#                  reasoning[:1000], market_logic[:1000], horizon[:100], "", confidence),
+#             )
+#             created += 1
+#         except Exception as e:
+#             _log(f"[INDIA SUG] Error for {item.get('symbol', '')}: {e}")
+
+#     _log(f"[INDIA SUG] Created {created} watchlist row(s) for news_id={news_id}")
