@@ -38,6 +38,10 @@ let currentEventId = null;
 let newsData = [];
 let sourceFilters = [];
 const analyzingArticles = new Set();
+let eventsData = [];
+let currentDashboardView = 'feed';
+let eventsBoardSearch = '';
+let eventsBoardSortBy = 'latest';
 
 let showOnlyAnalyzed = false;
 let currentRelevance = 'all';
@@ -75,6 +79,16 @@ const scrollTopBtn = document.getElementById('scrollTopBtn');
 const connectionBanner = document.getElementById('connectionBanner');
 const toastContainer = document.getElementById('toastContainer');
 const themeToggle = document.getElementById('themeToggle');
+const filtersSection = document.getElementById('filtersSection');
+const feedView = document.getElementById('feedView');
+const eventsBoardView = document.getElementById('eventsBoardView');
+const eventsBoardGrid = document.getElementById('eventsBoardGrid');
+const eventsBoardEmpty = document.getElementById('eventsBoardEmpty');
+const eventsBoardSearchInput = document.getElementById('eventsBoardSearchInput');
+const eventsBoardSort = document.getElementById('eventsBoardSort');
+const eventsBoardTotal = document.getElementById('eventsBoardTotal');
+const eventsBoardArticles = document.getElementById('eventsBoardArticles');
+const eventsBoardLastUpdate = document.getElementById('eventsBoardLastUpdate');
 
 // ---- Mobile Menu Elements ----
 const mobileMenuTrigger = document.getElementById('mobileMenuTrigger');
@@ -140,6 +154,19 @@ function formatTime(dateStr) {
         hour: '2-digit', minute: '2-digit', hour12: true,
         timeZone: 'Asia/Kolkata'
     });
+}
+
+function formatDateTimeIST(dateStr) {
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--';
+    return date.toLocaleString('en-IN', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Asia/Kolkata'
+    }) + ' IST';
 }
 
 // ---- HTML Escaping ----
@@ -2340,6 +2367,74 @@ document.querySelectorAll('.drawer-link').forEach(link => {
     });
 });
 
+function setDashboardNavState() {
+    const navItems = document.querySelectorAll('[data-view-target]');
+    navItems.forEach((item) => {
+        const target = item.getAttribute('data-view-target');
+        const isActive = target === currentDashboardView;
+
+        if (item.classList.contains('nav-view-btn')) {
+            item.classList.toggle('is-active', isActive);
+            item.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        }
+
+        if (item.classList.contains('drawer-link')) {
+            item.classList.toggle('active', isActive);
+            item.setAttribute('aria-current', isActive ? 'page' : 'false');
+        }
+    });
+}
+
+function applyDashboardViewState() {
+    const isEventsView = currentDashboardView === 'events';
+    if (filtersSection) filtersSection.style.display = isEventsView ? 'none' : '';
+    if (feedView) feedView.style.display = isEventsView ? 'none' : 'block';
+    if (eventsBoardView) eventsBoardView.style.display = isEventsView ? 'block' : 'none';
+    setDashboardNavState();
+}
+
+window.switchDashboardView = function (targetView, options = {}) {
+    currentDashboardView = targetView === 'events' ? 'events' : 'feed';
+    applyDashboardViewState();
+
+    if (currentDashboardView === 'events') {
+        renderEventsBoard(eventsData);
+        if (!eventsData.length) {
+            fetchEvents();
+        }
+    }
+
+    if (options.scroll !== false) {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+};
+
+function bindDashboardViewNavigation() {
+    document.querySelectorAll('[data-view-target]').forEach((item) => {
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            const targetView = item.getAttribute('data-view-target') || 'feed';
+            window.switchDashboardView(targetView);
+        });
+    });
+}
+
+function setupEventsBoardControls() {
+    if (eventsBoardSearchInput) {
+        eventsBoardSearchInput.addEventListener('input', () => {
+            eventsBoardSearch = eventsBoardSearchInput.value.trim().toLowerCase();
+            renderEventsBoard(eventsData);
+        });
+    }
+
+    if (eventsBoardSort) {
+        eventsBoardSort.addEventListener('change', () => {
+            eventsBoardSortBy = eventsBoardSort.value;
+            renderEventsBoard(eventsData);
+        });
+    }
+}
+
 if (analyzedToggle) {
     analyzedToggle.addEventListener('click', () => {
         showOnlyAnalyzed = !showOnlyAnalyzed;
@@ -2357,6 +2452,10 @@ async function init() {
     if (relevanceFilter) {
         relevanceFilter.value = 'all';
     }
+
+    bindDashboardViewNavigation();
+    setupEventsBoardControls();
+    window.switchDashboardView('feed', { scroll: false });
 
     // Setup Infinite Scroll (IntersectionObserver)
     const sentinel = document.getElementById('infiniteScrollSentinel');
@@ -2512,11 +2611,118 @@ async function fetchEvents() {
         const res = await apiFetch(`${API_BASE}/api/events/india`);
         const json = await res.json();
         if (json.status === 'success') {
-            renderEvents(json.data);
+            eventsData = Array.isArray(json.data) ? json.data : [];
+            renderEvents(eventsData);
+            renderEventsBoard(eventsData);
         }
     } catch (e) {
         console.error("Failed to fetch events", e);
     }
+}
+
+function sortEventsForBoard(events) {
+    const sorted = [...events];
+    if (eventsBoardSortBy === 'articles') {
+        sorted.sort((a, b) => (Number(b.article_count) || 0) - (Number(a.article_count) || 0));
+        return sorted;
+    }
+    if (eventsBoardSortBy === 'title') {
+        sorted.sort((a, b) => (a.event_title || '').localeCompare(b.event_title || ''));
+        return sorted;
+    }
+    sorted.sort((a, b) => new Date(b.latest_update).getTime() - new Date(a.latest_update).getTime());
+    return sorted;
+}
+
+function updateEventsBoardSummary(events) {
+    if (eventsBoardTotal) eventsBoardTotal.textContent = (events.length || 0).toLocaleString();
+
+    const totalArticles = events.reduce((sum, ev) => sum + (Number(ev.article_count) || 0), 0);
+    if (eventsBoardArticles) eventsBoardArticles.textContent = totalArticles.toLocaleString();
+
+    let latestTs = 0;
+    events.forEach((ev) => {
+        const ts = new Date(ev.latest_update).getTime();
+        if (!Number.isNaN(ts) && ts > latestTs) latestTs = ts;
+    });
+
+    if (eventsBoardLastUpdate) {
+        if (!latestTs) {
+            eventsBoardLastUpdate.textContent = '--';
+            eventsBoardLastUpdate.removeAttribute('title');
+        } else {
+            const iso = new Date(latestTs).toISOString();
+            eventsBoardLastUpdate.textContent = timeAgo(iso);
+            eventsBoardLastUpdate.setAttribute('title', formatDateTimeIST(iso));
+        }
+    }
+}
+
+function renderEventsBoard(events) {
+    if (!eventsBoardGrid || !eventsBoardEmpty) return;
+
+    const safeEvents = Array.isArray(events) ? events : [];
+    updateEventsBoardSummary(safeEvents);
+
+    let boardEvents = safeEvents;
+    if (eventsBoardSearch) {
+        boardEvents = boardEvents.filter((ev) => {
+            const title = (ev.event_title || '').toLowerCase();
+            const eventId = (ev.event_id || '').toLowerCase();
+            return title.includes(eventsBoardSearch) || eventId.includes(eventsBoardSearch);
+        });
+    }
+
+    boardEvents = sortEventsForBoard(boardEvents);
+
+    if (!boardEvents.length) {
+        eventsBoardGrid.innerHTML = '';
+        eventsBoardEmpty.style.display = 'flex';
+        return;
+    }
+
+    eventsBoardEmpty.style.display = 'none';
+    const fourHoursAgo = Date.now() - (4 * 60 * 60 * 1000);
+
+    eventsBoardGrid.innerHTML = boardEvents.map((ev, idx) => {
+        const title = ev.event_title || 'Untitled Event';
+        const articleCount = Number(ev.article_count) || 0;
+        const lastUpdateTs = new Date(ev.latest_update).getTime();
+        const isLive = !Number.isNaN(lastUpdateTs) && lastUpdateTs > fourHoursAgo;
+        const activeClass = currentEventId === ev.event_id ? ' active' : '';
+        const attention = articleCount >= 10 ? 'High Attention' : articleCount >= 4 ? 'Medium Attention' : 'Emerging';
+        const timeLabel = formatDateTimeIST(ev.latest_update);
+
+        return `
+            <article class="events-board-card${activeClass}" data-event-idx="${idx}" style="--event-index:${idx};" title="Open event details">
+                <div class="events-board-card-top">
+                    <span class="events-board-chip ${isLive ? 'chip-live' : 'chip-tracking'}">${isLive ? 'Live' : 'Tracking'}</span>
+                    <span class="events-board-time">${timeAgo(ev.latest_update)}</span>
+                </div>
+                <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
+                <p class="events-board-card-meta">${escapeHtml(timeLabel)}</p>
+                <div class="events-board-card-bottom">
+                    <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
+                    <span class="events-board-open">${attention}</span>
+                </div>
+            </article>
+        `;
+    }).join('');
+
+    eventsBoardGrid.querySelectorAll('.events-board-card').forEach((card) => {
+        card.addEventListener('click', () => {
+            const idx = Number(card.getAttribute('data-event-idx'));
+            const selectedEvent = boardEvents[idx];
+            if (!selectedEvent) return;
+
+            showEventDetail(
+                selectedEvent.event_id,
+                selectedEvent.event_title || 'Untitled Event',
+                Number(selectedEvent.article_count) || 0,
+                selectedEvent.latest_update
+            );
+        });
+    });
 }
 
 function renderEvents(events) {
@@ -2525,13 +2731,16 @@ function renderEvents(events) {
 
     if (!events || events.length === 0) {
         section.style.display = 'none';
+        if (container) container.innerHTML = '';
         return;
     }
 
     section.style.display = 'block';
 
     let html = '';
-    events.forEach(ev => {
+    events.forEach((ev, idx) => {
+        const eventTitle = ev.event_title || 'Untitled Event';
+        const articleCount = Number(ev.article_count) || 0;
         const timeAgoStr = timeAgo(ev.latest_update);
         const isActive = currentEventId === ev.event_id;
         // Dynamic "Live" indicator if updated in last 4 hours (Indian market is more volatile)
@@ -2552,17 +2761,32 @@ function renderEvents(events) {
                     <span class="event-label">EVENT TRACKER</span>
                     <span class="event-time">${timeAgoStr}</span>
                 </div>
-                <h3 class="event-card-title">${escapeHtml(ev.event_title)}</h3>
+                <h3 class="event-card-title">${escapeHtml(eventTitle)}</h3>
                 <div class="event-footer">
                     <div class="event-updates">
                         <span class="event-pulse" style="display: ${isLive ? 'flex' : 'none'}"></span>
-                        <span>${ev.article_count} articles</span>
+                        <span>${articleCount} articles</span>
                     </div>
                 </div>
             </div>
         `;
     });
     container.innerHTML = html;
+
+    container.querySelectorAll('.event-card').forEach((card) => {
+        card.addEventListener('click', () => {
+            const idx = Number(card.getAttribute('data-event-idx'));
+            const selectedEvent = events[idx];
+            if (!selectedEvent) return;
+
+            showEventDetail(
+                selectedEvent.event_id,
+                selectedEvent.event_title || 'Untitled Event',
+                Number(selectedEvent.article_count) || 0,
+                selectedEvent.latest_update
+            );
+        });
+    });
 
     // Attach once to avoid stacking listeners on every refresh.
     if (!container.dataset.scrollBound) {

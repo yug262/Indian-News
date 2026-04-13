@@ -55,6 +55,12 @@
                 <div class="nav-links-desktop">
                     <!-- <a href="/predictions" class="nav-link">Predictions</a> -->
                     <!-- <a href="/global" class="nav-link">Global & Crypto</a> -->
+                    <button class="nav-view-btn is-active" data-view-target="feed" type="button" aria-pressed="true">
+                        Feed
+                    </button>
+                    <button class="nav-view-btn" data-view-target="events" type="button" aria-pressed="false">
+                        Events
+                    </button>
                     <button class="btn-chart-header" onclick="openChartPanel()">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -121,12 +127,20 @@
         <div class="drawer-section">
             <h3 class="drawer-section-title">Navigation</h3>
             <nav class="drawer-nav">
-                <a href="/" class="drawer-link active">
+                <a href="#" class="drawer-link view-switch-link active" data-view-target="feed" aria-current="page">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
                         <polyline points="9 22 9 12 15 12 15 22" />
                     </svg>
-                    Indian Dashboard
+                    Live Feed
+                </a>
+                <a href="#" class="drawer-link view-switch-link" data-view-target="events">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                        <polyline points="2 17 12 22 22 17"></polyline>
+                        <polyline points="2 12 12 17 22 12"></polyline>
+                    </svg>
+                    Events
                 </a>
                 <!-- <a href="/predictions" class="drawer-link">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -161,7 +175,7 @@
     </div>
 
     <!-- Filters -->
-    <section class="filters-section">
+    <section class="filters-section" id="filtersSection">
         <div class="filters-inner">
             <div class="filters-scroll" id="filtersContainer" role="tablist" aria-label="Filter by source">
                 <button class="filter-pill active" data-source="all" role="tab" aria-selected="true">All
@@ -192,6 +206,7 @@
 
     <!-- Main Content -->
     <main class="main-content">
+        <div id="feedView">
 
         <!-- Active Events Section -->
         <section class="events-section" id="eventsSection" style="display: none;">
@@ -282,6 +297,63 @@
             <h3 id="emptyStateTitle">No articles yet</h3>
             <p id="emptyStateMsg">The monitor is fetching news. Articles will appear here automatically.</p>
         </div>
+        </div>
+
+        <section id="eventsBoardView" class="events-board-view" style="display: none;">
+            <div class="events-board-hero">
+                <div class="events-board-copy">
+                    <p class="events-board-kicker">Market Intelligence</p>
+                    <h2 class="events-board-title">Events Command Center</h2>
+                    <p class="events-board-subtitle">Track every active market event from the backend in one professional view. Click any event card to open full article-level details.</p>
+                </div>
+                <div class="events-board-stats">
+                    <div class="events-summary-card">
+                        <span class="events-summary-label">Active Events</span>
+                        <span class="events-summary-value" id="eventsBoardTotal">0</span>
+                    </div>
+                    <div class="events-summary-card">
+                        <span class="events-summary-label">Linked Articles</span>
+                        <span class="events-summary-value" id="eventsBoardArticles">0</span>
+                    </div>
+                    <div class="events-summary-card">
+                        <span class="events-summary-label">Latest Update</span>
+                        <span class="events-summary-value" id="eventsBoardLastUpdate">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="events-board-controls">
+                <div class="events-board-search">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <input id="eventsBoardSearchInput" class="events-board-search-input" type="text"
+                        placeholder="Search events by title..." aria-label="Search events" autocomplete="off">
+                </div>
+                <div class="events-board-sort-wrap">
+                    <select id="eventsBoardSort" class="events-board-sort" aria-label="Sort events">
+                        <option value="latest">Latest update</option>
+                        <option value="articles">Most articles</option>
+                        <option value="title">Title A-Z</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="eventsBoardGrid" class="events-board-grid"></div>
+
+            <div id="eventsBoardEmpty" class="events-board-empty" style="display: none;">
+                <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <h3>No matching events</h3>
+                <p>Try a different search term or sort option.</p>
+            </div>
+        </section>
     </main>
 
     <!-- Live Trade View Panel -->
