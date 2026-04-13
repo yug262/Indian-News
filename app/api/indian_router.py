@@ -1,23 +1,57 @@
-from fastapi import APIRouter, Query, Request
-from fastapi.responses import StreamingResponse
-from typing import Optional, Any, List, Dict
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from datetime import datetime, timezone
+from typing import Optional, Any, List
+import os
+import json
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import os
-import logging
-import requests
+from app.core.db import fetch_all, fetch_one
+from app.core.agent import analyze_indian_news, save_indian_analysis
 
-logger = logging.getLogger("indian_router")
-
-from app.core.agent import analyze_indian_news, save_indian_analysis   
-from app.core.db import fetch_all, fetch_one, get_latest_indian_update_id
-from app.core.realtime import manager, trigger_analysis_completed, trigger_analysis_failed
+# Thread pool for blocking database operations
+executor = ThreadPoolExecutor(max_workers=40)
 
 router = APIRouter()
-INDIAN_SERVER_START = datetime.now(timezone.utc)
-executor = ThreadPoolExecutor(max_workers=20)
+SERVER_START = datetime.now(timezone.utc)
 
+# ===== WebSocket Connection Manager =====
+class ConnectionManager:
+    """Manages WebSocket connections for real-time multi-user updates."""
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        print(f"[WS] Client connected. Total: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        print(f"[WS] Client disconnected. Total: {len(self.active_connections)}")
+
+    async def broadcast(self, message: dict):
+        """Send a JSON message to all connected clients."""
+        if not self.active_connections:
+            return
+        data = json.dumps(message, default=str)
+        stale = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(data)
+            except Exception:
+                stale.append(connection)
+        for conn in stale:
+            self.disconnect(conn)
+
+ws_manager = ConnectionManager()
+
+# Async helpers to run blocking DB operations
+async def run_in_executor(func, *args):
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(executor, lambda: func(*args))
+
+# Async wrapper with timeout
 async def run_with_timeout(func, timeout_sec, *args):
     try:
         loop = asyncio.get_event_loop()
@@ -26,6 +60,22 @@ async def run_with_timeout(func, timeout_sec, *args):
     except asyncio.TimeoutError:
         raise TimeoutError(f"Operation timed out after {timeout_sec} seconds")
 
+# ===== Server-Side Stats Cache (avoids hammering COUNT(*) on every poll) =====
+import time as _time
+_stats_cache = {"global": {"data": None, "ts": 0}, "indian": {"data": None, "ts": 0}}
+_STATS_CACHE_TTL = 15  # seconds — shared cache across all users
+
+# ===== Analysis Concurrency Limiter =====
+# Prevents thread pool exhaustion: max 5 analyses running at the same time
+_analysis_semaphore = asyncio.Semaphore(5)
+_active_analyses = 0
+
+
+
+# ===== API Endpoints =====
+@router.get("/api/health")
+def health_check():
+    return {"status": "ok", "version": "1.0.1_fallbacks_active"}
 
 @router.get("/api/events/india")
 async def get_indian_events():
@@ -45,8 +95,7 @@ async def get_indian_events():
                 ev['latest_update'] = ev['latest_update'].isoformat()
         return {"status": "success", "data": events}
     except Exception as e:
-        logger.error(f"Failed to fetch events: {e}")
-        return {"status": "error", "message": "Failed to fetch events"}
+        return {"status": "error", "message": str(e)}
 
 @router.get("/api/indian_news")
 async def get_indian_news(source: str = Query(None, description="Filter news by source name"), 
@@ -60,8 +109,11 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
     """Get Indian news articles, sorted by newest first."""
     
     query = """SELECT id, title, link, published, source, description, image_url,
-        impact_score, impact_summary, analyzed, created_at,
-        analysis_data, news_relevance, news_category,
+        impact_score, impact_summary, affected_markets, affected_sectors, impact_duration,
+        analyzed, created_at, market_mode, usd_bias, crypto_bias, trade_actions,
+        execution_window, confidence, forex_pairs, affected_forex_pairs, conviction_score, volatility_regime,
+        dollar_liquidity_state, position_size_percent, safe_haven_flow, research_text,
+        is_new_information, tools_used, analysis_data, news_relevance, news_category,
         news_impact_level, news_reason, symbols,
         market_bias, signal_bucket, primary_symbol, executive_summary, event_id, event_title
     FROM indian_news WHERE 1=1"""
@@ -89,7 +141,7 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
     
     if search and search.strip():
         search_term = f"%{search.strip()}%"
-        query += " AND (title ILIKE %s OR description ILIKE %s OR source ILIKE %s)"
+        query += " AND (LOWER(title) ILIKE %s OR LOWER(description) ILIKE %s OR LOWER(source) ILIKE %s)"
         params.extend([search_term, search_term, search_term])
         
     query += " ORDER BY published DESC LIMIT %s OFFSET %s"
@@ -106,29 +158,29 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
 
         return {"status": "success", "count": len(articles), "data": articles}
     except Exception as e:
-        logger.error(f"Failed to fetch indian news: {e}")
-        return {"status": "error", "message": "Failed to fetch news"}
-
+        return {"status": "error", "message": str(e)}
 
 @router.get("/api/indian_sources")
 async def get_indian_sources():
     """Get list of distinct Indian news sources available (with NULL check)."""
     try:
         rows = await run_with_timeout(
-            lambda: fetch_all("SELECT DISTINCT source FROM indian_news WHERE source IS NOT NULL ORDER BY source"),
+            lambda: fetch_all(
+                "SELECT DISTINCT source FROM indian_news WHERE source IS NOT NULL ORDER BY source"
+            ),
             10
         )
         sources = [r["source"] for r in rows if r.get("source")]
         return {"status": "success", "data": sources}
     except Exception as e:
-        logger.error(f"Failed to fetch sources: {e}")
-        return {"status": "error", "message": "Failed to fetch sources"}
-
+        return {"status": "error", "message": str(e)}
 
 @router.get("/api/nse/holidays")
-async def get_nse_holidays():
+def get_nse_holidays():
     """Return the list of NSE holidays fetched dynamically from NSE."""
-    def _fetch_holidays():
+    try:
+        import requests
+        from datetime import datetime
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Referer": "https://www.nseindia.com/resources/exchange-trading-holidays",
@@ -152,46 +204,35 @@ async def get_nse_holidays():
         if not holidays:
             # Simple fallback for 2026 if API fails
             holidays = { "2026-03-31": "Shri Mahavir Jayanti" } 
-        return holidays
 
-    try:
-        holidays = await run_with_timeout(_fetch_holidays, 15)
         return {"status": "success", "data": holidays}
     except Exception as e:
-        logger.error(f"Failed to fetch NSE holidays: {e}")
-        return {"status": "error", "message": "Failed to fetch holidays"}
+        return {"status": "error", "message": str(e)}
 
 
 # ---- NSE LIVE CHART API ----
 
 @router.get("/api/nse/pairs")
-async def get_nse_pairs(q: str = Query("", description="Search query")):
+def get_nse_pairs(q: str = Query("", description="Search query")):
     """Return the list of available NSE pairs (only those with candle data)."""
     try:
         if q:
-            rows = await run_with_timeout(
-                lambda: fetch_all(
-                    "SELECT DISTINCT symbol FROM nse_candles_3m WHERE symbol ILIKE %s ORDER BY symbol LIMIT 50",
-                    (f"%{q}%",)
-                ), 10
+            rows = fetch_all(
+                "SELECT DISTINCT symbol FROM nse_candles_3m WHERE symbol ILIKE %s ORDER BY symbol LIMIT 50",
+                (f"%{q}%",)
             )
         else:
-            rows = await run_with_timeout(
-                lambda: fetch_all("SELECT DISTINCT symbol FROM nse_candles_3m ORDER BY symbol LIMIT 100"),
-                10
-            )
+            rows = fetch_all("SELECT DISTINCT symbol FROM nse_candles_3m ORDER BY symbol LIMIT 100")
         
         return {"status": "success", "data": [r["symbol"] for r in rows]}
     except Exception as e:
-        logger.error(f"Failed to fetch NSE pairs: {e}")
-        return {"status": "error", "message": "Failed to fetch pairs"}
+        return {"status": "error", "message": str(e)}
 
 @router.get("/api/nse/candles")
-async def get_nse_candles(symbol: str = Query(..., description="Symbol e.g. TCS"), limit: int = Query(200)):
+def get_nse_candles(symbol: str = Query(..., description="Symbol e.g. TCS"), limit: int = Query(200)):
     """Return latest 3-minute candles for an NSE symbol, newest first."""
-    def _fetch_candles():
+    try:
         clean_symbol = symbol.replace("NSE:", "").upper()
-        resolved_symbol = clean_symbol
         
         rows = fetch_all(
             """SELECT time, open, high, low, close
@@ -218,7 +259,7 @@ async def get_nse_candles(symbol: str = Query(..., description="Symbol e.g. TCS"
                     LIMIT %s""",
                     (candidate, limit)
                 )
-                resolved_symbol = candidate
+                symbol = candidate # fallback used
 
         data = []
         for r in rows:
@@ -237,19 +278,14 @@ async def get_nse_candles(symbol: str = Query(..., description="Symbol e.g. TCS"
                 "low": float(r["low"]),
                 "close": float(r["close"]),
             })
-        return resolved_symbol, data
-
-    try:
-        resolved_symbol, data = await run_with_timeout(_fetch_candles, 15)
-        return {"status": "success", "symbol": resolved_symbol, "data": data}
+        return {"status": "success", "symbol": symbol, "data": data}
     except Exception as e:
-        logger.error(f"Failed to fetch candles for {symbol}: {e}")
-        return {"status": "error", "message": "Failed to fetch candle data"}
+        return {"status": "error", "message": str(e)}
 
 @router.get("/api/nse/news-markers")
-async def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter by NSE pair (e.g., TCS)")):
+def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter by NSE pair (e.g., TCS)")):
     """Return Indian news articles with their affected NSE stocks for chart overlay."""
-    def _fetch_markers():
+    try:
         if symbol:
             clean_symbol = symbol.replace("NSE:", "").upper()
             query = """
@@ -263,7 +299,7 @@ async def get_nse_news_markers(symbol: Optional[str] = Query(None, description="
             ORDER BY published DESC
             LIMIT 500
             """
-            return fetch_all(query, (clean_symbol,))
+            rows = fetch_all(query, (clean_symbol,))
         else:
             query = """
             SELECT id, title, published, symbols
@@ -273,13 +309,11 @@ async def get_nse_news_markers(symbol: Optional[str] = Query(None, description="
             ORDER BY published DESC
             LIMIT 500
             """
-            return fetch_all(query)
-
-    try:
-        rows = await run_with_timeout(_fetch_markers, 20)
+            rows = fetch_all(query)
         
         data = []
         for r in rows:
+            # Column in DB is 'symbols' (text[])
             syms = r.get("symbols", [])
             
             p = r["published"]
@@ -299,73 +333,21 @@ async def get_nse_news_markers(symbol: Optional[str] = Query(None, description="
         
         return {"status": "success", "symbol": symbol, "count": len(data), "data": data}
     except Exception as e:
-        logger.error(f"Failed to fetch news markers: {e}")
-        return {"status": "error", "message": "Failed to fetch news markers"}
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
 
-
-
-
-try:
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    current_dir = os.getcwd()
-
-# API Routes for News Feed
-
-@router.get("/api/indian_marker")
-async def get_indian_marker():
-    """Ultra-lightweight endpoint to check if frontend feed needs refreshing."""
-    try:
-        # We track max_id (for new inserts) and analyzed_count (for finished analyses)
-        row = await run_with_timeout(
-            lambda: fetch_one(
-                "SELECT MAX(id) as max_id, COUNT(CASE WHEN analyzed = true THEN 1 END) as analyzed_count "
-                "FROM indian_news"
-            ), 5
-        )
-        if not row or row["max_id"] is None:
-            return {"status": "success", "marker": "empty"}
-        
-        marker = f"{row['max_id']}_{row['analyzed_count']}"
-        return {"status": "success", "marker": marker}
-    except Exception as e:
-        logger.error(f"Failed to fetch marker: {e}")
-        return {"status": "error", "message": "Failed to fetch marker"}
-
-
-@router.get("/api/indian_stream")
-async def indian_stream(request: Request):
-    """
-    Server-Sent Events (SSE) endpoint for real-time dashboard updates.
-    This version uses a direct push-based architecture (ConnectionManager).
-    """
-    async def event_generator():
-        # Subscribe to the Real-Time manager's queue
-        queue = await manager.subscribe()
-        try:
-            while True:
-                # Check if the client disconnected
-                if await request.is_disconnected():
-                    break
-                
-                try:
-                    # Wait for a message from the queue with a 30s timeout for heartbeats
-                    message = await asyncio.wait_for(queue.get(), timeout=30.0)
-                    yield message
-                except asyncio.TimeoutError:
-                    # Send a heartbeat to keep the tunnel/connection alive
-                    yield ": heartbeat\n\n"
-        finally:
-            # Cleanup on disconnect
-            await manager.unsubscribe(queue)
-    
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
 
 @router.get("/api/indian_stats")
 async def get_indian_stats():
-    """Get dashboard statistics for the footer, for Indian news."""
+    """Get dashboard statistics for the footer, for Indian news (with server-side caching)."""
+    now = _time.time()
+    cached = _stats_cache["indian"]
+    if cached["data"] and (now - cached["ts"]) < _STATS_CACHE_TTL:
+        return cached["data"]
+    
     try:
         row = await run_with_timeout(
             lambda: fetch_one(
@@ -373,10 +355,11 @@ async def get_indian_stats():
                 "COUNT(CASE WHEN analyzed = true THEN 1 END) as analyzed, "
                 "COUNT(DISTINCT source) as sources "
                 "FROM indian_news"
-            ), 10
+            ),
+            10
         )
-        uptime_seconds = int((datetime.now(timezone.utc) - INDIAN_SERVER_START).total_seconds())
-        return {
+        uptime_seconds = int((datetime.now(timezone.utc) - SERVER_START).total_seconds())
+        result = {
             "status": "success",
             "data": {
                 "total_articles": row["total"] if row else 0,
@@ -385,14 +368,27 @@ async def get_indian_stats():
                 "uptime_seconds": uptime_seconds
             }
         }
+        _stats_cache["indian"] = {"data": result, "ts": now}
+        return result
+    except TimeoutError:
+        if cached["data"]:
+            return cached["data"]
+        return {"status": "error", "message": "Stats query timeout"}
     except Exception as e:
-        logger.error(f"Failed to fetch stats: {e}")
-        return {"status": "error", "message": "Failed to fetch stats"}
+        if cached["data"]:
+            return cached["data"]
+        return {"status": "error", "message": str(e)}
 
 @router.post("/api/indian_analyze/{news_id}")
 async def analyze_single_indian_article(news_id: int):
     """Analyze a single Indian news article by its DB id using the Indian Agent (async, non-blocking, with timeout)."""
-  
+    global _active_analyses
+    
+    # Enforce concurrency limit — prevent thread pool exhaustion under heavy load
+    if _active_analyses >= 5:
+        return {"status": "error", "message": "Server is busy analyzing other articles. Please try again in a moment."}
+    
+    _active_analyses += 1
     try:
         # Run blocking DB call in thread pool with 120 second timeout
         article = await run_with_timeout(
@@ -428,33 +424,76 @@ async def analyze_single_indian_article(news_id: int):
                 )
                 print(f"[API] Indian Analysis saved for news_id={news_id}")
                 
-                # Success: Notify all devices via Pusher immediately
-                await asyncio.to_thread(trigger_analysis_completed, news_id)
+                # Re-fetch the full updated article from DB so frontend gets flat fields
+                try:
+                    updated_row = await run_with_timeout(
+                        lambda: fetch_one(
+                            """SELECT id, title, link, published, source, description, image_url,
+                                impact_score, impact_summary, analyzed, created_at,
+                                market_bias, signal_bucket, news_category, news_relevance,
+                                primary_symbol, executive_summary, analysis_data, symbols,
+                                event_id, event_title
+                            FROM indian_news WHERE id = %s""", (news_id,)
+                        ),
+                        10
+                    )
+                    if updated_row:
+                        # Convert datetime objects for JSON serialization
+                        if isinstance(updated_row.get('published'), datetime):
+                            updated_row['published'] = updated_row['published'].isoformat()
+                        if isinstance(updated_row.get('created_at'), datetime):
+                            updated_row['created_at'] = updated_row['created_at'].isoformat()
+                        row_dict = dict(updated_row)
+                        # Broadcast to all connected WebSocket clients
+                        await ws_manager.broadcast({"type": "article_updated", "scope": "indian", "article": row_dict})
+                        return {"status": "success", "data": analysis, "article": row_dict}
+                except Exception as row_err:
+                    print(f"[API] Re-fetch after save failed (non-critical): {row_err}")
                 
-                # Return immediately to avoid timeouts (don't re-fetch from DB here)
-                return {"status": "success", "news_id": news_id}
-
+                return {"status": "success", "data": analysis}
             except TimeoutError:
                 print(f"[API] save_indian_analysis TIMEOUT for news_id={news_id}")
-                await asyncio.to_thread(trigger_analysis_failed, news_id)
                 return {"status": "error", "message": "Analysis completed but save timed out"}
             except Exception as save_err:
                 print(f"[API] save_indian_analysis FAILED for news_id={news_id}: {save_err}")
-                await asyncio.to_thread(trigger_analysis_failed, news_id)
+                import traceback
+                traceback.print_exc()
                 return {"status": "error", "message": f"Save failed: {save_err}"}
         else:
             print(f"[API] analyze_indian_news returned None for news_id={news_id}")
-            await asyncio.to_thread(trigger_analysis_failed, news_id)
             return {"status": "error", "message": "Analysis failed — click to retry"}
     except TimeoutError as te:
         print(f"[API] TIMEOUT in indian_analyze endpoint for news_id={news_id}: {te}")
-        await asyncio.to_thread(trigger_analysis_failed, news_id)
         return {"status": "error", "message": "Analysis timeout - took too long (2 min limit)"}
     except asyncio.CancelledError:
         print(f"[API] Indian Analysis cancelled for news_id={news_id}")
-        await asyncio.to_thread(trigger_analysis_failed, news_id)
         return {"status": "error", "message": "Analysis was cancelled"}
     except Exception as e:
         print(f"[API] Exception in indian_analyze endpoint: {e}")
-        await asyncio.to_thread(trigger_analysis_failed, news_id)
-        return {"status": "error", "message": str(e)}
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+    finally:
+        _active_analyses = max(0, _active_analyses - 1)
+
+# ===== WebSocket Endpoint =====
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time multi-user dashboard updates.
+    
+    Clients connect here to receive instant notifications when:
+    - An article is analyzed (article_updated)
+    - New articles arrive (new_articles)
+    """
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive; listen for client pings
+            data = await websocket.receive_text()
+            # Respond to ping with pong
+            if data == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception:
+        ws_manager.disconnect(websocket)

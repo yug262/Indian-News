@@ -16,7 +16,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '
 
 from app.core.db import execute_query, fetch_one, execute_returning
 from app.core.realtime import trigger_news_created
-from app.core.india_agent import analyze_indian_news as filter_indian_news
+from app.core.agent import filter_indian_news
 from app.core.event_engine import process_event_grouping
 
 # ══════════════════════════════════════════════════════
@@ -207,7 +207,7 @@ async def save_article(article):
         # Users can trigger full analysis via the UI "Analyze" button.
         """
         analysis = await asyncio.to_thread(
-            analyze_indian_news,
+            filter_indian_news,
             title=article['title'],
             published_iso=article['published'].isoformat() if hasattr(article['published'], 'isoformat') else str(article['published']),
             summary=article['description'],

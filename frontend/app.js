@@ -1,5 +1,5 @@
 // =========================================
-// Indian News Intelligence — Frontend Logic
+// CryptoWire — Frontend Logic (Production)
 // =========================================
 
 const DEFAULT_LOCAL_API = (() => {
@@ -13,10 +13,20 @@ const DEFAULT_LOCAL_API = (() => {
     }
     return '';
 })();
-// Using window.APP_CONFIG from config.js for unified configuration
 const API_BASE = (window.APP_CONFIG && typeof window.APP_CONFIG.BACKEND_URL === 'string' && window.APP_CONFIG.BACKEND_URL.trim())
     ? window.APP_CONFIG.BACKEND_URL.trim()
     : DEFAULT_LOCAL_API;
+
+// Wrapper around fetch() that injects the ngrok-skip-browser-warning header
+// to bypass the ngrok free-tier interstitial page (ERR_NGROK_6024).
+function apiFetch(url, options = {}) {
+    const headers = options.headers instanceof Headers
+        ? options.headers
+        : new Headers(options.headers || {});
+    headers.set('ngrok-skip-browser-warning', '1');
+    return fetch(url, { ...options, headers });
+}
+
 const REFRESH_INTERVAL = 30_000; // 30 seconds
 const SEARCH_DEBOUNCE = 300;
 const SCROLL_TOP_THRESHOLD = 400;
@@ -43,6 +53,7 @@ const articlesPerPage = 20;
 let hasMoreArticles = true;
 let isLoadingMore = false;
 const seenArticleIds = new Set();
+let _fetchAbortController = null; // Abort stale fetch requests
 
 // ---- DOM Elements ----
 const newsGrid = document.getElementById('newsGrid');
@@ -77,11 +88,11 @@ let isDrawerOpen = false;
 // ---- Theme Toggle ----
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('ini-theme', theme);
+    localStorage.setItem('cw-theme', theme);
 }
 
 // Load saved theme (default: dark)
-const savedTheme = localStorage.getItem('ini-theme') || 'dark';
+const savedTheme = localStorage.getItem('cw-theme') || 'dark';
 applyTheme(savedTheme);
 
 themeToggle.addEventListener('click', () => {
@@ -703,7 +714,9 @@ function renderTradeActions(actions) {
     return html;
 }
 
-
+function renderForexPairs(article) {
+    return '';
+}
 
 function renderNewInfoBadge(article) {
     if (article.is_new_information == null) return '';
@@ -764,8 +777,170 @@ function renderAnalyzeButton(article) {
     `;
 }
 
+function renderPredictionBadge(article) {
+    if (!article.prediction_count) return '';
+    const status = (article.prediction_status || 'pending').toLowerCase();
 
+    // Status emoji mapping
+    const emojis = {
+        hit: '✅',
+        overperformed: '🚀',
+        underperformed: '⚠️',
+        wrong: '❌',
+        pending: '⏱️',
+        error: '⚠️'
+    };
 
+    const emoji = emojis[status] || '⏱️';
+    const statusCap = status.charAt(0).toUpperCase() + status.slice(1);
+
+    // Show single best prediction or generic mult-count
+    if (article.prediction_count === 1 && article.prediction_asset) {
+        const moveTxt = article.predicted_move_pct ? ` (${article.predicted_move_pct}%)` : '';
+        const displayAsset = article.prediction_asset_display_name || formatSymbol(article.prediction_asset);
+        return `<span class="pred-summary-badge pred-status-${status}">
+            ${emoji} ${escapeHtml(displayAsset)}${moveTxt} · ${statusCap}
+        </span>`;
+    } else {
+        return `<span class="pred-summary-badge pred-status-${status}">
+            ${emoji} ${article.prediction_count} Predictions · ${statusCap}
+        </span>`;
+    }
+}
+
+function renderSuggestionsTab(article) {
+    let suggestions = null;
+
+    // Try new JSONB structure
+    if (article.analysis_data && typeof article.analysis_data === 'object' && article.analysis_data.suggestions) {
+        suggestions = article.analysis_data.suggestions;
+    } else if (typeof article.analysis_data === 'string') {
+        try {
+            const parsed = JSON.parse(article.analysis_data);
+            if (parsed.suggestions) suggestions = parsed.suggestions;
+        } catch (e) { }
+    }
+
+    // Try fallback structure from flat DB
+    if (!suggestions && article.suggestions_data) {
+        if (typeof article.suggestions_data === 'object') {
+            suggestions = article.suggestions_data;
+        } else if (typeof article.suggestions_data === 'string') {
+            try { suggestions = JSON.parse(article.suggestions_data); } catch (e) { }
+        }
+    }
+
+    // If still nothing, but flat status exists, build it
+    if (!suggestions && article.suggestions_status) {
+        suggestions = {
+            status: article.suggestions_status,
+            summary: article.suggestions_summary || '',
+            buy: [], sell: [], watch: [], avoid: []
+        };
+    }
+
+    if (!suggestions) {
+        return '<p style="color:var(--text-muted); font-size:0.85rem; padding:12px 0">Suggestions unavailable or still analyzing.</p>';
+    }
+
+    const st = suggestions.status || 'failed';
+
+    if (st === 'failed') {
+        return '<p style="color:var(--text-muted); font-size:0.85rem; padding:12px 0">Suggestions unavailable (analysis failed).</p>';
+    }
+
+    if (st === 'no_clean_setup') {
+        return `
+            <div style="background:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:16px; margin-top:12px;">
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                    <span style="font-size:1.2rem;">⚖️</span>
+                    <strong style="color:var(--text-main); font-size:1rem;">No Clean Setup</strong>
+                </div>
+                <p style="color:var(--text-secondary); font-size:0.9rem; line-height:1.5;">${escapeHtml(suggestions.summary || 'No high-conviction trade idea based on this event.')}</p>
+            </div>
+        `;
+    }
+
+    let html = '';
+
+    if (suggestions.summary) {
+        html += `<p style="color:var(--text-secondary); font-size:0.9rem; margin-bottom:16px; line-height:1.5; padding:0 4px;">${escapeHtml(suggestions.summary)}</p>`;
+    }
+
+    const groups = [
+        { key: 'buy', label: 'Buy / Long', color: 'var(--bullish)', bg: 'rgba(0, 212, 170, 0.1)', border: 'rgba(0, 212, 170, 0.4)' },
+        { key: 'sell', label: 'Sell / Short', color: 'var(--bearish)', bg: 'rgba(255, 71, 87, 0.1)', border: 'rgba(255, 71, 87, 0.4)' },
+        { key: 'watch', label: 'Watchlist', color: '#3b82f6', bg: 'rgba(59, 130, 246, 0.1)', border: 'rgba(59, 130, 246, 0.4)' },
+        { key: 'avoid', label: 'Avoid / Danger', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.1)', border: 'rgba(245, 158, 11, 0.4)' }
+    ];
+
+    let hasItems = false;
+
+    for (const g of groups) {
+        const items = suggestions[g.key];
+        if (Array.isArray(items) && items.length > 0) {
+            hasItems = true;
+            html += `
+                <div class="analysis-sub-section" style="margin-bottom:20px;">
+                    <div class="analysis-bars-title" style="color:${g.color}; border-bottom:1px solid ${g.border}; padding-bottom:4px;">
+                        ${g.label.toUpperCase()}
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:12px; margin-top:12px;">
+            `;
+
+            items.forEach(item => {
+                let asset = 'Unknown Asset';
+                let reason = '';
+                let logic = '';
+                let invalid = '';
+                let time_val = '';
+                let exp_move = '';
+                let confidence = '';
+
+                if (typeof item === 'string') {
+                    asset = 'Trade Idea';
+                    reason = item;
+                } else if (typeof item === 'object' && item !== null) {
+                    asset = item.asset || item.pair || item.index || item.symbol || item.name || 'Unknown Asset';
+                    reason = item.reasoning || item.reason || '';
+                    logic = item.market_logic || '';
+                    invalid = item.invalidation || '';
+                    time_val = item.time_window || '';
+                    exp_move = item.expected_move_pct || '';
+                    confidence = item.confidence || '';
+                }
+
+                const move = exp_move ? `<span style="background:${g.bg}; color:${g.color}; font-size:0.75rem; font-weight:700; padding:2px 8px; border-radius:4px;">🎯 Target: ${escapeHtml(String(exp_move))}</span>` : '';
+                const time = time_val ? `<span style="font-size:0.75rem; color:var(--text-muted); display:flex; align-items:center; gap:4px;">⏱️ ${escapeHtml(time_val)}</span>` : '';
+                const conf = confidence ? `<span style="font-size:0.7rem; text-transform:uppercase; border:1px solid var(--border-color); padding:1px 6px; border-radius:4px; color:var(--text-secondary);">Conf: ${escapeHtml(confidence)}</span>` : '';
+
+                html += `
+                    <div style="border-left:3px solid ${g.border}; padding-left:12px; background:var(--bg-main); padding:12px; border-radius:0 6px 6px 0; border-top:1px solid var(--border-color); border-right:1px solid var(--border-color); border-bottom:1px solid var(--border-color);">
+                        <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
+                            <div style="font-weight:700; font-size:1.05rem; color:var(--text-main);">${escapeHtml(asset)}</div>
+                            <div style="display:flex; gap:6px; align-items:center;">${conf} ${move}</div>
+                        </div>
+                        ${time}
+                        
+                        <div style="margin-top:10px; font-size:0.85rem; line-height:1.5;">
+                            ${reason ? `<p style="color:var(--text-secondary); margin-bottom:8px;"><strong style="color:var(--text-main);">Reasoning:</strong> ${escapeHtml(reason)}</p>` : ''}
+                            ${logic ? `<p style="color:var(--text-secondary); margin-bottom:8px;"><strong style="color:var(--text-main);">Market Logic:</strong> ${escapeHtml(logic)}</p>` : ''}
+                            ${invalid ? `<p style="color:#f59e0b; margin-top:8px; border-top:1px dashed var(--border-color); padding-top:8px;"><strong>⚠️ Invalidation:</strong> ${escapeHtml(invalid)}</p>` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += `</div></div>`;
+        }
+    }
+
+    if (!hasItems) {
+        return '<p style="color:var(--text-muted); font-size:0.85rem; padding:12px 0">No specific trade suggestions found.</p>';
+    }
+
+    return html;
+}
 
 function renderCardAnalysis(article) {
     if (!article.impact_score) return '';
@@ -845,7 +1020,7 @@ async function analyzeArticle(newsId, btnEl) {
     });
 
     try {
-        const res = await fetchWithTimeout(`${API_BASE}/api/indian_analyze/${newsId}`, { method: 'POST' }, 180000);
+        const res = await apiFetch(`${API_BASE}/api/indian_analyze/${newsId}`, { method: 'POST' });
         const json = await res.json();
 
         if (json.status === 'success') {
@@ -909,8 +1084,21 @@ async function analyzeArticle(newsId, btnEl) {
                 }
             }
 
-            await fetchNews(false, true); // Still run just in case for backend sync
+            // No need for fetchNews here — WebSocket handles cross-user sync instantly
         } else {
+            const isBusy = json.message && json.message.includes('busy');
+            if (isBusy) {
+                showToast('Server is busy — will auto-retry in 5s', 'info');
+                document.querySelectorAll(`.analyze-btn[data-id="${newsId}"]`).forEach(btn => {
+                    btn.innerHTML = '⏳ Queued — retrying...';
+                });
+                // Auto-retry after 5 seconds
+                setTimeout(() => {
+                    analyzingArticles.delete(newsId);
+                    analyzeArticle(newsId, btnEl);
+                }, 5000);
+                return; // Don't delete from analyzingArticles yet
+            }
             showToast('Analysis failed — click to retry', 'error');
             document.querySelectorAll(`.analyze-btn[data-id="${newsId}"]`).forEach(btn => {
                 btn.disabled = false;
@@ -1359,6 +1547,226 @@ function openModal(article) {
     document.body.style.overflow = 'hidden';
 }
 
+async function fetchPredictionsForModal(newsId) {
+    try {
+        const predTabBtn = document.getElementById('predTabBtn');
+        const loader = document.getElementById('predictionsLoader');
+        const content = document.getElementById('predictionsContent');
+        if (!predTabBtn || !loader || !content) return;
+
+        const res = await apiFetch(`${API_BASE}/api/predictions?news_id=${newsId}`);
+        const json = await res.json();
+
+        loader.style.display = 'none';
+
+        // Formatting helpers
+        const _symMap = {
+            "BTC-USD": "Bitcoin", "ETH-USD": "Ethereum", "SOL-USD": "Solana",
+            "XRP-USD": "Ripple", "ADA-USD": "Cardano", "DOGE-USD": "Dogecoin",
+            "AVAX-USD": "Avalanche", "LINK-USD": "Chainlink", "DOT-USD": "Polkadot",
+            "LTC-USD": "Litecoin", "UNI-USD": "Uniswap", "SHIB-USD": "Shiba Inu",
+            "MATIC-USD": "Polygon",
+            "EURUSD=X": "EUR/USD", "USDJPY=X": "USD/JPY", "GBPUSD=X": "GBP/USD",
+            "USDCHF=X": "USD/CHF", "AUDUSD=X": "AUD/USD", "USDCAD=X": "USD/CAD",
+            "NZDUSD=X": "NZD/USD", "DX-Y.NYB": "US Dollar Index (DXY)",
+            "GC=F": "Gold", "CL=F": "Crude Oil", "SI=F": "Silver",
+            "^GSPC": "S&P 500", "NQ=F": "NASDAQ", "^DJI": "Dow Jones",
+            "^N225": "Nikkei 225", "^GDAXI": "DAX", "^FTSE": "FTSE 100"
+        };
+        const formatSymbol = sym => _symMap[sym] || sym;
+        const formatPrice = p => {
+            if (!p) return '0.00';
+            const v = parseFloat(p);
+            if (v < 0.01) return v.toFixed(6);
+            if (v < 1) return v.toFixed(4);
+            return v.toFixed(2);
+        };
+
+        if (json.status === 'success' && json.data.length > 0) {
+            predTabBtn.style.display = 'inline-block';
+
+            let html = '<div class="predictions-list">';
+            json.data.forEach(p => {
+                const status = (p.status || 'pending').toLowerCase();
+                const dir = (p.direction || 'Neutral').toLowerCase();
+                const isBull = dir === 'bullish' || dir === 'positive' || dir === 'up';
+                const isBear = dir === 'bearish' || dir === 'negative' || dir === 'down';
+                const dirEmoji = isBull ? '📈' : (isBear ? '📉' : '➖');
+                const dirColor = isBull ? 'var(--bullish)' : (isBear ? 'var(--bearish)' : 'var(--text-muted)');
+
+                // Map status to our new classes
+                const statusCls = status === 'expired' ? 'missed'
+                    : status === 'wrong' ? 'missed'
+                        : status === 'overperformed' ? 'underrated'
+                            : status === 'underperformed' ? 'overstated'
+                                : status;
+
+                const finalMove = p.final_move_pct != null ? parseFloat(p.final_move_pct).toFixed(2) : (p.last_move_pct != null ? parseFloat(p.last_move_pct).toFixed(2) : '0.00');
+                const mfeRaw = p.mfe_pct != null ? parseFloat(p.mfe_pct) : 0;
+
+                // MFE & Target Signs
+                const mfeSign = isBear ? -1 : 1;
+                const mfeDisplay = (mfeSign * mfeRaw).toFixed(2);
+                const mfePrefix = mfeSign * mfeRaw > 0 ? '+' : '';
+
+                const targetPctRaw = p.predicted_move_pct ? parseFloat(p.predicted_move_pct) : 0;
+                let targetNum = isBear ? -targetPctRaw : targetPctRaw; // Real % move
+                const targetDisplay = (isBear ? '-' : '+') + targetPctRaw;
+
+                // Absolute colors
+                const curPct = parseFloat(finalMove);
+                const moveColor = curPct > 0 ? 'var(--bullish)' : (curPct < 0 ? 'var(--bearish)' : 'var(--text-muted)');
+                const mfeColor = mfeSign * mfeRaw > 0 ? 'var(--bullish)' : (mfeSign * mfeRaw < 0 ? 'var(--bearish)' : 'inherit');
+                const barColor = isBull ? 'var(--bullish)' : isBear ? 'var(--bearish)' : 'var(--text-muted)';
+                const biasBorderColor = isBull ? 'rgba(0, 212, 170, 0.4)' : isBear ? 'rgba(255, 71, 87, 0.4)' : 'rgba(255, 193, 7, 0.4)';
+                const dirCls = isBull ? 'dir-bullish' : isBear ? 'dir-bearish' : 'dir-neutral';
+
+                // Target Price Logic
+                const startPriceFloat = parseFloat(p.start_price || 0);
+                const currentPriceFloat = parseFloat(p.final_price || p.last_price || p.start_price);
+                const targetPriceFloat = startPriceFloat * (1 + (targetNum / 100));
+
+                // Progress to Target (0 to 100%) - based on max favorable
+                let mfeProgressPct = 0;
+                if (targetPctRaw > 0) {
+                    mfeProgressPct = Math.max(0, Math.min(100, (mfeRaw / targetPctRaw) * 100));
+                }
+
+                html += `
+                    <div class="forex-pair-card" style="border-left-color:${biasBorderColor}; margin-bottom: 24px; padding: 18px; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.15); background: var(--surface-light);">
+                        
+                        <!-- Header -->
+                        <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                            <div>
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span class="forex-pair-name" style="font-size:1.15rem; font-weight:700;">${escapeHtml(p.asset_display_name || formatSymbol(p.asset))}</span>
+                                    ${p.direction ? `<span class="forex-pair-dir ${dirCls}" style="padding:2px 8px; font-size:0.65rem; border-radius:12px;">${escapeHtml(p.direction.toUpperCase())}</span>` : ''}
+                                </div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 6px;">
+                                    Duration: <strong style="color: var(--text-secondary);">${escapeHtml(p.expected_duration_label)}</strong>
+                                </div>
+                            </div>
+                            <span class="pred-status-full pred-status-${statusCls}" style="padding: 4px 12px; font-size:0.75rem;">${(statusCls).toUpperCase()}</span>
+                        </div>
+
+                        <!-- 3-Column Stats Grid -->
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 24px; padding: 16px; background: rgba(0,0,0,0.15); border-radius: 8px; border: 1px solid rgba(255,255,255,0.03);">
+                            <div>
+                                <div style="font-size:0.65rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom: 4px;">Start Price</div>
+                                <div style="font-family:'JetBrains Mono',monospace; font-size:1rem; font-weight:700; color:var(--text-primary);">$${formatPrice(startPriceFloat)}</div>
+                                <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">Entry</div>
+                            </div>
+                            <div>
+                                <div style="font-size:0.65rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom: 4px;">${status === 'pending' ? 'Current Price' : 'Final Price'}</div>
+                                <div style="font-family:'JetBrains Mono',monospace; font-size:1rem; font-weight:700; color:var(--text-primary);">$${formatPrice(currentPriceFloat)}</div>
+                                <div style="font-size: 0.75rem; color: ${moveColor}; margin-top: 4px; font-weight: 600;">${curPct > 0 ? '+' : ''}${finalMove}%</div>
+                            </div>
+                            <div>
+                                <div style="font-size:0.65rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom: 4px;">Target Price</div>
+                                <div style="font-family:'JetBrains Mono',monospace; font-size:1rem; font-weight:700; color:${barColor};">$${formatPrice(targetPriceFloat)}</div>
+                                <div style="font-size: 0.75rem; color: ${barColor}; margin-top: 4px; font-weight: 600;">${targetDisplay}%</div>
+                            </div>
+                        </div>
+
+                        <!-- Max Favorable Progress Bar -->
+                        <div style="margin-top: 24px;">
+                            <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px;">
+                                <div style="font-size: 0.8rem; color: var(--text-secondary);">
+                                    Max Favorable Excursion <span style="color: var(--text-muted); font-size: 0.7rem; margin-left:4px;">(Best Outcome)</span>
+                                </div>
+                                <div style="font-family:'JetBrains Mono',monospace; font-size: 1.05rem; font-weight: 700; color: ${mfeColor};">
+                                    ${mfePrefix}${mfeDisplay}%
+                                </div>
+                            </div>
+                            
+                            <div style="position: relative; height: 8px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; box-shadow: inset 0 1px 3px rgba(0,0,0,0.3);">
+                                <div style="position: absolute; left: 0; top: 0; height: 100%; width: ${mfeProgressPct}%; background: ${barColor}; opacity: ${mfeProgressPct >= 100 ? '1' : '0.7'}; border-radius: 4px;"></div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; margin-top: 8px; font-size: 0.7rem; color: var(--text-muted);">
+                                <span>0%</span>
+                                <span>Progress strictly towards Target (${targetDisplay}%)</span>
+                                <span>100%</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            content.innerHTML = html;
+
+            // ALSO: Populate inline trackers in the Directional Bias tab
+            json.data.forEach(p => {
+                const encodedAsset = encodeURIComponent(p.asset);
+                const inlineBox = document.getElementById(`inline-pred-${newsId}-${encodedAsset}`);
+                // Try fallback logic if names don't match perfectly
+                let targetBox = inlineBox;
+                if (!targetBox) {
+                    // Try to find a matching prefix (e.g., 'bitcoin' vs 'BTC-USD')
+                    const allBoxes = document.querySelectorAll(`[id^='inline-pred-${newsId}-']`);
+                    for (const box of allBoxes) {
+                        const boxId = decodeURIComponent(box.id);
+                        if (boxId.toLowerCase().includes(p.asset.toLowerCase()) || p.asset.toLowerCase().includes(boxId.replace(`inline-pred-${newsId}-`, '').toLowerCase())) {
+                            targetBox = box;
+                            break;
+                        }
+                    }
+                }
+
+                if (targetBox) {
+                    const status = (p.status || 'pending').toLowerCase();
+                    const statusCap = status.toUpperCase();
+                    const finalMove = p.final_move_pct != null ? p.final_move_pct.toFixed(2) : (p.last_move_pct != null ? p.last_move_pct.toFixed(2) : '0.00');
+                    const mfeRaw = p.mfe_pct != null ? parseFloat(p.mfe_pct) : 0;
+                    const _dir = (p.direction || '').toLowerCase();
+                    const _isBear = _dir === 'bearish' || _dir === 'negative' || _dir === 'down';
+                    const _isBull = _dir === 'bullish' || _dir === 'positive' || _dir === 'up';
+                    const mfeSign = _isBear ? -1 : 1;
+                    const mfeDisplay = (mfeSign * mfeRaw).toFixed(2);
+                    const mfeColor = _isBull ? 'var(--bullish)' : _isBear ? 'var(--bearish)' : 'inherit';
+                    const mfePrefix = mfeSign > 0 ? '+' : '';
+                    const curPrice = p.final_price || p.last_price || p.start_price;
+
+                    targetBox.innerHTML = `
+                        <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:8px 10px;">
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="font-size:0.75rem; color:var(--text-muted); font-weight:600;">LIVE TRACKER <span style="font-size:0.65rem; color:var(--text-secondary);">(${p.asset_display_name || formatSymbol(p.asset)})</span></span>
+                                <span class="pred-status-full pred-status-${statusCls}" style="font-size:0.6rem; padding:2px 6px;">${statusCap}</span>
+                            </div>
+                            <div style="display:flex; justify-content:space-between; margin-top:8px; font-family:'JetBrains Mono', monospace; font-size:0.85rem;">
+                                <div>
+                                    <div style="color:var(--text-muted); font-size:0.65rem;">START</div>
+                                    <div>$${formatPrice(p.start_price)}</div>
+                                </div>
+                                <div style="text-align:right;">
+                                    <div style="color:var(--text-muted); font-size:0.65rem;">CURRENT</div>
+                                    <div>$${formatPrice(curPrice)}</div>
+                                </div>
+                            </div>
+                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:8px; padding-top:8px; border-top:1px dashed var(--border-color);">
+                                <div style="display:flex; flex-direction:column; gap:2px;">
+                                    <span style="font-size:0.65rem; color:var(--text-muted);">ACTUAL MOVE</span>
+                                    <span style="font-family:'JetBrains Mono', monospace; font-size:0.85rem; color:${parseFloat(finalMove) > 0 ? 'var(--bullish)' : parseFloat(finalMove) < 0 ? 'var(--bearish)' : 'inherit'}; font-weight:700;">${finalMove}%</span>
+                                </div>
+                                <div style="display:flex; flex-direction:column; gap:2px; text-align:right;">
+                                    <span style="font-size:0.65rem; color:var(--text-muted);">MAX FAVORABLE</span>
+                                    <span style="font-family:'JetBrains Mono', monospace; font-size:0.85rem; color:${mfeColor}; font-weight:700;">${mfePrefix}${mfeDisplay}%</span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+
+        } else {
+            content.innerHTML = '<p style="color:var(--text-muted); font-size:0.85rem; padding:12px 0;">No predictions tracked for this article.</p>';
+        }
+    } catch (err) {
+        console.error('Failed to load predictions:', err);
+    }
+}
+
+
+
 function closeModal() {
     modalOverlay.classList.remove('active');
     const modalEl = modalOverlay.querySelector('.modal');
@@ -1551,7 +1959,7 @@ function renderNews(articles, prepend = false, append = false) {
 // ---- Fetch Sources ----
 async function fetchSources() {
     try {
-        const res = await fetchWithTimeout(`${API_BASE}/api/indian_sources`);
+        const res = await apiFetch(`${API_BASE}/api/indian_sources`);
         const json = await res.json();
 
         if (json.status === 'success') {
@@ -1589,9 +1997,51 @@ async function fetchSources() {
 
 function formatSymbol(sym) {
     if (!sym) return '';
-    sym = sym.toUpperCase().trim();
+    sym = sym.toUpperCase();
 
-    // NSE stocks: just return the symbol as-is
+    // Hardcoded common indices/commodities
+    const friendlyNames = {
+        'GC=F': 'Gold',
+        'SI=F': 'Silver',
+        'CL=F': 'Crude Oil',
+        'NG=F': 'Natural Gas',
+        '^GSPC': 'S&P 500',
+        '^DJI': 'Dow Jones',
+        '^IXIC': 'Nasdaq',
+        '^NDX': 'Nasdaq 100',
+        '^RUT': 'Russell 2000',
+        '^FTSE': 'FTSE 100',
+        '^N225': 'Nikkei 225',
+        'BTC-USD': 'Bitcoin',
+        'ETH-USD': 'Ethereum',
+        'SOL-USD': 'Solana',
+        'DX-Y.NYB': 'US Dollar Index',
+        'ZN=F': '10-Year T-Note'
+    };
+
+    if (friendlyNames[sym]) {
+        return friendlyNames[sym];
+    }
+
+    // Try stripping suffixes for Forex / Crypto if no exact match
+    sym = sym.trim();
+    if (sym.endsWith('=X')) {
+        let pair = sym.replace('=X', '').trim();
+        // e.g. USDCNY -> USD/CNY
+        if (pair.length === 6) {
+            return `${pair.substring(0, 3)}/${pair.substring(3, 6)}`;
+        }
+        return pair;
+    }
+
+    if (sym.endsWith('-USD')) {
+        return sym.replace('-USD', '');
+    }
+
+    if (sym.endsWith('=F')) {
+        return sym.replace('=F', ' Futures');
+    }
+
     return sym;
 }
 
@@ -1599,6 +2049,7 @@ function formatSymbol(sym) {
 async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
     if (isFetching || (isLoadMore && !hasMoreArticles)) return;
 
+    // If it's a background refresh, we don't show the full-page loader
     if (!isBackgroundRefresh && !isLoadMore) {
         showRefreshIndicator();
     }
@@ -1609,14 +2060,23 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         if (indicator) indicator.style.display = 'flex';
     }
 
+    // Abort any previous in-flight fetch to prevent pile-up
+    if (_fetchAbortController) {
+        _fetchAbortController.abort();
+        _fetchAbortController = null;
+    }
+
     isFetching = true;
+    _fetchAbortController = new AbortController();
+    const signal = _fetchAbortController.signal;
 
     try {
         const offset = isLoadMore ? (currentPage + 1) * articlesPerPage : 0;
+        // background refresh always checks page 0
         const fetchOffset = isBackgroundRefresh ? 0 : offset;
         const fetchLimit = isBackgroundRefresh ? 20 : articlesPerPage;
 
-        let url = `${API_BASE}/api/indian_news?today_only=true&limit=${fetchLimit}&offset=${fetchOffset}`;
+        let url = `${API_BASE}/api/indian_news?today_only=false&limit=${fetchLimit}&offset=${fetchOffset}`;
 
         if (currentSource && currentSource !== 'all') {
             url += `&source=${encodeURIComponent(currentSource)}`;
@@ -1634,56 +2094,97 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
             url += `&search=${encodeURIComponent(searchQuery)}`;
         }
 
-        const res = await fetchWithTimeout(url, {}, 15000);
+        const res = await apiFetch(url, { signal });
         const json = await res.json();
 
         if (json.status === 'success') {
             const newArticles = json.data || [];
 
             if (isBackgroundRefresh) {
+                // Smart Refresh: Add new articles and update existing ones seamlessly
                 const trulyNew = [];
                 newArticles.forEach(a => {
                     if (!seenArticleIds.has(a.id)) {
                         trulyNew.push(a);
+                    } else {
+                        // Check for updates to existing articles (e.g. analyzed status changed)
+                        const existIdx = newsData.findIndex(x => x.id === a.id);
+                        if (existIdx !== -1) {
+                            const oldA = newsData[existIdx];
+                            if (oldA.analyzed !== a.analyzed || oldA.impact_score !== a.impact_score || oldA.prediction_count !== a.prediction_count || oldA.event_id !== a.event_id || oldA.symbols !== a.symbols) {
+                                a.featuredType = oldA.featuredType; // preserve featured label
+                                newsData[existIdx] = a;
+                                const existingCard = document.getElementById(`article-card-${a.id}`);
+                                if (existingCard) {
+                                    const isFeatured = existingCard.classList.contains('featured-card');
+                                    const newCard = createNewsCard(a, existIdx, isFeatured);
+                                    existingCard.innerHTML = newCard.innerHTML;
+                                    existingCard.className = newCard.className;
+                                    existingCard.onclick = () => openModal(a);
+                                }
+                            }
+                        }
                     }
                 });
 
                 if (trulyNew.length > 0) {
-                    newsData = [...trulyNew, ...newsData];
+                    console.log(`[Smart Refresh] Found ${trulyNew.length} new articles`);
                     trulyNew.forEach(a => seenArticleIds.add(a.id));
+                    // Directly prepend new articles and render them
+                    newsData = [...trulyNew, ...newsData];
                     renderNews(newsData);
                 }
             } else if (isLoadMore) {
-                newsData = [...newsData, ...newArticles];
-                newArticles.forEach(a => seenArticleIds.add(a.id));
+                // Infinite Scroll: Append new articles
+                if (newArticles.length < articlesPerPage) {
+                    hasMoreArticles = false;
+                }
                 currentPage++;
-                renderNews(newsData);
+
+                // Filter out duplicates just in case
+                const uniqueNew = newArticles.filter(a => !seenArticleIds.has(a.id));
+                newsData = [...newsData, ...uniqueNew];
+                uniqueNew.forEach(a => seenArticleIds.add(a.id));
+
+                renderNews(uniqueNew, false, true); // append = true
             } else {
+                // Initial load or Filter change
                 newsData = newArticles;
                 seenArticleIds.clear();
                 newArticles.forEach(a => seenArticleIds.add(a.id));
                 currentPage = 0;
+                hasMoreArticles = newArticles.length >= articlesPerPage;
                 renderNews(newsData);
             }
 
-            hasMoreArticles = newArticles.length === fetchLimit;
-            consecutiveFailures = 0;
-            hideConnectionBanner?.();
+            // Update counts
             updateDisplayCounts();
+
+            if (consecutiveFailures > 0) {
+                hideConnectionBanner();
+                showToast('Connection restored', 'success');
+            }
+            consecutiveFailures = 0;
         }
     } catch (err) {
-        console.error('Failed to fetch news', err);
+        if (err.name === 'AbortError') {
+            // Fetch was intentionally cancelled — not an error
+            return;
+        }
         consecutiveFailures++;
+        console.error('Failed to fetch news:', err);
         if (consecutiveFailures >= CONNECTION_FAIL_THRESHOLD) {
-            showConnectionBanner?.();
+            showConnectionBanner();
         }
     } finally {
         isFetching = false;
+        _fetchAbortController = null;
         isLoadingMore = false;
         hideRefreshIndicator();
         const indicator = document.getElementById('loadMoreIndicator');
         if (indicator) indicator.style.display = 'none';
 
+        // Hide/Show sentinel based on hasMoreArticles
         const sentinel = document.getElementById('infiniteScrollSentinel');
         if (sentinel) sentinel.style.display = hasMoreArticles ? 'block' : 'none';
     }
@@ -1704,7 +2205,7 @@ function updateDisplayCounts() {
 // ---- Fetch Footer Stats ----
 async function fetchStats() {
     try {
-        const res = await fetchWithTimeout(`${API_BASE}/api/indian_stats`);
+        const res = await apiFetch(`${API_BASE}/api/indian_stats`);
         const json = await res.json();
         if (json.status === 'success') {
             const d = json.data;
@@ -1841,149 +2342,158 @@ async function init() {
         relevanceFilter.value = 'all';
     }
 
+    // Setup Infinite Scroll (IntersectionObserver)
     const sentinel = document.getElementById('infiniteScrollSentinel');
     if (sentinel) {
         const observer = new IntersectionObserver((entries) => {
             if (entries[0].isIntersecting && hasMoreArticles && !isFetching && !isLoadingMore) {
-                fetchNews(true);
+                console.log('[Infinite Scroll] Sentinel hit, loading more...');
+                fetchNews(true); // isLoadMore = true
             }
         }, { threshold: 0.1 });
         observer.observe(sentinel);
     }
 
-    fetchSources();
-    fetchEvents();
-    fetchNews();
-
-    setTimeout(() => fetchStats(), 100);
-    setTimeout(() => fetchHolidays(), 200);
-
-    // Initialize Real-Time Sync (Free SSE)
-    initRealTimeStream();
-}
-
-function refreshDashboard(isBackground = true) {
-    if (isFetching) return;
-    console.log("Refreshing dashboard (Real-time sync)...");
-    fetchSources();
-    fetchNews(false, isBackground);
-    fetchStats();
-    fetchEvents();
-}
-
-function initRealTimeStream() {
-    console.log("[SYNC] Connecting to Free Real-Time Sync...");
-    const streamUrl = `${API_BASE}/api/indian_stream`;
-    
-    try {
-        const eventSource = new EventSource(streamUrl);
-
-        // Sync Safety: Refresh immediately when connection opens to catch missed events
-        eventSource.onopen = () => {
-            console.log("[SYNC] Connection established. Performing safety refresh...");
-            refreshDashboard(true);
-        };
-
-        // Handle specific push events from Postgres LISTEN/NOTIFY
-        eventSource.addEventListener('news_created', (e) => {
-            const data = JSON.parse(e.data);
-            console.log("[SYNC] Event: news_created", data);
-            refreshDashboard(true);
-        });
-
-        eventSource.addEventListener('analysis_completed', (e) => {
-            const data = JSON.parse(e.data);
-            console.log("[SYNC] Event: analysis_completed", data);
-            refreshDashboard(true);
-        });
-
-        eventSource.addEventListener('analysis_failed', (e) => {
-            const data = JSON.parse(e.data);
-            console.log("[SYNC] Event: analysis_failed", data);
-            refreshDashboard(true);
-        });
-
-        eventSource.onerror = (err) => {
-            console.warn("[SYNC] Connection lost. Reconnecting in 5s...");
-            eventSource.close();
-            setTimeout(initRealTimeStream, 5000);
-        };
-    } catch (err) {
-        console.error("[SYNC] Fatal error initializing stream:", err);
-    }
-}
-
-
-
-async function fetchWithTimeout(url, options = {}, timeout = 12000) {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
-
-    try {
-        const response = await fetch(url, {
-            ...options,
-            headers: {
-                ...options.headers,
-                'ngrok-skip-browser-warning': 'true'
-            },
-            signal: controller.signal
-        });
-        return response;
-    } finally {
-        clearTimeout(id);
-    }
+    await Promise.all([fetchSources(), fetchNews(), fetchStats(), fetchHolidays(), fetchEvents()]);
 }
 
 init();
 
-// ---- Auto-refresh (Smart Refresh Marker) ----
-let currentDataMarker = null;
-let isFirstMarkerCheck = true;
-let isCheckingMarker = false;
+// ---- Auto-refresh (Smart Refresh) ----
+setInterval(() => {
+    fetchSources();
+    fetchNews(false, true); // isLoadMore=false, isBackgroundRefresh=true
+    fetchStats();
+    fetchEvents();
+}, REFRESH_INTERVAL);
 
-async function checkDataMarker() {
-    if (isCheckingMarker) return;
-    isCheckingMarker = true;
+// ===== WebSocket Real-Time Sync =====
+// Connects to backend WS for instant cross-user updates (analysis results, new articles)
+(function initWebSocket() {
+    let ws = null;
+    let wsRetryCount = 0;
+    const WS_MAX_RETRY_DELAY = 30000; // 30s max backoff
+    let wsPingTimer = null;
 
-    try {
-        const res = await fetchWithTimeout(`${API_BASE}/api/indian_marker`, {}, 5000);
-        const json = await res.json();
-
-        if (json.status === 'success' && json.marker) {
-            const newMarker = json.marker;
-
-            // Empty database state
-            if (newMarker === "empty") return;
-
-            if (currentDataMarker !== newMarker) {
-                // If the feed is already fetching because of manual user action (scroll/click), wait for next cycle
-                if (!isFirstMarkerCheck && isFetching) {
-                    return; 
-                }
-
-                if (!isFirstMarkerCheck) {
-                    // Marker changed, trigger smart pull
-                    refreshDashboard(true);
-                }
-
-                currentDataMarker = newMarker;
-                isFirstMarkerCheck = false;
-            }
+    function getWsUrl() {
+        // Derive ws:// or wss:// from API_BASE
+        let base = API_BASE || window.location.origin;
+        if (base.startsWith('https://')) {
+            return base.replace('https://', 'wss://') + '/ws';
+        } else if (base.startsWith('http://')) {
+            return base.replace('http://', 'ws://') + '/ws';
         }
-    } catch (e) {
-        // Silently fail, connection banners handle major network breakages
-    } finally {
-        isCheckingMarker = false;
+        // Fallback: use current page protocol
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${proto}//${window.location.host}/ws`;
     }
-}
 
-// Polling deactivated in favor of event-driven Pusher signals.
-// setInterval(checkDataMarker, REFRESH_INTERVAL);
+    function connectWebSocket() {
+        try {
+            const url = getWsUrl();
+            console.log(`[WS] Connecting to ${url}...`);
+            ws = new WebSocket(url);
+
+            ws.onopen = () => {
+                console.log('[WS] Connected ✓');
+                wsRetryCount = 0;
+                // Start periodic ping to keep connection alive
+                clearInterval(wsPingTimer);
+                wsPingTimer = setInterval(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send('ping');
+                    }
+                }, 25000); // ping every 25s
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+                    handleWsMessage(msg);
+                } catch (e) {
+                    // Ignore non-JSON messages (like pong)
+                }
+            };
+
+            ws.onclose = () => {
+                console.log('[WS] Disconnected. Will retry...');
+                clearInterval(wsPingTimer);
+                scheduleReconnect();
+            };
+
+            ws.onerror = (err) => {
+                console.warn('[WS] Error:', err);
+                // onclose will fire after this, triggering reconnect
+            };
+        } catch (e) {
+            console.warn('[WS] Failed to create WebSocket:', e);
+            scheduleReconnect();
+        }
+    }
+
+    function scheduleReconnect() {
+        const delay = Math.min(1000 * Math.pow(2, wsRetryCount), WS_MAX_RETRY_DELAY);
+        wsRetryCount++;
+        console.log(`[WS] Reconnecting in ${delay}ms (attempt ${wsRetryCount})...`);
+        setTimeout(connectWebSocket, delay);
+    }
+
+    function handleWsMessage(msg) {
+        if (msg.type === 'article_updated' && msg.scope === 'indian') {
+            // Another user analyzed an Indian article — update our local state + DOM instantly
+            const updatedArticle = msg.article;
+            if (!updatedArticle || !updatedArticle.id) return;
+
+            console.log(`[WS] Article updated: #${updatedArticle.id}`);
+
+            // Parse analysis_data if stringified
+            if (typeof updatedArticle.analysis_data === 'string') {
+                try { updatedArticle.analysis_data = JSON.parse(updatedArticle.analysis_data); } catch (e) { }
+            }
+
+            // Update local newsData array
+            const existIdx = newsData.findIndex(a => a.id === updatedArticle.id);
+            if (existIdx !== -1) {
+                // Preserve featured label if it had one
+                updatedArticle.featuredType = newsData[existIdx].featuredType;
+                newsData[existIdx] = updatedArticle;
+            }
+
+            // Patch the DOM card if it exists
+            const existingCard = document.getElementById(`article-card-${updatedArticle.id}`);
+            if (existingCard) {
+                const isFeatured = existingCard.classList.contains('featured-card');
+                const newCard = createNewsCard(updatedArticle, 0, isFeatured);
+                existingCard.innerHTML = newCard.innerHTML;
+                existingCard.className = newCard.className;
+                existingCard.onclick = () => openModal(updatedArticle);
+            }
+
+            // If this article's modal is currently open, refresh it
+            if (modalOverlay && modalOverlay.classList.contains('active')) {
+                const modalTitleEl = modalBody && modalBody.querySelector('.modal-title');
+                if (modalTitleEl && modalTitleEl.textContent === updatedArticle.title) {
+                    openModal(updatedArticle);
+                }
+            }
+
+        } else if (msg.type === 'new_articles') {
+            // New articles arrived — trigger a smart refresh
+            console.log(`[WS] New articles notification received`);
+            fetchNews(false, true);
+        } else if (msg.type === 'pong') {
+            // Heartbeat response — no action needed
+        }
+    }
+
+    // Start WebSocket connection
+    connectWebSocket();
+})();
 
 // ---- Fetch Events ----
 async function fetchEvents() {
     try {
-        const res = await fetchWithTimeout(`${API_BASE}/api/events/india`);
+        const res = await apiFetch(`${API_BASE}/api/events/india`);
         const json = await res.json();
         if (json.status === 'success') {
             renderEvents(json.data);
@@ -2182,14 +2692,14 @@ function startChartRefresh(symbol) {
 // ---- Load first pair that has candle data ----
 async function loadFirstAvailablePair() {
     try {
-        const res = await fetchWithTimeout(`${API_BASE}/api/nse/pairs?q=TCS`);
+        const res = await apiFetch(`${API_BASE}/api/nse/pairs?q=TCS`);
         const json = await res.json();
         if (json.status === 'success' && json.data.length > 0) {
             await loadChart(json.data[0]);
             return;
         }
         // fallback: get any pair
-        const res2 = await fetchWithTimeout(`${API_BASE}/api/nse/pairs`);
+        const res2 = await apiFetch(`${API_BASE}/api/nse/pairs`);
         const json2 = await res2.json();
         if (json2.status === 'success' && json2.data.length > 0) {
             await loadChart(json2.data[0]);
@@ -2211,7 +2721,7 @@ async function doChartSearch(query) {
     }
     try {
         const url = `${API_BASE}/api/nse/pairs?q=${encodeURIComponent(query)}`;
-        const res = await fetch(url);
+        const res = await apiFetch(url);
         const json = await res.json();
         if (json.status !== 'success' || !json.data.length) {
             drop.innerHTML = `<div style="padding:10px 14px;color:#888;font-size:0.82rem;">No matching pairs found.</div>`;
@@ -2243,6 +2753,7 @@ function selectChartPair(symbol) {
     // Sanitize symbol: NSE stocks usually don't need "/" etc.
     let cleanSymbol = symbol.split(':').pop().toUpperCase().replace(/[^A-Z0-9]/g, '');
 
+    console.log('[CHART] Selecting pair:', symbol, '-> Clean:', cleanSymbol);
     currentChartSymbol = cleanSymbol;
 
     // Open the chart panel
@@ -2274,6 +2785,8 @@ function parseToUnixSec(timeStr) {
 async function loadChart(symbol) {
     if (!symbol) return;
 
+    console.log('[LOAD CHART] Starting loadChart with symbol:', symbol);
+
     // Track selected pair
     currentChartSymbol = symbol;
     stopChartRefresh();
@@ -2282,15 +2795,20 @@ async function loadChart(symbol) {
 
     const data = await fetchCandleData(symbol);
     if (!data) {
+        console.log('[LOAD CHART] No candle data received');
         return;
     }
 
-    window.chartCandleData = data;
+    console.log('[LOAD CHART] Rendering chart with', data.length, 'candles');
+    window.chartCandleData = data; // Store globally for overlay tracking
     renderLWChart(data);
     updateChartStats(symbol, data);
 
+    // Overlay news markers on chart
+    console.log('[LOAD CHART] Calling overlayNewsMarkers...');
     await overlayNewsMarkers(symbol);
 
+    console.log('[LOAD CHART] Starting chart refresh');
     startChartRefresh(symbol);
 }
 
@@ -2346,11 +2864,15 @@ async function fetchNewsMarkers(symbol) {
 
         const url = `${API_BASE}/api/nse/news-markers?symbol=${encodeURIComponent(pairOnly)}`;
         console.log('[NEWS MARKERS] Fetching from URL:', url);
-        const res = await fetch(url);
+        const res = await apiFetch(url);
         const json = await res.json();
+        console.log('[NEWS MARKERS] Response:', json);
         if (json.status === 'success' && Array.isArray(json.data)) {
+            console.log('[NEWS MARKERS] Success! Found', json.data.length, 'news items');
+            console.log('[NEWS MARKERS] Data:', json.data);
             return json.data;
         }
+        console.log('[NEWS MARKERS] No data in response or invalid status');
         return [];
     } catch (err) {
         console.error('fetchNewsMarkers error:', err);
@@ -2711,7 +3233,7 @@ async function fetchCandleData(symbol) {
 
     try {
         const url = `${API_BASE}/api/nse/candles?symbol=${encodeURIComponent(symbol)}&limit=500`;
-        const res = await fetch(url);
+        const res = await apiFetch(url);
         const json = await res.json();
 
         if (json.status !== 'success' || !json.data || json.data.length === 0) {
@@ -3024,7 +3546,7 @@ let dynamicHolidays = null;
 
 async function fetchHolidays() {
     try {
-        const res = await fetchWithTimeout(`${API_BASE}/api/nse/holidays`);
+        const res = await apiFetch(`${API_BASE}/api/nse/holidays`);
         const json = await res.json();
         if (json.status === 'success') {
             dynamicHolidays = json.data;
@@ -3139,7 +3661,7 @@ function closeEventDetail() {
 
 async function fetchEventNews(eventId) {
     try {
-        const response = await fetchWithTimeout(`${API_BASE}/api/indian_news?event_id=${encodeURIComponent(eventId)}&limit=100`);
+        const response = await apiFetch(`${API_BASE}/api/indian_news?event_id=${encodeURIComponent(eventId)}&limit=100`);
         const json = await response.json();
 
         if (json.status === 'success' && json.data) {
