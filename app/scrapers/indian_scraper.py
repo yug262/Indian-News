@@ -14,7 +14,7 @@ from typing import List, Dict, Any
 # Add the project root to sys.path so we can import app
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
-from app.db.db import execute_query, fetch_one, execute_returning
+from app.db.db import execute_query, fetch_one, execute_returning, fetch_all
 from app.agents.agent import filter_indian_news
 from app.core.event_engine import process_event_grouping
 
@@ -186,6 +186,7 @@ async def save_article(article):
             return 0  # Duplicate — already existed, no LLM cost
 
         new_id = insert_result['id']
+        filter_data = None
 
         # 2. Filtering Pass (Mandatory for all new articles)
         # Classifies relevance/category/symbols immediately using lightweight agent
@@ -196,12 +197,16 @@ async def save_article(article):
             )
             
             if filter_data:
+                # normalize before saving to DB: store only canonical uppercase symbols, deduplicated and sorted
+                from app.agents.tools import strict_resolve_symbols
+                normalized_symbols = strict_resolve_symbols(filter_data.get('symbols', []))
+                
                 await asyncio.to_thread(
                     execute_query,
                     """UPDATE indian_news 
                        SET news_category = %s, news_relevance = %s, news_reason = %s, symbols = %s
                        WHERE id = %s""",
-                    (filter_data['category'], filter_data['relevance'], filter_data['reason'], filter_data['symbols'], new_id)
+                    (filter_data['category'], filter_data['relevance'], filter_data['reason'], normalized_symbols, new_id)
                 )
         except Exception as fe:
             logger.warning(f"Filtering Agent error for {new_id}: {fe}")
@@ -227,7 +232,18 @@ async def save_article(article):
         """
 
         # 4. Trigger stateful event grouping AFTER insert
-        # ... existing logic ...
+        try:
+            category = filter_data.get('category', 'other') if filter_data else 'other'
+            await asyncio.to_thread(
+                process_event_grouping,
+                news_id=new_id,
+                title=article['title'],
+                category=category,
+                table_name='indian_news',
+                ai_symbols=filter_data.get('symbols', []) if filter_data else []
+            )
+        except Exception as eg:
+            logger.warning(f"Event grouping error for {new_id}: {eg}")
         
         # 5. Notify all devices of new arrival via Pusher
         # await asyncio.to_thread(trigger_news_created, new_id)
@@ -287,13 +303,33 @@ async def run_scraper_cycle():
     logger.info(f"===== Cycle Complete in {duration:.2f}s: {total_new} New, {total_dup} Duplicates, {total_all} Total Articles Processed =====")
 
 async def cleanup_old_news():
-    """Deletes articles older than 24 hours from the database."""
+    """
+    Deletes articles older than 24 hours from the database.
+    Safeguard: Skips articles that have linked trade suggestions to preserve evidence/history.
+    """
     try:
-        await asyncio.to_thread(
-            execute_query,
-            "DELETE FROM indian_news WHERE published < (NOW() - INTERVAL '24 hours')"
+        # 1. Check for articles that will be SPARED due to suggestions
+        spared_rows = await asyncio.to_thread(
+            fetch_all,
+            """SELECT COUNT(*) as cnt FROM indian_news 
+               WHERE published < (NOW() - INTERVAL '24 hours')
+               AND id IN (SELECT news_id FROM suggestions)"""
         )
-        logger.info("Background cleanup: Deleted Indian news articles older than 24h.")
+        spared_count = spared_rows[0]['cnt'] if spared_rows else 0
+
+        # 2. Perform the deletion (only on non-suggestion articles)
+        deleted_count = await asyncio.to_thread(
+            execute_query,
+            """DELETE FROM indian_news 
+               WHERE published < (NOW() - INTERVAL '24 hours')
+               AND id NOT IN (SELECT news_id FROM suggestions)"""
+        )
+        
+        if deleted_count > 0:
+            logger.info(f"Background cleanup: Deleted {deleted_count} old articles. Spared {spared_count} articles with active suggestions.")
+        elif spared_count > 0:
+            logger.info(f"Background cleanup: No articles deleted, but {spared_count} articles skipped (linked to suggestions).")
+            
     except Exception as e:
         logger.error(f"Cleanup Error: {e}")
 
