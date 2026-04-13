@@ -28,7 +28,7 @@ from google.genai import types
 from app.db.db import execute_query, fetch_one
 from app.agents.planner import run_planner
 from app.agents.prompt import INDIAN_MARKET_CLASSIFY_PROMPT, INDIAN_SYSTEM_PROMPT, build_compact_prompt
-from app.schemas.schema import SCHEMA_TEMPLATE
+from app.agents.schema import SCHEMA_TEMPLATE
 from app.agents.tools import (
     get_source_credibility,
     get_market_status,
