@@ -26,6 +26,11 @@ from app.core.event_engine import process_event_grouping
 logger = logging.getLogger("indian_scraper")
 logger.setLevel(logging.INFO)
 
+# Suppress noisy INFO logs globally for the scraper
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("google_genai").setLevel(logging.WARNING)
+logging.getLogger("google_genai.models").setLevel(logging.WARNING)
+
 if not logger.handlers:
     _ch = logging.StreamHandler()
     _ch.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S UTC"))

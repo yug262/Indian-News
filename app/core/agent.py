@@ -269,6 +269,11 @@ async def filter_indian_news(title: str, description: str = "") -> Optional[Dict
     """
     logger = logging.getLogger("india_agent")
     logger.setLevel(logging.INFO)
+    
+    # Suppress noisy INFO logs from dependencies
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("google_genai").setLevel(logging.WARNING)
+    logging.getLogger("google_genai.models").setLevel(logging.WARNING)
 
     if not logger.handlers:
         _ch = logging.StreamHandler()
