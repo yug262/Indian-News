@@ -34,7 +34,7 @@ import yfinance as yf
 import requests
 import ccxt
 import pandas as pd
-from app.core.db import fetch_all
+from app.db.db import fetch_all
 
 
 # =========================================================

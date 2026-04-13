@@ -1,5 +1,5 @@
 import asyncio
-from app.scrap_news.indian_scraper import main
+from app.scrapers.indian_scraper import main
 
 if __name__ == "__main__":
     try:
