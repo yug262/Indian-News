@@ -19,7 +19,7 @@ load_dotenv()
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
-from app.core.db import DB_CONFIG
+from app.db.db import DB_CONFIG
 
 # =========================
 # API KEY ROTATION

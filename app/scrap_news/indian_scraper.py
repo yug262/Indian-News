@@ -14,7 +14,7 @@ from typing import List, Dict, Any
 # Add the project root to sys.path so we can import app.core.db
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
-from app.core.db import execute_query, fetch_one, execute_returning
+from app.db.db import execute_query, fetch_one, execute_returning
 from app.agents.agent import filter_indian_news
 from app.core.event_engine import process_event_grouping
 

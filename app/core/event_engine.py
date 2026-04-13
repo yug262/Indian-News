@@ -364,7 +364,7 @@ def process_event_grouping(news_id: int, title: str, category: str, table_name: 
     """
     Stateful evaluation. Should be invoked immediately after a news item is saved to DB.
     """
-    from app.core.db import fetch_all, execute_query
+    from app.db.db import fetch_all, execute_query
     
     found_entities = extract_entities(title)
     

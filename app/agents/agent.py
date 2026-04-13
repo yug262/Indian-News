@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from app.core.db import execute_query, fetch_one
+from app.db.db import execute_query, fetch_one
 from app.agents.planner import run_planner
 from app.agents.prompt import INDIAN_MARKET_CLASSIFY_PROMPT, INDIAN_SYSTEM_PROMPT, build_compact_prompt
 from app.schemas.schema import SCHEMA_TEMPLATE
