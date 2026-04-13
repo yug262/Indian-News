@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 import socket
 from typing import List, Dict, Any
 
-# Add the project root to sys.path so we can import app.core.db
+# Add the project root to sys.path so we can import app
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
 from app.db.db import execute_query, fetch_one, execute_returning

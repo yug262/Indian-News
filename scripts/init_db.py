@@ -13,7 +13,7 @@ import psycopg2
 import psycopg2.extras
 import csv
 from datetime import datetime
-from app.core.db import DB_CONFIG
+from app.db.db import DB_CONFIG
 
 # --- CORE NEWS TABLE ---
 CREATE_INDIAN_NEWS_TABLE_SQL = """
