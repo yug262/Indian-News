@@ -5,7 +5,7 @@ import os
 import json
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from app.db.db import fetch_all, fetch_one
+from app.db.db import fetch_all, fetch_one, execute_returning, execute_query
 from app.agents.agent import analyze_indian_news, save_indian_analysis
 
 # Thread pool for blocking database operations
@@ -68,6 +68,27 @@ _STATS_CACHE_TTL = 15  # seconds — shared cache across all users
 # ===== Analysis Concurrency Limiter =====
 # Prevents thread pool exhaustion: max 5 analyses running at the same time
 _analysis_semaphore = asyncio.Semaphore(5)
+
+async def cleanup_stale_analyses():
+    """Startup task to reset any articles stuck in 'processing' state."""
+    try:
+        # Reset articles stuck for more than 5 minutes
+        stale_count = await run_in_executor(
+            execute_query,
+            """UPDATE indian_news 
+               SET analysis_status = 'failed', 
+                   analysis_error = 'Staleness timeout: article was stuck in processing for too long (likely server crash).'
+               WHERE analysis_status = 'processing' 
+               AND analysis_started_at < (NOW() - INTERVAL '5 minutes')"""
+        )
+        if stale_count:
+            print(f"[CLEANUP] Reset {stale_count} stale analyses to failed.")
+    except Exception as e:
+        print(f"[CLEANUP] Failed to reset stale analyses: {e}")
+
+@router.on_event("startup")
+async def on_startup():
+    asyncio.create_task(cleanup_stale_analyses())
 
 
 
@@ -393,13 +414,39 @@ async def analyze_single_indian_article(news_id: int):
         return {"status": "error", "message": "Server is busy analyzing other articles. Please try again in a moment."}
     
     try:
-        # Run blocking DB call in thread pool with 120 second timeout
-        article = await run_with_timeout(
-            lambda: fetch_one("SELECT id, title, published, description, source FROM indian_news WHERE id = %s", (news_id,)),
-            120
+        # 1. ATOMIC CLAIM (Hardened v3)
+        # Atomsically transition from queued/failed/None -> processing. 
+        # This prevents race conditions between multiple triggers.
+        claim_row = await run_in_executor(
+            execute_returning,
+            """UPDATE indian_news 
+               SET analysis_status = 'processing', 
+                   analysis_started_at = NOW(),
+                   analysis_error = NULL
+               WHERE id = %s AND (analysis_status IS NULL OR analysis_status IN ('queued', 'failed'))
+               RETURNING id, title, published, description, source""",
+            (news_id,)
         )
-        if not article:
-            return {"status": "error", "message": "Indian Article not found"}
+        
+        if not claim_row:
+            # Check why it failed - was it already processed?
+            existing = await run_in_executor(
+                fetch_one,
+                "SELECT id, analysis_status FROM indian_news WHERE id = %s",
+                (news_id,)
+            )
+            if not existing:
+                return {"status": "error", "message": "Indian Article not found"}
+            
+            status = existing.get('analysis_status')
+            if status == 'processing':
+                return {"status": "success", "message": "Analysis already in progress."}
+            if status == 'completed':
+                return {"status": "success", "message": "Analysis already completed."}
+            
+            return {"status": "error", "message": f"Could not claim article for analysis (current state: {status})"}
+
+        article = claim_row
 
         title = article["title"]
         published = str(article["published"])
@@ -424,6 +471,13 @@ async def analyze_single_indian_article(news_id: int):
                 await run_with_timeout(
                     lambda: save_indian_analysis(news_id, analysis),
                     30
+                )
+                
+                # Update status to completed (Hardened v3)
+                await run_in_executor(
+                    execute_query,
+                    "UPDATE indian_news SET analysis_status = 'completed', analysis_completed_at = NOW() WHERE id = %s",
+                    (news_id,)
                 )
                 print(f"[API] Indian Analysis saved for news_id={news_id}")
                 
@@ -473,6 +527,14 @@ async def analyze_single_indian_article(news_id: int):
         return {"status": "error", "message": "Analysis was cancelled"}
     except Exception as e:
         print(f"[API] Exception in indian_analyze endpoint: {e}")
+        # Record failure state (Hardened v3)
+        try:
+            await run_in_executor(
+                execute_query,
+                "UPDATE indian_news SET analysis_status = 'failed', analysis_error = %s WHERE id = %s",
+                (str(e), news_id)
+            )
+        except: pass
         import traceback
         traceback.print_exc()
         return {"status": "error", "message": str(e)}

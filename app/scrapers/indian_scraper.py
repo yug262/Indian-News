@@ -19,6 +19,30 @@ from app.agents.agent import filter_indian_news
 from app.core.event_engine import process_event_grouping
 
 # ══════════════════════════════════════════════════════
+#  AUTO-ANALYSIS CONFIG
+# ══════════════════════════════════════════════════════
+AUTO_ANALYZE_RELEVANCE = ["Medium", "Useful", "High Useful"]
+API_BASE_URL = os.getenv("API_URL", "http://localhost:8000") # Use localhost unless configured
+
+# Managed resources
+GLOBAL_CLIENT: httpx.AsyncClient = None
+_BACKGROUND_TASKS = set()
+
+async def trigger_auto_analysis(news_id: int):
+    """Detached background task to hit the API server for deep analysis."""
+    if not GLOBAL_CLIENT:
+        return
+    
+    try:
+        url = f"{API_BASE_URL}/api/indian_analyze/{news_id}"
+        logger.info(f"[AUTO-ANALYZE] Triggering analysis for {news_id}...")
+        resp = await GLOBAL_CLIENT.post(url, timeout=120)
+        if resp.status_code == 200:
+            logger.info(f"[AUTO-ANALYZE] Hand-off success for {news_id}")
+        else:
+            logger.warning(f"[AUTO-ANALYZE] Hand-off returned {resp.status_code} for {news_id}: {resp.text}")
+    except Exception as e:
+        logger.error(f"[AUTO-ANALYZE] Hand-off failed for {news_id}: {e}")
 
 #  LOGGING
 # ══════════════════════════════════════════════════════
@@ -208,6 +232,25 @@ async def save_article(article):
                        WHERE id = %s""",
                     (filter_data['category'], filter_data['relevance'], filter_data['reason'], normalized_symbols, new_id)
                 )
+
+                # 2.2 Auto-Analysis Trigger (Hardened v3)
+                relevance = filter_data.get('relevance', 'Noisy')
+                if relevance in AUTO_ANALYZE_RELEVANCE:
+                    # 1. Atomically claim 'queued' state in DB first (Scraper side)
+                    # This prevents re-triggering if the scraper cycle hits the same article again
+                    updated = await asyncio.to_thread(
+                        execute_query,
+                        "UPDATE indian_news SET analysis_status = 'queued' WHERE id = %s AND analysis_status IS NULL",
+                        (new_id,)
+                    )
+                    
+                    if updated and updated > 0:
+                        # 2. Fire and Forget (Tracked)
+                        task = asyncio.create_task(trigger_auto_analysis(new_id))
+                        _BACKGROUND_TASKS.add(task)
+                        task.add_done_callback(_BACKGROUND_TASKS.discard)
+                        logger.info(f"[AUTO-ANALYZE] Queued article {new_id} ({relevance})")
+
         except Exception as fe:
             logger.warning(f"Filtering Agent error for {new_id}: {fe}")
 
@@ -335,32 +378,50 @@ async def cleanup_old_news():
 
 
 async def main():
+    global GLOBAL_CLIENT
     logger.info("Starting Async Indian Market Scraper (20s interval)...")
     
-    # Run cleanup immediately on startup
-    await cleanup_old_news()
-    last_cleanup_time = time.time()
+    # Initialize Persistent Client
+    GLOBAL_CLIENT = httpx.AsyncClient(headers=HEADERS)
     
-    CLEANUP_INTERVAL = 30 * 60  # 30 minutes in seconds
+    try:
+        # Run cleanup immediately on startup
+        await cleanup_old_news()
+        last_cleanup_time = time.time()
+        
+        CLEANUP_INTERVAL = 30 * 60  # 30 minutes in seconds
 
-    while True:
-        try:
-            current_time = time.time()
-            
-            # Run cleanup every 30 minutes
-            if current_time - last_cleanup_time >= CLEANUP_INTERVAL:
-                await cleanup_old_news()
-                last_cleanup_time = current_time
+        while True:
+            try:
+                current_time = time.time()
+                
+                # Run cleanup every 30 minutes
+                if current_time - last_cleanup_time >= CLEANUP_INTERVAL:
+                    await cleanup_old_news()
+                    last_cleanup_time = current_time
 
-            await run_scraper_cycle()
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            logger.error(f"Global Loop Error: {e}")
-        await asyncio.sleep(20)
+                await run_scraper_cycle()
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                logger.error(f"Global Loop Error: {e}")
+            await asyncio.sleep(20)
+    finally:
+        # ══════════════════════════════════════════════════════
+        #  SHUTDOWN CLEANUP
+        # ══════════════════════════════════════════════════════
+        logger.info("Shutting down scraper and cleaning up resources...")
+        if GLOBAL_CLIENT:
+            await GLOBAL_CLIENT.aclose()
+        
+        if _BACKGROUND_TASKS:
+            logger.info(f"Waiting for {len(_BACKGROUND_TASKS)} background analysis hand-offs to finish...")
+            await asyncio.gather(*_BACKGROUND_TASKS, return_exceptions=True)
+        
+        logger.info("Scraper shutdown complete.")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Scraper stopped by user.")
+        pass
