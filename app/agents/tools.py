@@ -217,12 +217,39 @@ def _canonicalize_sector(label: str) -> str:
 
 
 # =========================================================
-# TOOL 1: RESOLVE COMPANY (CACHED)
+# TOOL 1: IDENTITY RESOLUTION (CANONICAL)
 # =========================================================
+
+MACRO_ENTITIES_MAP = {
+    "rbi": "RBI", "reserve bank of india": "RBI",
+    "sebi": "SEBI", "securities and exchange board of india": "SEBI",
+    "nse": "NSE", "national stock exchange": "NSE",
+    "bse": "BSE", "bombay stock exchange": "BSE",
+    "fed": "FED", "federal reserve": "FED",
+    "ecb": "ECB", "european central bank": "ECB",
+    "budget": "UNION_BUDGET", "union budget": "UNION_BUDGET",
+    "crude": "BRENT", "crude oil": "BRENT", "brent": "BRENT",
+    "rupee": "INR", "inr": "INR",
+}
+
+EXPLICIT_COMPANY_ALIASES = {
+    "tcs": "TCS",
+    "sbi": "SBIN", "state bank of india": "SBIN",
+    "infy": "INFY", "infosys": "INFY",
+    "hul": "HINDUNILVR", "hindustan unilever": "HINDUNILVR",
+    "itc": "ITC",
+    "hdfc": "HDFCBANK", "hdfc bank": "HDFCBANK",
+    "lic": "LICI", "life insurance corporation": "LICI",
+    "reliance": "RELIANCE", "ril": "RELIANCE",
+    "tata motors": "TATAMOTORS",
+    "tata steel": "TATASTEEL",
+}
+
+# Generic rejection list for extremely broad or ambiguous terms
+REJECTION_LIST = {"tata", "adani", "jio", "birla", "mahindra", "godrej", "bajaj", "airtel"}
 
 _COMPANIES_CACHE: list[dict] | None = None
 _COMPANIES_CACHE_LOCK = threading.Lock()
-
 
 def _get_companies_list() -> list[dict]:
     """Load companies table once, cache in memory. Fetches from both companies and nse_companies."""
@@ -234,142 +261,91 @@ def _get_companies_list() -> list[dict]:
             return _COMPANIES_CACHE
         try:
             combined_rows = []
-            
             # Fetch from companies table
             rows1 = fetch_all(
                 "SELECT company_name, nse_symbol FROM companies "
                 "WHERE nse_symbol IS NOT NULL AND TRIM(nse_symbol) <> ''"
             ) or []
             combined_rows.extend(rows1)
-            
             # Fetch from nse_companies table
             rows2 = fetch_all(
                 "SELECT company_name, symbol as nse_symbol FROM nse_companies "
                 "WHERE symbol IS NOT NULL AND TRIM(symbol) <> ''"
             ) or []
             combined_rows.extend(rows2)
-            
             _COMPANIES_CACHE = combined_rows
-        except Exception as e:
+        except Exception:
             _COMPANIES_CACHE = []
     return _COMPANIES_CACHE
 
-
 def resolve_company(name: str) -> dict:
     """
-    Look up an Indian listed company by name → NSE symbol.
-    Uses cached DB with fuzzy matching.
+    Legacy wrapper for the Agent's tool-calling system.
+    Uses resolve_identity for high-precision mapping.
     """
-    if not name or not str(name).strip():
-        return {"input_name": name, "status": "unresolved", "symbol": None, "company_name": ""}
-
-    name_norm = _normalize_text(name)
-
-    # Cached DB lookup
-    rows = _get_companies_list()
-    best_match = None
-    highest_ratio = 0.0
-
-    for row in rows:
-        company_name = (row.get("company_name") or "").strip()
-        symbol = (row.get("nse_symbol") or "").strip().upper()
-        if not company_name or not symbol:
-            continue
-
-        cname_norm = _normalize_text(company_name)
-        # Exact match
-        if name_norm == cname_norm or name_norm == symbol.lower():
-            return {"input_name": name, "symbol": symbol, "company_name": company_name, "status": "resolved"}
-
-        # Substring exact match for broad mapping (like "jio" in "reliance jio")
-        if len(name_norm) > 3 and (name_norm in cname_norm or cname_norm in name_norm):
-            ratio = 0.90  # High confidence if one is a substring of the other
-        else:
-            ratio = SequenceMatcher(None, name_norm, cname_norm).ratio()
-            
-        if ratio > 0.82 and ratio > highest_ratio:
-            highest_ratio = ratio
-            best_match = {"input_name": name, "symbol": symbol, "company_name": company_name, "status": "resolved"}
-
-    if best_match:
-        return best_match
-
+    identity = resolve_identity(name)
+    if identity:
+        # Return the specific dict format the LLM tool-calling logic expects
+        return {
+            "input_name": name,
+            "status": "resolved",
+            "symbol": identity,
+            "company_name": name # We don't have the full DB name here anymore, but identity is what matters
+        }
     return {"input_name": name, "status": "unresolved", "symbol": None, "company_name": ""}
 
+def resolve_identity(name: str) -> str | None:
+    """
+    Unified source of truth for entity identity. 
+    Maps input text to canonical NSE Symbol or Macro Entity ID.
+    """
+    if not name or not isinstance(name, str):
+        return None
+    
+    name_norm = _normalize_text(name)
+    if not name_norm or name_norm in REJECTION_LIST:
+        return None
+
+    # 1. Macro Check
+    if name_norm in MACRO_ENTITIES_MAP:
+        return MACRO_ENTITIES_MAP[name_norm]
+
+    # 2. Explicit Alias Check
+    if name_norm in EXPLICIT_COMPANY_ALIASES:
+        return EXPLICIT_COMPANY_ALIASES[name_norm]
+
+    # 3. DB Exact Match Check (Strip common suffixes for normalization)
+    clean_input = re.sub(r'\b(ltd|limited|corp|corporation|co|company|inc)\b', '', name_norm).strip()
+    if not clean_input:
+        return None
+
+    companies = _get_companies_list()
+    # Note: Using exact match on normalized names only for high precision
+    for row in companies:
+        cname = _normalize_text(row.get("company_name", ""))
+        clean_cname = re.sub(r'\b(ltd|limited|corp|corporation|co|company|inc)\b', '', cname).strip()
+        sym = (row.get("nse_symbol") or "").strip().upper()
+        
+        if clean_input == clean_cname or clean_input == sym.lower():
+            return sym
+
+    return None
 
 def strict_resolve_symbols(extracted_names: list[str]) -> list[str]:
     """
-    Strictly maps an array of literal company names to NSE symbols. NO fuzzy matching.
-    Drops known group names (Tata, Adani, Reliance) unless exact mapped.
-    Drops any name that maps to multiple distinct entities.
+    Returns a normalized, sorted, and deduplicated list of canonical IDs.
+    Outputs only canonical uppercase symbols OR macro IDs.
     """
     if not extracted_names:
         return []
 
-    valid_symbols = set()
-    companies = _get_companies_list()
-
-    # Pre-compute exact mapping for incoming entities
-    exact_map = {}
-    for row in companies:
-        cname = (row.get("company_name") or "").strip()
-        sym = (row.get("nse_symbol") or "").strip().upper()
-        if not cname or not sym:
-            continue
-            
-        cname_norm = _normalize_text(cname)
-        # Strip common generic suffixes safely for mapping only
-        clean_name = re.sub(r'\b(ltd|limited|corp|corporation|co|company|inc)\b', '', cname_norm).strip()
-        
-        # If mapping already exists but maps to a DIFFERENT symbol, mark it AMBIGUOUS
-        if clean_name in exact_map and exact_map[clean_name] != sym:
-            exact_map[clean_name] = "AMBIGUOUS"
-        else:
-            exact_map[clean_name] = sym
-
-    # Tiny, hyper-curated absolute safe list of aliases
-    explicit_aliases = {
-        "tcs": "TCS",
-        "sbi": "SBIN",
-        "state bank of india": "SBIN",
-        "infy": "INFY",
-        "infosys": "INFY",
-        "hul": "HINDUNILVR",
-        "itc": "ITC",
-        "hdfc": "HDFCBANK", # Post-merger safety
-        "hdfc bank": "HDFCBANK",
-        "lic": "LICI",
-    }
-    
-    # Generic rejection list for extremely broad entities
-    rejection_list = {"tata", "adani", "reliance", "jio", "birla", "mahindra", "godrej", "bajaj", "airtel"}
-
+    valid_identities = set()
     for name in extracted_names:
-        # Validate that it is indeed a string. Sometimes models hallucinate dicts/lists.
-        if not isinstance(name, str):
-            continue
+        identity = resolve_identity(name)
+        if identity:
+            valid_identities.add(identity)
             
-        name_clean = str(name).strip().lower()
-        if not name_clean:
-            continue
-            
-        name_norm = _normalize_text(name_clean)
-        clean_input = re.sub(r'\b(ltd|limited|corp|corporation|co|company|inc)\b', '', name_norm).strip()
-        
-        if not clean_input or clean_input in rejection_list:
-            continue
-            
-        # Check explicit alias
-        if clean_input in explicit_aliases:
-            valid_symbols.add(explicit_aliases[clean_input])
-            continue
-            
-        # Check strict DB exact matching
-        mapped_sym = exact_map.get(clean_input)
-        if mapped_sym and mapped_sym != "AMBIGUOUS":
-            valid_symbols.add(mapped_sym)
-            
-    return list(valid_symbols)
+    return sorted(list(valid_identities))
 
 # =========================================================
 # TOOL 2: GET STOCK CONTEXT (MERGED — KEY TOOL)

@@ -144,9 +144,24 @@ function formatTime(dateStr) {
 
 // ---- HTML Escaping ----
 function escapeHtml(text) {
+    if (text == null) return '';
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Specifically for Javascript arguments injected into HTML attribute wrappers (like onclick="foo('...')")
+function escapeForInlineJsAttr(text) {
+    if (text == null) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '');
 }
 
 // ---- Impact Helpers ----
@@ -163,7 +178,8 @@ function getScoreLabel(score) {
 }
 
 function parseAffectedMarkets(article) {
-    let markets = article.affected_markets || {};
+    if (!article.affected_markets) return {};
+    let markets = article.affected_markets;
     if (typeof markets === 'string') {
         try { markets = JSON.parse(markets); } catch { markets = {}; }
     }
@@ -719,8 +735,8 @@ function renderForexPairs(article) {
 }
 
 function renderNewInfoBadge(article) {
-    if (article.is_new_information == null) return '';
-    if (article.is_new_information) {
+    if (!article.is_new_information) return '';
+    if (article.is_new_information === true) {
         return `<span class="new-info-badge new-info-new">🆕 NEW INFO</span>`;
     }
     return `<span class="new-info-badge new-info-priced">📊 PRICED IN</span>`;
@@ -960,9 +976,9 @@ function renderCardAnalysis(article) {
         bucketHtml = `<span class="signal-bucket-badge ${bucketCls}" style="transform:scale(0.85); transform-origin:left center;">${bucket}</span>`;
     }
 
-    const bias = (coreView.market_bias || article.usd_bias || 'Neutral').toLowerCase();
+    const bias = (coreView.market_bias || 'Neutral').toLowerCase();
     const biasInfo = getBiasInfo(bias);
-    const horizon = coreView.horizon || article.execution_window || article.impact_duration || 'N/A';
+    const horizon = coreView.horizon || 'N/A';
 
     return `
         <div class="card-analysis">
@@ -2529,7 +2545,7 @@ function renderEvents(events) {
                  data-event-title="${escapeHtml(ev.event_title)}"
                  data-article-count="${ev.article_count}"
                  data-latest-update="${ev.latest_update}"
-                 onclick="showEventDetail('${ev.event_id}', '${escapeHtml(ev.event_title)}', ${ev.article_count}, '${ev.latest_update}'); event.stopPropagation();"
+                 onclick="showEventDetail('${escapeForInlineJsAttr(ev.event_id)}', '${escapeForInlineJsAttr(ev.event_title)}', ${ev.article_count}, '${escapeForInlineJsAttr(ev.latest_update)}'); event.stopPropagation();"
                  style="cursor: pointer; transition: all 0.2s ease;"
                  title="Click to see all articles for this event">
                 <div class="event-card-header">

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import copy
 from typing import Any
 
 from google import genai
@@ -85,7 +86,7 @@ def run_planner(title: str, summary: str) -> dict:
     """Run the planner LLM. Returns validated tool plan or FALLBACK_PLAN."""
     if not _planner_client or not MODEL_NAME:
         _log("[PLANNER] No client/model — using fallback")
-        return dict(FALLBACK_PLAN)
+        return copy.deepcopy(FALLBACK_PLAN)
 
     user_prompt = (
         f"Headline: {title}\n"
@@ -119,7 +120,7 @@ def run_planner(title: str, summary: str) -> dict:
 
         if not raw_text.strip():
             _log("[PLANNER] Empty response — using fallback")
-            return dict(FALLBACK_PLAN)
+            return copy.deepcopy(FALLBACK_PLAN)
 
         plan = json.loads(raw_text.strip())
         plan = _validate_plan(plan)
@@ -128,7 +129,7 @@ def run_planner(title: str, summary: str) -> dict:
 
     except Exception as e:
         _log(f"[PLANNER] Error: {e} — using fallback")
-        return dict(FALLBACK_PLAN)
+        return copy.deepcopy(FALLBACK_PLAN)
 
 
 def _validate_plan(plan: dict) -> dict:
@@ -170,6 +171,6 @@ def _validate_plan(plan: dict) -> dict:
             break
 
     if not validated:
-        validated = list(FALLBACK_PLAN["tools"])
+        validated = copy.deepcopy(FALLBACK_PLAN["tools"])
 
     return {"tools": validated}

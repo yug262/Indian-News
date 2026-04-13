@@ -644,7 +644,6 @@ def save_indian_analysis(news_id: int, analysis: dict) -> None:
             market_bias       = %s,
             signal_bucket     = %s,
             news_category     = %s,
-            news_relevance    = %s,
             primary_symbol    = %s,
             executive_summary = %s,
             decision_trace    = %s
@@ -661,7 +660,6 @@ def save_indian_analysis(news_id: int, analysis: dict) -> None:
         market_bias_val[:20],
         bucket_val[:20],
         (event.get("event_type", "general"))[:100],
-        "High" if impact_score_val >= 6 else "Medium" if impact_score_val >= 3 else "Low",
         primary_symbol,
         (analysis.get("executive_summary", "") or "")[:2000],
         json.dumps(analysis.get("decision_trace", {})),

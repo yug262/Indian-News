@@ -30,7 +30,7 @@ async def add_cache_headers(request, call_next):
 app.include_router(indian_router)
 
 if __name__ == "__main__":
-    host = os.getenv("API_HOST")
-    port = int(os.getenv("API_PORT"))
+    host = os.getenv("API_HOST", "0.0.0.0")
+    port = int(os.getenv("API_PORT", "8000"))
     print(f"Starting API Server on http://{host}:{port}")
     uvicorn.run("server:app", host=host, port=port, reload=True)

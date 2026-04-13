@@ -68,7 +68,6 @@ _STATS_CACHE_TTL = 15  # seconds — shared cache across all users
 # ===== Analysis Concurrency Limiter =====
 # Prevents thread pool exhaustion: max 5 analyses running at the same time
 _analysis_semaphore = asyncio.Semaphore(5)
-_active_analyses = 0
 
 
 
@@ -97,6 +96,10 @@ async def get_indian_events():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def _escape_ilike(s: str) -> str:
+    """Escape percent and underscore signs for SQL ILIKE patterns."""
+    return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
 @router.get("/api/indian_news")
 async def get_indian_news(source: str = Query(None, description="Filter news by source name"), 
              limit: int = Query(20, description="Max number of articles to return"),
@@ -109,13 +112,11 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
     """Get Indian news articles, sorted by newest first."""
     
     query = """SELECT id, title, link, published, source, description, image_url,
-        impact_score, impact_summary, affected_markets, affected_sectors, impact_duration,
-        analyzed, created_at, market_mode, usd_bias, crypto_bias, trade_actions,
-        execution_window, confidence, forex_pairs, affected_forex_pairs, conviction_score, volatility_regime,
-        dollar_liquidity_state, position_size_percent, safe_haven_flow, research_text,
-        is_new_information, tools_used, analysis_data, news_relevance, news_category,
+        impact_score, impact_summary, analyzed, created_at,
+        analysis_data, news_relevance, news_category,
         news_impact_level, news_reason, symbols,
-        market_bias, signal_bucket, primary_symbol, executive_summary, event_id, event_title
+        market_bias, signal_bucket, primary_symbol, executive_summary, 
+        event_id, event_title, analysis_confidence AS confidence, horizon
     FROM indian_news WHERE 1=1"""
     params: List[Any] = []
     
@@ -140,8 +141,8 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
         params.append(event_id)
     
     if search and search.strip():
-        search_term = f"%{search.strip()}%"
-        query += " AND (LOWER(title) ILIKE %s OR LOWER(description) ILIKE %s OR LOWER(source) ILIKE %s)"
+        search_term = f"%{_escape_ilike(search.strip())}%"
+        query += " AND (title ILIKE %s ESCAPE '\\' OR description ILIKE %s ESCAPE '\\' OR source ILIKE %s ESCAPE '\\')"
         params.extend([search_term, search_term, search_term])
         
     query += " ORDER BY published DESC LIMIT %s OFFSET %s"
@@ -175,36 +176,39 @@ async def get_indian_sources():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def _fetch_nse_holidays():
+    import requests
+    from datetime import datetime
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://www.nseindia.com/resources/exchange-trading-holidays",
+    }
+    session = requests.Session()
+    session.get("https://www.nseindia.com", headers=headers, timeout=5)
+    res = session.get("https://www.nseindia.com/api/holiday-master?type=trading", headers=headers, timeout=5)
+    
+    holidays = {}
+    if res.status_code == 200:
+        data = res.json()
+        for segment in ["CM", "EQUITY"]:
+            if segment in data:
+                for item in data[segment]:
+                    try:
+                        dt = datetime.strptime(item["tradingDate"], "%d-%b-%Y")
+                        holidays[dt.strftime("%Y-%m-%d")] = item["description"]
+                    except: continue
+                break
+    
+    if not holidays:
+        # Simple fallback for 2026 if API fails
+        holidays = { "2026-03-31": "Shri Mahavir Jayanti" } 
+    return holidays
+
 @router.get("/api/nse/holidays")
-def get_nse_holidays():
+async def get_nse_holidays():
     """Return the list of NSE holidays fetched dynamically from NSE."""
     try:
-        import requests
-        from datetime import datetime
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.nseindia.com/resources/exchange-trading-holidays",
-        }
-        session = requests.Session()
-        session.get("https://www.nseindia.com", headers=headers, timeout=5)
-        res = session.get("https://www.nseindia.com/api/holiday-master?type=trading", headers=headers, timeout=5)
-        
-        holidays = {}
-        if res.status_code == 200:
-            data = res.json()
-            for segment in ["CM", "EQUITY"]:
-                if segment in data:
-                    for item in data[segment]:
-                        try:
-                            dt = datetime.strptime(item["tradingDate"], "%d-%b-%Y")
-                            holidays[dt.strftime("%Y-%m-%d")] = item["description"]
-                        except: continue
-                    break
-        
-        if not holidays:
-            # Simple fallback for 2026 if API fails
-            holidays = { "2026-03-31": "Shri Mahavir Jayanti" } 
-
+        holidays = await run_with_timeout(_fetch_nse_holidays, 15)
         return {"status": "success", "data": holidays}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -382,13 +386,12 @@ async def get_indian_stats():
 @router.post("/api/indian_analyze/{news_id}")
 async def analyze_single_indian_article(news_id: int):
     """Analyze a single Indian news article by its DB id using the Indian Agent (async, non-blocking, with timeout)."""
-    global _active_analyses
-    
     # Enforce concurrency limit — prevent thread pool exhaustion under heavy load
-    if _active_analyses >= 5:
+    try:
+        await asyncio.wait_for(_analysis_semaphore.acquire(), timeout=0.1)
+    except asyncio.TimeoutError:
         return {"status": "error", "message": "Server is busy analyzing other articles. Please try again in a moment."}
     
-    _active_analyses += 1
     try:
         # Run blocking DB call in thread pool with 120 second timeout
         article = await run_with_timeout(
@@ -474,7 +477,7 @@ async def analyze_single_indian_article(news_id: int):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
     finally:
-        _active_analyses = max(0, _active_analyses - 1)
+        _analysis_semaphore.release()
 
 # ===== WebSocket Endpoint =====
 @router.websocket("/ws")
