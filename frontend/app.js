@@ -1870,9 +1870,12 @@ function createNewsCard(article, index, isFeatured = false) {
     card.className = isFeatured ? 'news-card featured-card' : 'news-card';
     card.style.animationDelay = `${index * 0.05}s`;
 
-    const imageHtml = article.image_url ?
-        `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
-    if (!article.image_url) card.classList.add('no-image');
+    const imageHtml = `
+        <div class="card-image ${!article.image_url ? 'missing-image' : ''}">
+            ${article.image_url ? 
+                `<img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.classList.add('missing-image'); this.style.display='none';">` : 
+                `<div class="image-placeholder"></div>`}
+        </div>`;
 
     const featuredBadge = isFeatured ? `<span class="featured-type-badge">${article.featuredType}</span>` : '';
 
@@ -2573,6 +2576,45 @@ async function init() {
         observer.observe(sentinel);
     }
 
+    // Setup Filter Bar Scroll Navigation
+    const filtersContainer = document.getElementById('filtersContainer');
+    const scrollLeftBtn = document.getElementById('sourceScrollLeftBtn');
+    const scrollRightBtn = document.getElementById('sourceScrollRightBtn');
+
+    if (filtersContainer && scrollLeftBtn && scrollRightBtn) {
+        const scrollAmount = 200;
+
+        scrollLeftBtn.addEventListener('click', () => {
+            filtersContainer.scrollBy({ left: -scrollAmount, behavior: 'smooth' });
+        });
+
+        scrollRightBtn.addEventListener('click', () => {
+            filtersContainer.scrollBy({ left: scrollAmount, behavior: 'smooth' });
+        });
+
+        // Optional: Hide/Show buttons based on scroll position
+        filtersContainer.addEventListener('scroll', () => {
+             const { scrollLeft, scrollWidth, clientWidth } = filtersContainer;
+             
+             if (scrollLeft > 10) {
+                 scrollLeftBtn.classList.remove('disabled');
+             } else {
+                 scrollLeftBtn.classList.add('disabled');
+             }
+             
+             if ((scrollLeft + clientWidth) < (scrollWidth - 10)) {
+                 scrollRightBtn.classList.remove('disabled');
+             } else {
+                 scrollRightBtn.classList.add('disabled');
+             }
+        });
+
+        // Trigger initial check
+        setTimeout(() => {
+            filtersContainer.dispatchEvent(new Event('scroll'));
+        }, 500); // Small delay to ensure sources are rendered
+    }
+
     await Promise.all([fetchSources(), fetchNews(), fetchStats(), fetchHolidays(), fetchEvents()]);
 }
 
@@ -2905,8 +2947,10 @@ function renderEvents(events) {
 
 function checkScrollButtons() {
     const container = document.getElementById('eventsContainer');
-    const leftBtn = document.querySelector('.scroll-btn.left');
-    const rightBtn = document.querySelector('.scroll-btn.right');
+    // More specific selectors to avoid hijacking other buttons
+    const parent = document.querySelector('.events-board-view') || document;
+    const leftBtn = parent.querySelector('.scroll-btn.left');
+    const rightBtn = parent.querySelector('.scroll-btn.right');
     if (!container || !leftBtn || !rightBtn) return;
 
     leftBtn.style.display = container.scrollLeft > 20 ? 'flex' : 'none';
