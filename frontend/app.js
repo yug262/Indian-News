@@ -783,6 +783,14 @@ function renderImpactBadge(article) {
     const analysis = parseJsonField(article.analysis_data);
 
     if (isAnalyzed) {
+        // Show Signal Bucket (High priority visual)
+        if (analysis && analysis.signal_bucket) {
+            const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
+            const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
+            const badgeHtml = `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px;">${bucket}</span>`;
+            badges += wrapTooltip(badgeHtml, 'signal_bucket', bucket);
+        }
+
         // Show Impact Score
         if (article.impact_score != null) {
             const scoreClass = getScoreClass(article.impact_score);
@@ -2314,13 +2322,42 @@ searchClear.addEventListener('click', () => {
     searchInput.focus();
 });
 
-// ---- Scroll-to-top ----
+// ---- Scroll-to-top and Sticky header logic ----
+let lastScrollY = window.scrollY;
+const headerEl = document.querySelector('.header');
+
+// Dynamically set header height for sticky positioning
+const updateHeaderHeight = () => {
+    if (headerEl && filtersSection) {
+        filtersSection.style.top = `${headerEl.offsetHeight}px`;
+    }
+};
+// Initial and on-resize update
+updateHeaderHeight();
+window.addEventListener('resize', updateHeaderHeight);
+
 window.addEventListener('scroll', () => {
-    if (window.scrollY > SCROLL_TOP_THRESHOLD) {
+    const currentScrollY = window.scrollY;
+    
+    // Scroll-to-top button logic
+    if (currentScrollY > SCROLL_TOP_THRESHOLD) {
         scrollTopBtn.classList.add('visible');
     } else {
         scrollTopBtn.classList.remove('visible');
     }
+
+    // Hide/Show filters on scroll down/up
+    if (filtersSection) {
+        if (currentScrollY > lastScrollY && currentScrollY > 100) {
+            // Scrolling down
+            filtersSection.classList.add('filters-hidden');
+        } else {
+            // Scrolling up
+            filtersSection.classList.remove('filters-hidden');
+        }
+    }
+    
+    lastScrollY = currentScrollY;
 }, { passive: true });
 
 scrollTopBtn.addEventListener('click', () => {
