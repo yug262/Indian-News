@@ -783,14 +783,6 @@ function renderImpactBadge(article) {
     const analysis = parseJsonField(article.analysis_data);
 
     if (isAnalyzed) {
-        // Show Signal Bucket (High priority visual)
-        if (analysis && analysis.signal_bucket) {
-            const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
-            const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
-            const badgeHtml = `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px;">${bucket}</span>`;
-            badges += wrapTooltip(badgeHtml, 'signal_bucket', bucket);
-        }
-
         // Show Impact Score
         if (article.impact_score != null) {
             const scoreClass = getScoreClass(article.impact_score);
@@ -812,13 +804,16 @@ function renderImpactBadge(article) {
 }
 
 function renderAnalyzeButton(article) {
-    const isAnalyzed = !!article.analyzed;
-    if (isAnalyzed) return ''; // Already analyzed, don't show another button
-
     const isAnalyzing = analyzingArticles.has(article.id);
     const btnState = isAnalyzing ? 'disabled' : '';
     const btnClass = isAnalyzing ? 'analyzing' : '';
-    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : '✨ Analyze';
+    
+    let btnText = '✨ Analyze';
+    if (isAnalyzing) {
+        btnText = '<div class="analyzing-spinner-sm"></div> Analyzing…';
+    } else if (article.analyzed) {
+        btnText = '🔄 Analyze Again';
+    }
 
     return `
         <button class="analyze-btn analyze-btn-sm ${btnClass}" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
@@ -1444,7 +1439,23 @@ function renderIndianCompactModal(article, analysis) {
             
             ${modalBodyHtml}
 
-            <div class="modal-action-footer" style="margin-top: 32px;">
+            <div class="modal-action-footer" style="margin-top: 32px; display: flex; flex-direction: column; gap: 12px;">
+                ${(() => {
+                    const isAnalyzing = analyzingArticles.has(article.id);
+                    const btnState = isAnalyzing ? 'disabled' : '';
+                    const btnClass = isAnalyzing ? 'analyzing' : '';
+                    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : '🔄 Analyze Again';
+                    
+                    return `
+                        <button class="analyze-btn analyze-btn-sm ${btnClass}" 
+                                style="padding:14px; border-radius:12px; font-weight:700; background:rgba(108, 99, 255, 0.1); border:1px solid rgba(108, 99, 255, 0.3); color:var(--accent-1); cursor:pointer; width:100%; transition:all 0.2s;"
+                                data-id="${article.id}" ${btnState} 
+                                onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
+                            ${btnText}
+                        </button>
+                    `;
+                })()}
+
                 <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" style="text-align:center; padding:16px; border-radius:12px; font-weight:700; background:linear-gradient(90deg, #6366f1, #00d4aa); color:#fff; text-decoration:none; display:block; border:none; width:100%; box-shadow: 0 4px 15px rgba(99, 102, 241, 0.25);">
                     Read Full Article →
                 </a>
@@ -1523,7 +1534,13 @@ function openModal(article) {
     const isAnalyzing = analyzingArticles.has(article.id);
     const btnState = isAnalyzing ? 'disabled' : '';
     const btnClass = isAnalyzing ? 'analyzing' : '';
-    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing...' : '✨ Analyze Now';
+    
+    let btnText = '✨ Analyze Now';
+    if (isAnalyzing) {
+        btnText = '<div class="analyzing-spinner-sm"></div> Analyzing...';
+    } else if (article.analyzed) {
+        btnText = '🔄 Analyze Again';
+    }
 
     // Match "IA Flat Display" / "Intelligence Section" from Image 6
     let classificationHtml = '';
@@ -1868,7 +1885,7 @@ function createNewsCard(article, index, isFeatured = false) {
                 ${renderCategoryBadge(article.news_category)}
                 ${featuredBadge}
             </div>
-            <span class="card-source"><span style="color:var(--accent-1); margin-right:4px;">•</span> ${escapeHtml(article.source || 'Unknown')}</span>
+            <span class="card-source">${escapeHtml(article.source || 'Unknown')}</span>
         </div>
         
         <h2 class="card-title">${escapeHtml(article.title)}</h2>
