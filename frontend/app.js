@@ -783,14 +783,6 @@ function renderImpactBadge(article) {
     const analysis = parseJsonField(article.analysis_data);
 
     if (isAnalyzed) {
-        // Show Signal Bucket (High priority visual)
-        if (analysis && analysis.signal_bucket) {
-            const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
-            const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
-            const badgeHtml = `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px;">${bucket}</span>`;
-            badges += wrapTooltip(badgeHtml, 'signal_bucket', bucket);
-        }
-
         // Show Impact Score
         if (article.impact_score != null) {
             const scoreClass = getScoreClass(article.impact_score);
