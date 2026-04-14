@@ -103,6 +103,11 @@ let isDrawerOpen = false;
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('cw-theme', theme);
+
+    // Re-render chart if it's active so it picks up the new theme colors
+    if (typeof renderLWChart === 'function' && window.chartCandleData) {
+        renderLWChart(window.chartCandleData);
+    }
 }
 
 // Load saved theme (default: dark)
@@ -1868,7 +1873,7 @@ function createNewsCard(article, index, isFeatured = false) {
         ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
         
         ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
-        <div class="card-affected-stocks" style="display:block; padding:10px; background-color:rgba(108, 99, 255, 0.08); align-items:center; gap:10px; margin: 16px 0 12px 0;">
+        <div class="card-affected-stocks" style="display:block; padding:10px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); align-items:center; gap:10px; margin: 16px 0 12px 0;">
             <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span><br>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
                 ${renderAllSymbolsBadge(article.symbols)}
@@ -3436,21 +3441,29 @@ function displayNewsPanel(newsMarkers) {
             ? news.affected_stocks.join(', ')
             : 'N/A';
 
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        const titleCol = isLight ? '#0f172a' : '#e0e0e0';
+        const metaCol = isLight ? '#555570' : '#888';
+        const bgNormal = isLight ? 'rgba(108, 99, 255, 0.05)' : 'rgba(108, 99, 255, 0.08)';
+        const bgHover = isLight ? 'rgba(108, 99, 255, 0.12)' : 'rgba(108, 99, 255, 0.15)';
+        const borderNormal = isLight ? 'rgba(108, 99, 255, 0.1)' : 'rgba(108, 99, 255, 0.2)';
+        const borderHover = isLight ? 'rgba(108, 99, 255, 0.3)' : 'rgba(108, 99, 255, 0.4)';
+
         html += `
             <div style="
-                background: rgba(108, 99, 255, 0.08);
-                border: 1px solid rgba(108, 99, 255, 0.2);
+                background: ${bgNormal};
+                border: 1px solid ${borderNormal};
                 border-radius: 8px;
                 padding: 10px 12px;
                 cursor: pointer;
                 transition: all 0.2s ease;
-            " onmouseover="this.style.background='rgba(108, 99, 255, 0.15)'; this.style.borderColor='rgba(108, 99, 255, 0.4)'"
-               onmouseout="this.style.background='rgba(108, 99, 255, 0.08)'; this.style.borderColor='rgba(108, 99, 255, 0.2)'">
-                <div style="font-size: 0.78rem; font-weight: 700; color: #e0e0e0; margin-bottom: 4px; line-height: 1.3;">
+            " onmouseover="this.style.background='${bgHover}'; this.style.borderColor='${borderHover}'"
+               onmouseout="this.style.background='${bgNormal}'; this.style.borderColor='${borderNormal}'">
+                <div style="font-size: 0.78rem; font-weight: 700; color: ${titleCol}; margin-bottom: 4px; line-height: 1.3;">
                     ${escapeHtml(news.title)}
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-size: 0.7rem; color: #888;">${timeStr}</span>
+                    <span style="font-size: 0.7rem; color: ${metaCol};">${timeStr}</span>
                     <span style="
                         font-size: 0.65rem;
                         background: #6c63ff;
@@ -3555,14 +3568,23 @@ function renderLWChart(candleData) {
         width: w,
         height: h,
         layout: {
-            background: { type: LightweightCharts.ColorType.Solid, color: '#0b0f19' },
-            textColor: '#7d8490',
+            background: { 
+                type: LightweightCharts.ColorType.Solid, 
+                color: document.documentElement.getAttribute('data-theme') === 'light' ? '#ffffff' : '#0b0f19' 
+            },
+            textColor: document.documentElement.getAttribute('data-theme') === 'light' ? '#131722' : '#7d8490',
             fontFamily: "'Inter', -apple-system, sans-serif",
             fontSize: 11,
         },
         grid: {
-            vertLines: { color: 'rgba(255,255,255,0.035)', style: LightweightCharts.LineStyle.Dashed },
-            horzLines: { color: 'rgba(255,255,255,0.035)', style: LightweightCharts.LineStyle.Dashed },
+            vertLines: { 
+                color: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.035)', 
+                style: LightweightCharts.LineStyle.Dashed 
+            },
+            horzLines: { 
+                color: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.035)', 
+                style: LightweightCharts.LineStyle.Dashed 
+            },
         },
         crosshair: {
             mode: LightweightCharts.CrosshairMode.Normal,
@@ -3580,13 +3602,13 @@ function renderLWChart(candleData) {
             },
         },
         rightPriceScale: {
-            borderColor: 'rgba(255,255,255,0.06)',
-            textColor: '#7d8490',
+            borderColor: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.06)',
+            textColor: document.documentElement.getAttribute('data-theme') === 'light' ? '#131722' : '#7d8490',
             scaleMargins: { top: 0.08, bottom: 0.08 },
         },
         timeScale: {
-            borderColor: 'rgba(255,255,255,0.06)',
-            textColor: '#7d8490',
+            borderColor: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.06)',
+            textColor: document.documentElement.getAttribute('data-theme') === 'light' ? '#131722' : '#7d8490',
             timeVisible: true,
             secondsVisible: false,
             rightOffset: 8,
@@ -3641,19 +3663,21 @@ function renderLWChart(candleData) {
     if (!newsTooltip) {
         newsTooltip = document.createElement('div');
         newsTooltip.id = 'newsMarkerTooltip';
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
         newsTooltip.style.cssText = `
             position: absolute;
             top: 60px;
             right: 12px;
             z-index: 11;
-            background: rgba(11, 15, 25, 0.95);
-            border: 1px solid rgba(108, 99, 255, 0.4);
+            background: ${isLight ? 'rgba(255, 255, 255, 0.98)' : 'rgba(11, 15, 25, 0.95)'};
+            border: 1px solid ${isLight ? 'rgba(108, 99, 255, 0.2)' : 'rgba(108, 99, 255, 0.4)'};
+            color: ${isLight ? '#1a1a2e' : '#f0f0f5'};
             border-radius: 8px;
             padding: 12px;
             font-family: 'Inter', sans-serif;
             display: none;
             max-width: 340px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+            box-shadow: 0 8px 32px ${isLight ? 'rgba(0, 0, 0, 0.1)' : 'rgba(0, 0, 0, 0.6)'};
             backdrop-filter: blur(8px);
             overflow-y: auto;
             max-height: 180px;
@@ -3680,12 +3704,15 @@ function attachCrosshairTooltip() {
 
     const tooltip = document.createElement('div');
     tooltip.id = 'chartCrosshairTooltip';
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
     tooltip.style.cssText = `
         position:absolute; top:12px; left:12px; z-index:10;
-        background:rgba(11,15,25,0.92); border:1px solid rgba(108,99,255,0.35);
+        background:${isLight ? 'rgba(255, 255, 255, 0.95)' : 'rgba(11, 15, 25, 0.92)'}; 
+        border:1px solid ${isLight ? 'rgba(108, 99, 255, 0.2)' : 'rgba(108, 99, 255, 0.35)'};
+        color: ${isLight ? '#1a1a2e' : '#f0f0f5'};
         border-radius:8px; padding:8px 12px; font-size:0.78rem; font-family:'Inter',sans-serif;
         pointer-events:none; display:none; backdrop-filter:blur(4px);
-        box-shadow:0 4px 20px rgba(0,0,0,0.5);
+        box-shadow:0 4px 20px ${isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(0, 0, 0, 0.5)'};
     `;
     const container = document.getElementById('lwChartContainer');
     container.style.position = 'relative';
@@ -3706,15 +3733,19 @@ function attachCrosshairTooltip() {
         const chg = ((bar.close - bar.open) / bar.open * 100).toFixed(3);
         const sign = isUp ? '+' : '';
 
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        const labelCol = isLight ? '#555570' : '#9ca3af';
+        const valCol = isLight ? '#1a1a2e' : '#e0e0e0';
+
         tooltip.style.display = 'block';
         tooltip.innerHTML = `
-            <div style="color:#9ca3af;font-size:0.7rem;margin-bottom:4px;">${timeStr} · 3m</div>
+            <div style="color:${labelCol};font-size:0.7rem;margin-bottom:4px;">${timeStr} · 3m</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 16px;font-size:0.78rem;">
-                <span style="color:#9ca3af;">O</span><span style="color:#e0e0e0;font-weight:600;">${bar.open.toFixed(5)}</span>
-                <span style="color:#9ca3af;">H</span><span style="color:#26a69a;font-weight:600;">${bar.high.toFixed(5)}</span>
-                <span style="color:#9ca3af;">L</span><span style="color:#ef5350;font-weight:600;">${bar.low.toFixed(5)}</span>
-                <span style="color:#9ca3af;">C</span><span style="color:${col};font-weight:700;">${bar.close.toFixed(5)}</span>
-                <span style="color:#9ca3af;">Chg</span><span style="color:${col};font-weight:600;">${sign}${chg}%</span>
+                <span style="color:${labelCol};">O</span><span style="color:${valCol};font-weight:600;">${bar.open.toFixed(5)}</span>
+                <span style="color:${labelCol};">H</span><span style="color:#26a69a;font-weight:600;">${bar.high.toFixed(5)}</span>
+                <span style="color:${labelCol};">L</span><span style="color:#ef5350;font-weight:600;">${bar.low.toFixed(5)}</span>
+                <span style="color:${labelCol};">C</span><span style="color:${col};font-weight:700;">${bar.close.toFixed(5)}</span>
+                <span style="color:${labelCol};">Chg</span><span style="color:${col};font-weight:600;">${sign}${chg}%</span>
             </div>
         `;
     });

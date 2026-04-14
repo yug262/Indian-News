@@ -895,17 +895,17 @@
 
 /* ---- Light Theme Override ---- */
 [data-theme="light"] {
-    --bg-primary: #f5f5fa;
+    --bg-primary: #f8f9fa;
     --bg-secondary: #ffffff;
-    --bg-card: rgba(255, 255, 255, 0.85);
-    --bg-card-hover: rgba(245, 245, 255, 0.95);
-    --border: rgba(0, 0, 0, 0.08);
-    --border-hover: rgba(0, 0, 0, 0.15);
-    --text-primary: #1a1a2e;
-    --text-secondary: #555570;
-    --text-muted: #8888a0;
-    --glow-purple: rgba(108, 99, 255, 0.08);
-    --glow-green: rgba(0, 212, 170, 0.08);
+    --bg-card: rgba(255, 255, 255, 0.9);
+    --bg-card-hover: #ffffff;
+    --border: rgba(0, 0, 0, 0.12);
+    --border-hover: rgba(0, 0, 0, 0.2);
+    --text-primary: #0f172a;
+    --text-secondary: #334155;
+    --text-muted: #64748b;
+    --glow-purple: rgba(108, 99, 255, 0.1);
+    --glow-green: rgba(0, 212, 170, 0.1);
 }
 
 [data-theme="light"] .header {
@@ -948,6 +948,36 @@
 
 [data-theme="light"] .modal-close {
     background: rgba(0, 0, 0, 0.04);
+}
+
+/* ---- Chart Light Theme Overrides ---- */
+[data-theme="light"] .chart-overlay {
+    background: rgba(255, 255, 255, 0.82);
+}
+
+[data-theme="light"] .chart-panel {
+    background: #ffffff;
+    box-shadow: 0 40px 120px rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .chart-header {
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+    background: linear-gradient(135deg, rgba(108, 99, 255, 0.05), rgba(0, 200, 180, 0.03));
+}
+
+[data-theme="light"] .chart-controls {
+    border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+[data-theme="light"] .chart-search-input {
+    background: rgba(0, 0, 0, 0.04);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    color: #1a1a2e;
+}
+
+[data-theme="light"] .lw-chart-container {
+    background: #ffffff;
 }
 
 [data-theme="light"] .modal-overlay {
