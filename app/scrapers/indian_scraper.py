@@ -254,26 +254,6 @@ async def save_article(article):
         except Exception as fe:
             logger.warning(f"Filtering Agent error for {new_id}: {fe}")
 
-        # 3. Deep Analysis (Currently Manual)
-        # The block below is kept commented as per user preference (saves tokens/time).
-        # Users can trigger full analysis via the UI "Analyze" button.
-        """
-        analysis = await asyncio.to_thread(
-            filter_indian_news,
-            title=article['title'],
-            published_iso=article['published'].isoformat() if hasattr(article['published'], 'isoformat') else str(article['published']),
-            summary=article['description'],
-            source=article['source'],
-            current_news_id=new_id
-        )
-        
-        if analysis:
-            await asyncio.to_thread(
-                save_indian_analysis,
-                new_id, analysis
-            )
-        """
-
         # 4. Trigger stateful event grouping AFTER insert
         try:
             category = filter_data.get('category', 'other') if filter_data else 'other'
