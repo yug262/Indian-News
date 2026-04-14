@@ -777,7 +777,7 @@ function renderNewInfoBadge(article) {
 
 function renderImpactBadge(article) {
     let badges = '';
-    const isAnalyzed = article.impact_score != null;
+    const isAnalyzed = !!article.analyzed;
     const analysis = parseJsonField(article.analysis_data);
 
     if (isAnalyzed) {
@@ -810,7 +810,7 @@ function renderImpactBadge(article) {
 }
 
 function renderAnalyzeButton(article) {
-    const isAnalyzed = article.impact_score != null;
+    const isAnalyzed = !!article.analyzed;
     if (isAnalyzed) return ''; // Already analyzed, don't show another button
 
     const isAnalyzing = analyzingArticles.has(article.id);
