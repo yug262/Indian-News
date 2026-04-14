@@ -2729,9 +2729,11 @@ function renderEvents(events) {
     const section = document.getElementById('eventsSection');
     const container = document.getElementById('eventsContainer');
 
+    if (!section || !container) return;
+
     if (!events || events.length === 0) {
         section.style.display = 'none';
-        if (container) container.innerHTML = '';
+        container.innerHTML = '';
         return;
     }
 

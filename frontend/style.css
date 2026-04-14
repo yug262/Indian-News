@@ -1216,8 +1216,8 @@ body {
 }
 
 .header-inner {
-    max-width: 1200px;
-    margin: 0 auto;
+    max-width: 100%;
+    margin: 0;
     padding: 14px 24px;
     display: flex;
     align-items: center;
@@ -5111,7 +5111,6 @@ body {
 /* ---- Large Desktop / Wide (1600px+) ---- */
 @media (min-width: 1600px) {
 
-    .header-inner,
     .filters-inner,
     .main-content {
         max-width: 1440px;
