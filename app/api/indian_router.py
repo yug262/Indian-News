@@ -126,6 +126,7 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
              limit: int = Query(20, description="Max number of articles to return"),
              today_only: bool = Query(False, description="Only fetch today's news"),
              relevance: str = Query(None, description="Filter news by relevance"),
+             exclude_noisy: bool = Query(False, description="Exclude articles with relevance 'noisy'"),
              analyzed_only: bool = Query(False, description="Only fetch analyzed news"),
              event_id: str = Query(None, description="Filter news by exact event ID"),
              offset: int = Query(0, description="Number of items to skip for pagination"),
@@ -153,6 +154,8 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
     if relevance and relevance.lower() != "all":
         query += " AND LOWER(news_relevance) = %s"
         params.append(relevance.lower())
+    elif exclude_noisy:
+        query += " AND (news_relevance IS NULL OR LOWER(news_relevance) != 'noisy')"
         
     if analyzed_only:
         query += " AND analyzed = TRUE"

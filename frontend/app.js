@@ -89,6 +89,8 @@ const eventsBoardSort = document.getElementById('eventsBoardSort');
 const eventsBoardTotal = document.getElementById('eventsBoardTotal');
 const eventsBoardArticles = document.getElementById('eventsBoardArticles');
 const eventsBoardLastUpdate = document.getElementById('eventsBoardLastUpdate');
+const noisyView = document.getElementById('noisyView');
+const noisyGrid = document.getElementById('noisyGrid');
 
 // ---- Mobile Menu Elements ----
 const mobileMenuTrigger = document.getElementById('mobileMenuTrigger');
@@ -1909,6 +1911,7 @@ function createNewsCard(article, index, isFeatured = false) {
 function renderNews(articles, prepend = false, append = false) {
     if (!prepend && !append) {
         newsGrid.innerHTML = '';
+        if (noisyGrid) noisyGrid.innerHTML = '';
         featuredGrid.innerHTML = '';
         featuredSection.style.display = 'none';
         allNewsHeader.style.display = 'none';
@@ -1937,8 +1940,10 @@ function renderNews(articles, prepend = false, append = false) {
         updateDisplayCounts();
     }
 
+    const targetGrid = currentDashboardView === 'noisy' ? noisyGrid : newsGrid;
+
     // Handle Featured Articles (ONLY on the first page/initial load/refresh when not searching)
-    if (!prepend && !append && !searchQuery) {
+    if (!prepend && !append && !searchQuery && currentDashboardView === 'feed') {
         let regularArticles = [...articles];
         let featured = [];
 
@@ -1985,7 +1990,7 @@ function renderNews(articles, prepend = false, append = false) {
 
         // Render the remaining regular articles
         regularArticles.forEach((article, index) => {
-            newsGrid.appendChild(createNewsCard(article, index));
+            targetGrid.appendChild(createNewsCard(article, index));
         });
     } else {
         // Standard Prepended or Appended rendering (for load more and search results)
@@ -1993,12 +1998,12 @@ function renderNews(articles, prepend = false, append = false) {
             for (let i = articles.length - 1; i >= 0; i--) {
                 const card = createNewsCard(articles[i], i);
                 card.style.animation = 'none'; // skip animation for silent auto-updates
-                newsGrid.insertBefore(card, newsGrid.firstChild);
+                targetGrid.insertBefore(card, targetGrid.firstChild);
             }
         } else {
             articles.forEach((article, index) => {
                 const card = createNewsCard(article, index);
-                newsGrid.appendChild(card);
+                targetGrid.appendChild(card);
             });
         }
     }
@@ -2140,6 +2145,13 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         }
         if (searchQuery) {
             url += `&search=${encodeURIComponent(searchQuery)}`;
+        }
+        
+        // Handle Noisy News separation
+        if (currentDashboardView === 'noisy') {
+            url += `&relevance=noisy`;
+        } else if (currentDashboardView === 'feed') {
+            url += `&exclude_noisy=true`;
         }
 
         const res = await apiFetch(url, { signal });
@@ -2392,14 +2404,50 @@ function setDashboardNavState() {
 
 function applyDashboardViewState() {
     const isEventsView = currentDashboardView === 'events';
-    if (filtersSection) filtersSection.style.display = isEventsView ? 'none' : '';
-    if (feedView) feedView.style.display = isEventsView ? 'none' : 'block';
+    const isNoisyView = currentDashboardView === 'noisy';
+    
+    if (filtersSection) {
+        filtersSection.style.display = isEventsView ? 'none' : '';
+    }
+
+    if (relevanceFilter) {
+        relevanceFilter.style.display = isNoisyView ? 'none' : '';
+    }
+    
+    if (feedView) feedView.style.display = (isEventsView || isNoisyView) ? 'none' : 'block';
+    if (noisyView) noisyView.style.display = isNoisyView ? 'block' : 'none';
     if (eventsBoardView) eventsBoardView.style.display = isEventsView ? 'block' : 'none';
+    
     setDashboardNavState();
 }
 
 window.switchDashboardView = function (targetView, options = {}) {
-    currentDashboardView = targetView === 'events' ? 'events' : 'feed';
+    if (targetView === 'events') {
+        currentDashboardView = 'events';
+    } else if (targetView === 'noisy') {
+        currentDashboardView = 'noisy';
+        // Reset filters for noisy view to show ALL noisy news
+        currentRelevance = 'all';
+        currentSource = 'all';
+        searchQuery = '';
+        if (searchInput) {
+            searchInput.value = '';
+            searchClear.style.display = 'none';
+        }
+        if (relevanceFilter) relevanceFilter.value = 'all';
+
+        // Visually reset source pills
+        if (filtersContainer) {
+            filtersContainer.querySelectorAll('.filter-pill').forEach(p => {
+                const isAll = p.dataset.source === 'all';
+                p.classList.toggle('active', isAll);
+                p.setAttribute('aria-selected', isAll ? 'true' : 'false');
+            });
+        }
+    } else {
+        currentDashboardView = 'feed';
+    }
+    
     applyDashboardViewState();
 
     if (currentDashboardView === 'events') {
@@ -2407,6 +2455,11 @@ window.switchDashboardView = function (targetView, options = {}) {
         if (!eventsData.length) {
             fetchEvents();
         }
+    } else {
+        // Refresh news for the selected view (feed or noisy)
+        currentPage = 0;
+        seenArticleIds.clear();
+        fetchNews();
     }
 
     if (options.scroll !== false) {
