@@ -490,7 +490,7 @@ def _run_analysis(title: str, summary: str, published_iso: str, source: str) -> 
     # 2. Execute tools
     tool_results, valid_symbols = execute_tool_plan(plan, published_iso, source, title, summary)
     tool_results["_market_status"] = get_market_status()
-    _log(f"   [EXECUTOR] Valid symbols: {valid_symbols}")
+    _log(f"[EXECUTOR] Valid symbols: {valid_symbols}")
 
     # 3. Build prompt — inject analysis time context
     analysis_now = datetime.now(timezone.utc)
@@ -523,14 +523,14 @@ def _run_analysis(title: str, summary: str, published_iso: str, source: str) -> 
     )
     contents = [types.Content(role="user", parts=[types.Part(text=user_prompt)])]
 
-    _log("   [AGENT] Single-pass LLM call...")
+    _log("[AGENT] Single-pass LLM call...")
     response = client.models.generate_content(model=MODEL_NAME, contents=contents, config=config)
 
     usage = response.usage_metadata
     if usage:
         p_in = usage.prompt_token_count or 0
         p_out = usage.candidates_token_count or 0
-        _log(f"   [TOKENS] In: {p_in} | Out: {p_out} | Total: {p_in + p_out}")
+        _log(f"[ANALYSIS TOKENS] In: {p_in} | Out: {p_out} | Total: {p_in + p_out}")
 
     text = _get_text_response(response)
     result = _safe_json_loads(text)
@@ -562,7 +562,7 @@ def _run_analysis(title: str, summary: str, published_iso: str, source: str) -> 
         if sym in valid_set or _validate_nse_symbol(sym):
             verified_stocks.append(st)
         else:
-            _log(f"   [REJECTED] Hallucinated symbol: {sym}")
+            _log(f"[REJECTED] Hallucinated symbol: {sym}")
     result["stock_impacts"] = verified_stocks
 
     # Rule 3: Confidence cap
@@ -600,7 +600,7 @@ def analyze_indian_news(
 
     for attempt in range(MAX_RETRIES):
         try:
-            _log(f"[INDIA ATTEMPT {attempt + 1}/{MAX_RETRIES}] {title[:120]}")
+            _log(f"\n[INDIA ATTEMPT {attempt + 1}/{MAX_RETRIES}]")
             result = _run_analysis(title=title, summary=summary, published_iso=published_iso, source=source)
 
             # Timestamp
@@ -667,7 +667,7 @@ def save_indian_analysis(news_id: int, analysis: dict) -> None:
     )
 
     execute_query(query, params)
-    _log(f"[INDIA SAVE] news_id={news_id}")
+    _log(f"\n[INDIA SAVE] news_id={news_id}")
 
 
 #     try:

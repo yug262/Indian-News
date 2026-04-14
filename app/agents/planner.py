@@ -110,7 +110,7 @@ def run_planner(title: str, summary: str) -> dict:
         usage = response.usage_metadata
         p_in = usage.prompt_token_count or 0 if usage else 0
         p_out = usage.candidates_token_count or 0 if usage else 0
-        _log(f"   [PLANNER TOKENS] In: {p_in} | Out: {p_out} | Total: {p_in + p_out}")
+        _log(f"[PLANNER TOKENS] In: {p_in} | Out: {p_out} | Total: {p_in + p_out}")
 
         raw_text = ""
         if response and response.candidates:
@@ -124,7 +124,7 @@ def run_planner(title: str, summary: str) -> dict:
 
         plan = json.loads(raw_text.strip())
         plan = _validate_plan(plan)
-        _log(f"   [PLANNER] Executing {len(plan['tools'])} tools.")
+        _log(f"[PLANNER] Executing {len(plan['tools'])} tools.")
         return plan
 
     except Exception as e:

@@ -453,6 +453,11 @@ async def analyze_single_indian_article(news_id: int):
         description = article.get("description", "") or ""
         source = article.get("source", "") or ""
 
+        # === START OF ANALYSIS BLOCK ===
+        trimmed_title = title[:100] + ("..." if len(title) > 100 else "")
+        print(f"\n[INDIA ANALYSIS START] news_id={news_id}")
+        print(f"[TITLE] {trimmed_title}")
+
         # Run analysis with 120 second timeout
         analysis = await run_with_timeout(
             lambda: analyze_indian_news(
@@ -480,6 +485,7 @@ async def analyze_single_indian_article(news_id: int):
                     (news_id,)
                 )
                 print(f"[API] Indian Analysis saved for news_id={news_id}")
+                print(f"[INDIA ANALYSIS END] news_id={news_id}")
                 
                 # Re-fetch the full updated article from DB so frontend gets flat fields
                 try:
@@ -510,23 +516,29 @@ async def analyze_single_indian_article(news_id: int):
                 return {"status": "success", "data": analysis}
             except TimeoutError:
                 print(f"[API] save_indian_analysis TIMEOUT for news_id={news_id}")
+                print(f"[INDIA ANALYSIS END] news_id={news_id}")
                 return {"status": "error", "message": "Analysis completed but save timed out"}
             except Exception as save_err:
                 print(f"[API] save_indian_analysis FAILED for news_id={news_id}: {save_err}")
+                print(f"[INDIA ANALYSIS END] news_id={news_id}")
                 import traceback
                 traceback.print_exc()
                 return {"status": "error", "message": f"Save failed: {save_err}"}
         else:
             print(f"[API] analyze_indian_news returned None for news_id={news_id}")
+            print(f"[INDIA ANALYSIS END] news_id={news_id}")
             return {"status": "error", "message": "Analysis failed — click to retry"}
     except TimeoutError as te:
         print(f"[API] TIMEOUT in indian_analyze endpoint for news_id={news_id}: {te}")
+        print(f"[INDIA ANALYSIS END] news_id={news_id}")
         return {"status": "error", "message": "Analysis timeout - took too long (2 min limit)"}
     except asyncio.CancelledError:
         print(f"[API] Indian Analysis cancelled for news_id={news_id}")
+        print(f"[INDIA ANALYSIS END] news_id={news_id}")
         return {"status": "error", "message": "Analysis was cancelled"}
     except Exception as e:
         print(f"[API] Exception in indian_analyze endpoint: {e}")
+        print(f"[INDIA ANALYSIS END] news_id={news_id}")
         # Record failure state (Hardened v3)
         try:
             await run_in_executor(
