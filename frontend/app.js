@@ -1870,9 +1870,12 @@ function createNewsCard(article, index, isFeatured = false) {
     card.className = isFeatured ? 'news-card featured-card' : 'news-card';
     card.style.animationDelay = `${index * 0.05}s`;
 
-    const imageHtml = article.image_url ?
-        `<div class="card-image"><img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.style.display='none'; this.closest('.news-card').classList.add('no-image');"></div>` : '';
-    if (!article.image_url) card.classList.add('no-image');
+    const imageHtml = `
+        <div class="card-image ${!article.image_url ? 'missing-image' : ''}">
+            ${article.image_url ? 
+                `<img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.classList.add('missing-image'); this.style.display='none';">` : 
+                `<div class="image-placeholder"></div>`}
+        </div>`;
 
     const featuredBadge = isFeatured ? `<span class="featured-type-badge">${article.featuredType}</span>` : '';
 

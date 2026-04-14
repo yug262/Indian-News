@@ -1426,7 +1426,7 @@ body {
 }
 
 .filters-inner {
-    max-width: 1200px;
+    max-width: 1440px;
     margin: 0 auto;
     padding: 14px 24px;
     display: flex;
@@ -1549,7 +1549,7 @@ body {
 .main-content {
     position: relative;
     z-index: 1;
-    max-width: 1200px;
+    max-width: 1440px;
     margin: 0 auto;
     padding: 28px 24px 60px;
     min-height: 60vh;
@@ -1622,7 +1622,7 @@ body {
 /* ---- News Grid ---- */
 .news-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
     gap: 24px;
     align-items: stretch;
 }
@@ -1644,6 +1644,7 @@ body {
     color: inherit;
     animation: cardFadeIn 0.5s ease both;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    min-height: 540px;
 }
 
 .news-card::before {
@@ -1678,6 +1679,20 @@ body {
     position: relative;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     flex-shrink: 0;
+    background: rgba(255, 255, 255, 0.03); /* Default background */
+}
+
+.card-image.missing-image {
+    background: linear-gradient(135deg, rgba(108, 99, 255, 0.05), rgba(0, 212, 170, 0.05));
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.card-image.missing-image::before {
+    content: '📉'; 
+    font-size: 2rem;
+    opacity: 0.2;
 }
 
 .card-image img {
@@ -1983,13 +1998,13 @@ body {
     overflow: hidden;
 }
 
+/* Removed no-image overrides to keep layout fixed */
 .news-card.no-image {
-    align-self: start;
+    /* Allow stretching to maintain height */
 }
 
 .news-card.no-image .card-description {
-    -webkit-line-clamp: unset;
-    line-clamp: unset;
+     /* Inherit standard clamp */
 }
 
 .card-footer {
@@ -4449,7 +4464,7 @@ body {
 }
 
 .footer-inner {
-    max-width: 1200px;
+    max-width: 1440px;
     margin: 0 auto;
     padding: 40px 24px 28px;
     display: flex;
@@ -5047,7 +5062,7 @@ body {
 }
 
 .chart-panel {
-    max-width: 1200px;
+    max-width: 1440px;
     margin: 40px auto;
     background: var(--bg-card);
     border: 1px solid rgba(108, 99, 255, 0.3);
