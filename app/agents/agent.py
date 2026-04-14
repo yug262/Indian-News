@@ -490,7 +490,7 @@ def _run_analysis(title: str, summary: str, published_iso: str, source: str) -> 
     # 2. Execute tools
     tool_results, valid_symbols = execute_tool_plan(plan, published_iso, source, title, summary)
     tool_results["_market_status"] = get_market_status()
-    _log(f"   [EXECUTOR] Valid symbols: {valid_symbols}")
+    _log(f"[EXECUTOR] Valid symbols: {valid_symbols}")
 
     # 3. Build prompt — inject analysis time context
     analysis_now = datetime.now(timezone.utc)
@@ -523,14 +523,14 @@ def _run_analysis(title: str, summary: str, published_iso: str, source: str) -> 
     )
     contents = [types.Content(role="user", parts=[types.Part(text=user_prompt)])]
 
-    _log("   [AGENT] Single-pass LLM call...")
+    _log("[AGENT] Single-pass LLM call...")
     response = client.models.generate_content(model=MODEL_NAME, contents=contents, config=config)
 
     usage = response.usage_metadata
     if usage:
         p_in = usage.prompt_token_count or 0
         p_out = usage.candidates_token_count or 0
-        _log(f"   [TOKENS] In: {p_in} | Out: {p_out} | Total: {p_in + p_out}")
+        _log(f"[ANALYSIS TOKENS] In: {p_in} | Out: {p_out} | Total: {p_in + p_out}")
 
     text = _get_text_response(response)
     result = _safe_json_loads(text)
@@ -562,7 +562,7 @@ def _run_analysis(title: str, summary: str, published_iso: str, source: str) -> 
         if sym in valid_set or _validate_nse_symbol(sym):
             verified_stocks.append(st)
         else:
-            _log(f"   [REJECTED] Hallucinated symbol: {sym}")
+            _log(f"[REJECTED] Hallucinated symbol: {sym}")
     result["stock_impacts"] = verified_stocks
 
     # Rule 3: Confidence cap
@@ -600,7 +600,7 @@ def analyze_indian_news(
 
     for attempt in range(MAX_RETRIES):
         try:
-            _log(f"[INDIA ATTEMPT {attempt + 1}/{MAX_RETRIES}] {title[:120]}")
+            _log(f"\n[INDIA ATTEMPT {attempt + 1}/{MAX_RETRIES}]")
             result = _run_analysis(title=title, summary=summary, published_iso=published_iso, source=source)
 
             # Timestamp
@@ -644,7 +644,6 @@ def save_indian_analysis(news_id: int, analysis: dict) -> None:
             market_bias       = %s,
             signal_bucket     = %s,
             news_category     = %s,
-            news_relevance    = %s,
             primary_symbol    = %s,
             executive_summary = %s,
             decision_trace    = %s
@@ -661,7 +660,6 @@ def save_indian_analysis(news_id: int, analysis: dict) -> None:
         market_bias_val[:20],
         bucket_val[:20],
         (event.get("event_type", "general"))[:100],
-        "High" if impact_score_val >= 6 else "Medium" if impact_score_val >= 3 else "Low",
         primary_symbol,
         (analysis.get("executive_summary", "") or "")[:2000],
         json.dumps(analysis.get("decision_trace", {})),
@@ -669,67 +667,4 @@ def save_indian_analysis(news_id: int, analysis: dict) -> None:
     )
 
     execute_query(query, params)
-    _log(f"[INDIA SAVE] news_id={news_id}")
-
-
-#     try:
-#         create_watchlists(news_id, analysis)
-#     except Exception as e:
-#         _log(f"[INDIA SUG] Failed for news_id={news_id}: {e}")
-
-
-# def create_watchlists(news_id: int, analysis: dict) -> None:
-#     """Create watchlist/suggestion rows from stock_impacts."""
-#     stock_impacts = analysis.get("stock_impacts", []) or []
-#     core_view = analysis.get("core_view", {}) or {}
-#     horizon = str(core_view.get("horizon", "short_term") or "short_term").strip()
-#     trade_obj = analysis.get("tradeability", {}) or {}
-#     tradeability = trade_obj.get("classification", "no_edge") if isinstance(trade_obj, dict) else str(trade_obj)
-
-#     if tradeability == "no_edge" or not stock_impacts:
-#         return
-
-#     try:
-#         execute_query("DELETE FROM suggestions WHERE news_id = %s", (news_id,))
-#     except Exception:
-#         pass
-
-#     created = 0
-#     for item in stock_impacts[:5]:
-#         try:
-#             asset = (item.get("symbol") or "").strip().upper()
-#             if not asset:
-#                 continue
-
-#             direction = _normalize_direction(item.get("bias", "unclear"))
-#             confidence = int(item.get("confidence", 0) or 0)
-#             why = (item.get("why") or "").strip()
-
-#             if direction == "bullish" and confidence >= 70:
-#                 sug_type = "buy"
-#             elif direction == "bearish" and confidence >= 70:
-#                 sug_type = "sell"
-#             elif direction in {"bullish", "bearish", "mixed"} and confidence >= 40:
-#                 sug_type = "watch"
-#             else:
-#                 sug_type = "avoid"
-
-#             reasoning = why or "Signal exists but conviction is limited."
-#             reaction = (item.get("reaction") or "uncertain").strip()
-#             timing = (item.get("timing") or "short_term").strip()
-#             market_logic = f"Reaction: {reaction}. Timing: {timing}. Horizon: {horizon}."
-
-#             execute_query(
-#                 """INSERT INTO suggestions
-#                     (news_id, suggestion_type, asset, direction, reasoning, market_logic,
-#                      time_window, invalidation, confidence)
-#                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-#                 (news_id, sug_type, asset,
-#                  direction if direction in {"bullish", "bearish", "mixed", "neutral"} else "",
-#                  reasoning[:1000], market_logic[:1000], horizon[:100], "", confidence),
-#             )
-#             created += 1
-#         except Exception as e:
-#             _log(f"[INDIA SUG] Error for {item.get('symbol', '')}: {e}")
-
-#     _log(f"[INDIA SUG] Created {created} watchlist row(s) for news_id={news_id}")
+    _log(f"\n[INDIA SAVE] news_id={news_id}")

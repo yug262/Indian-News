@@ -150,7 +150,12 @@ def execute_notify(channel, payload):
     Sends a Postgres NOTIFY signal to a specific channel with a JSON payload.
     This is the core of our 'Strong' real-time sync system.
     """
+    import re
+    if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', channel):
+        raise ValueError(f"Invalid channel name: {channel}")
+
     conn = get_connection()
+    old_isolation = conn.isolation_level
     try:
         conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
         with conn.cursor() as cur:
@@ -158,6 +163,10 @@ def execute_notify(channel, payload):
     except Exception as e:
         print(f"[DB] NOTIFY failed on channel {channel}: {e}")
     finally:
+        try:
+            conn.set_isolation_level(old_isolation)
+        except Exception:
+            pass
         release_connection(conn)
 
 # # Initialization has been moved to the server's startup event 

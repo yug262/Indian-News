@@ -38,6 +38,10 @@ let currentEventId = null;
 let newsData = [];
 let sourceFilters = [];
 const analyzingArticles = new Set();
+let eventsData = [];
+let currentDashboardView = 'feed';
+let eventsBoardSearch = '';
+let eventsBoardSortBy = 'latest';
 
 let showOnlyAnalyzed = false;
 let currentRelevance = 'all';
@@ -75,6 +79,18 @@ const scrollTopBtn = document.getElementById('scrollTopBtn');
 const connectionBanner = document.getElementById('connectionBanner');
 const toastContainer = document.getElementById('toastContainer');
 const themeToggle = document.getElementById('themeToggle');
+const filtersSection = document.getElementById('filtersSection');
+const feedView = document.getElementById('feedView');
+const eventsBoardView = document.getElementById('eventsBoardView');
+const eventsBoardGrid = document.getElementById('eventsBoardGrid');
+const eventsBoardEmpty = document.getElementById('eventsBoardEmpty');
+const eventsBoardSearchInput = document.getElementById('eventsBoardSearchInput');
+const eventsBoardSort = document.getElementById('eventsBoardSort');
+const eventsBoardTotal = document.getElementById('eventsBoardTotal');
+const eventsBoardArticles = document.getElementById('eventsBoardArticles');
+const eventsBoardLastUpdate = document.getElementById('eventsBoardLastUpdate');
+const noisyView = document.getElementById('noisyView');
+const noisyGrid = document.getElementById('noisyGrid');
 
 // ---- Mobile Menu Elements ----
 const mobileMenuTrigger = document.getElementById('mobileMenuTrigger');
@@ -89,6 +105,11 @@ let isDrawerOpen = false;
 function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('cw-theme', theme);
+
+    // Re-render chart if it's active so it picks up the new theme colors
+    if (typeof renderLWChart === 'function' && window.chartCandleData) {
+        renderLWChart(window.chartCandleData);
+    }
 }
 
 // Load saved theme (default: dark)
@@ -142,11 +163,39 @@ function formatTime(dateStr) {
     });
 }
 
+function formatDateTimeIST(dateStr) {
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--';
+    return date.toLocaleString('en-IN', {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'Asia/Kolkata'
+    }) + ' IST';
+}
+
 // ---- HTML Escaping ----
 function escapeHtml(text) {
+    if (text == null) return '';
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// Specifically for Javascript arguments injected into HTML attribute wrappers (like onclick="foo('...')")
+function escapeForInlineJsAttr(text) {
+    if (text == null) return '';
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '');
 }
 
 // ---- Impact Helpers ----
@@ -163,7 +212,8 @@ function getScoreLabel(score) {
 }
 
 function parseAffectedMarkets(article) {
-    let markets = article.affected_markets || {};
+    if (!article.affected_markets) return {};
+    let markets = article.affected_markets;
     if (typeof markets === 'string') {
         try { markets = JSON.parse(markets); } catch { markets = {}; }
     }
@@ -719,8 +769,8 @@ function renderForexPairs(article) {
 }
 
 function renderNewInfoBadge(article) {
-    if (article.is_new_information == null) return '';
-    if (article.is_new_information) {
+    if (!article.is_new_information) return '';
+    if (article.is_new_information === true) {
         return `<span class="new-info-badge new-info-new">🆕 NEW INFO</span>`;
     }
     return `<span class="new-info-badge new-info-priced">📊 PRICED IN</span>`;
@@ -729,18 +779,10 @@ function renderNewInfoBadge(article) {
 
 function renderImpactBadge(article) {
     let badges = '';
-    const isAnalyzed = article.impact_score != null;
+    const isAnalyzed = !!article.analyzed;
     const analysis = parseJsonField(article.analysis_data);
 
     if (isAnalyzed) {
-        // Show Signal Bucket (High priority visual)
-        if (analysis && analysis.signal_bucket) {
-            const bucket = (analysis.signal_bucket || 'NOISE').toUpperCase();
-            const bucketCls = `bucket-${bucket.toLowerCase().replace('_', '-')}`;
-            const badgeHtml = `<span class="signal-bucket-badge ${bucketCls}" style="margin-right: 8px;">${bucket}</span>`;
-            badges += wrapTooltip(badgeHtml, 'signal_bucket', bucket);
-        }
-
         // Show Impact Score
         if (article.impact_score != null) {
             const scoreClass = getScoreClass(article.impact_score);
@@ -762,7 +804,7 @@ function renderImpactBadge(article) {
 }
 
 function renderAnalyzeButton(article) {
-    const isAnalyzed = article.impact_score != null;
+    const isAnalyzed = !!article.analyzed;
     if (isAnalyzed) return ''; // Already analyzed, don't show another button
 
     const isAnalyzing = analyzingArticles.has(article.id);
@@ -960,9 +1002,9 @@ function renderCardAnalysis(article) {
         bucketHtml = `<span class="signal-bucket-badge ${bucketCls}" style="transform:scale(0.85); transform-origin:left center;">${bucket}</span>`;
     }
 
-    const bias = (coreView.market_bias || article.usd_bias || 'Neutral').toLowerCase();
+    const bias = (coreView.market_bias || 'Neutral').toLowerCase();
     const biasInfo = getBiasInfo(bias);
-    const horizon = coreView.horizon || article.execution_window || article.impact_duration || 'N/A';
+    const horizon = coreView.horizon || 'N/A';
 
     return `
         <div class="card-analysis">
@@ -1825,7 +1867,7 @@ function createNewsCard(article, index, isFeatured = false) {
         ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
         
         ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
-        <div class="card-affected-stocks" style="display:block; padding:10px; background-color:rgba(108, 99, 255, 0.08); align-items:center; gap:10px; margin: 16px 0 12px 0;">
+        <div class="card-affected-stocks" style="display:block; padding:10px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); align-items:center; gap:10px; margin: 16px 0 12px 0;">
             <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span><br>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
                 ${renderAllSymbolsBadge(article.symbols)}
@@ -1861,6 +1903,7 @@ function createNewsCard(article, index, isFeatured = false) {
 function renderNews(articles, prepend = false, append = false) {
     if (!prepend && !append) {
         newsGrid.innerHTML = '';
+        if (noisyGrid) noisyGrid.innerHTML = '';
         featuredGrid.innerHTML = '';
         featuredSection.style.display = 'none';
         allNewsHeader.style.display = 'none';
@@ -1889,8 +1932,10 @@ function renderNews(articles, prepend = false, append = false) {
         updateDisplayCounts();
     }
 
+    const targetGrid = currentDashboardView === 'noisy' ? noisyGrid : newsGrid;
+
     // Handle Featured Articles (ONLY on the first page/initial load/refresh when not searching)
-    if (!prepend && !append && !searchQuery) {
+    if (!prepend && !append && !searchQuery && currentDashboardView === 'feed') {
         let regularArticles = [...articles];
         let featured = [];
 
@@ -1937,7 +1982,7 @@ function renderNews(articles, prepend = false, append = false) {
 
         // Render the remaining regular articles
         regularArticles.forEach((article, index) => {
-            newsGrid.appendChild(createNewsCard(article, index));
+            targetGrid.appendChild(createNewsCard(article, index));
         });
     } else {
         // Standard Prepended or Appended rendering (for load more and search results)
@@ -1945,12 +1990,12 @@ function renderNews(articles, prepend = false, append = false) {
             for (let i = articles.length - 1; i >= 0; i--) {
                 const card = createNewsCard(articles[i], i);
                 card.style.animation = 'none'; // skip animation for silent auto-updates
-                newsGrid.insertBefore(card, newsGrid.firstChild);
+                targetGrid.insertBefore(card, targetGrid.firstChild);
             }
         } else {
             articles.forEach((article, index) => {
                 const card = createNewsCard(article, index);
-                newsGrid.appendChild(card);
+                targetGrid.appendChild(card);
             });
         }
     }
@@ -2092,6 +2137,13 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         }
         if (searchQuery) {
             url += `&search=${encodeURIComponent(searchQuery)}`;
+        }
+        
+        // Handle Noisy News separation
+        if (currentDashboardView === 'noisy') {
+            url += `&relevance=noisy`;
+        } else if (currentDashboardView === 'feed') {
+            url += `&exclude_noisy=true`;
         }
 
         const res = await apiFetch(url, { signal });
@@ -2324,6 +2376,115 @@ document.querySelectorAll('.drawer-link').forEach(link => {
     });
 });
 
+function setDashboardNavState() {
+    const navItems = document.querySelectorAll('[data-view-target]');
+    navItems.forEach((item) => {
+        const target = item.getAttribute('data-view-target');
+        const isActive = target === currentDashboardView;
+
+        if (item.classList.contains('nav-view-btn')) {
+            item.classList.toggle('is-active', isActive);
+            item.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+        }
+
+        if (item.classList.contains('drawer-link')) {
+            item.classList.toggle('active', isActive);
+            item.setAttribute('aria-current', isActive ? 'page' : 'false');
+        }
+    });
+}
+
+function applyDashboardViewState() {
+    const isEventsView = currentDashboardView === 'events';
+    const isNoisyView = currentDashboardView === 'noisy';
+    
+    if (filtersSection) {
+        filtersSection.style.display = isEventsView ? 'none' : '';
+    }
+
+    if (relevanceFilter) {
+        relevanceFilter.style.display = isNoisyView ? 'none' : '';
+    }
+    
+    if (feedView) feedView.style.display = (isEventsView || isNoisyView) ? 'none' : 'block';
+    if (noisyView) noisyView.style.display = isNoisyView ? 'block' : 'none';
+    if (eventsBoardView) eventsBoardView.style.display = isEventsView ? 'block' : 'none';
+    
+    setDashboardNavState();
+}
+
+window.switchDashboardView = function (targetView, options = {}) {
+    if (targetView === 'events') {
+        currentDashboardView = 'events';
+    } else if (targetView === 'noisy') {
+        currentDashboardView = 'noisy';
+        // Reset filters for noisy view to show ALL noisy news
+        currentRelevance = 'all';
+        currentSource = 'all';
+        searchQuery = '';
+        if (searchInput) {
+            searchInput.value = '';
+            searchClear.style.display = 'none';
+        }
+        if (relevanceFilter) relevanceFilter.value = 'all';
+
+        // Visually reset source pills
+        if (filtersContainer) {
+            filtersContainer.querySelectorAll('.filter-pill').forEach(p => {
+                const isAll = p.dataset.source === 'all';
+                p.classList.toggle('active', isAll);
+                p.setAttribute('aria-selected', isAll ? 'true' : 'false');
+            });
+        }
+    } else {
+        currentDashboardView = 'feed';
+    }
+    
+    applyDashboardViewState();
+
+    if (currentDashboardView === 'events') {
+        renderEventsBoard(eventsData);
+        if (!eventsData.length) {
+            fetchEvents();
+        }
+    } else {
+        // Refresh news for the selected view (feed or noisy)
+        currentPage = 0;
+        seenArticleIds.clear();
+        fetchNews();
+    }
+
+    if (options.scroll !== false) {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+};
+
+function bindDashboardViewNavigation() {
+    document.querySelectorAll('[data-view-target]').forEach((item) => {
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            const targetView = item.getAttribute('data-view-target') || 'feed';
+            window.switchDashboardView(targetView);
+        });
+    });
+}
+
+function setupEventsBoardControls() {
+    if (eventsBoardSearchInput) {
+        eventsBoardSearchInput.addEventListener('input', () => {
+            eventsBoardSearch = eventsBoardSearchInput.value.trim().toLowerCase();
+            renderEventsBoard(eventsData);
+        });
+    }
+
+    if (eventsBoardSort) {
+        eventsBoardSort.addEventListener('change', () => {
+            eventsBoardSortBy = eventsBoardSort.value;
+            renderEventsBoard(eventsData);
+        });
+    }
+}
+
 if (analyzedToggle) {
     analyzedToggle.addEventListener('click', () => {
         showOnlyAnalyzed = !showOnlyAnalyzed;
@@ -2341,6 +2502,10 @@ async function init() {
     if (relevanceFilter) {
         relevanceFilter.value = 'all';
     }
+
+    bindDashboardViewNavigation();
+    setupEventsBoardControls();
+    window.switchDashboardView('feed', { scroll: false });
 
     // Setup Infinite Scroll (IntersectionObserver)
     const sentinel = document.getElementById('infiniteScrollSentinel');
@@ -2496,26 +2661,138 @@ async function fetchEvents() {
         const res = await apiFetch(`${API_BASE}/api/events/india`);
         const json = await res.json();
         if (json.status === 'success') {
-            renderEvents(json.data);
+            eventsData = Array.isArray(json.data) ? json.data : [];
+            renderEvents(eventsData);
+            renderEventsBoard(eventsData);
         }
     } catch (e) {
         console.error("Failed to fetch events", e);
     }
 }
 
+function sortEventsForBoard(events) {
+    const sorted = [...events];
+    if (eventsBoardSortBy === 'articles') {
+        sorted.sort((a, b) => (Number(b.article_count) || 0) - (Number(a.article_count) || 0));
+        return sorted;
+    }
+    if (eventsBoardSortBy === 'title') {
+        sorted.sort((a, b) => (a.event_title || '').localeCompare(b.event_title || ''));
+        return sorted;
+    }
+    sorted.sort((a, b) => new Date(b.latest_update).getTime() - new Date(a.latest_update).getTime());
+    return sorted;
+}
+
+function updateEventsBoardSummary(events) {
+    if (eventsBoardTotal) eventsBoardTotal.textContent = (events.length || 0).toLocaleString();
+
+    const totalArticles = events.reduce((sum, ev) => sum + (Number(ev.article_count) || 0), 0);
+    if (eventsBoardArticles) eventsBoardArticles.textContent = totalArticles.toLocaleString();
+
+    let latestTs = 0;
+    events.forEach((ev) => {
+        const ts = new Date(ev.latest_update).getTime();
+        if (!Number.isNaN(ts) && ts > latestTs) latestTs = ts;
+    });
+
+    if (eventsBoardLastUpdate) {
+        if (!latestTs) {
+            eventsBoardLastUpdate.textContent = '--';
+            eventsBoardLastUpdate.removeAttribute('title');
+        } else {
+            const iso = new Date(latestTs).toISOString();
+            eventsBoardLastUpdate.textContent = timeAgo(iso);
+            eventsBoardLastUpdate.setAttribute('title', formatDateTimeIST(iso));
+        }
+    }
+}
+
+function renderEventsBoard(events) {
+    if (!eventsBoardGrid || !eventsBoardEmpty) return;
+
+    const safeEvents = Array.isArray(events) ? events : [];
+    updateEventsBoardSummary(safeEvents);
+
+    let boardEvents = safeEvents;
+    if (eventsBoardSearch) {
+        boardEvents = boardEvents.filter((ev) => {
+            const title = (ev.event_title || '').toLowerCase();
+            const eventId = (ev.event_id || '').toLowerCase();
+            return title.includes(eventsBoardSearch) || eventId.includes(eventsBoardSearch);
+        });
+    }
+
+    boardEvents = sortEventsForBoard(boardEvents);
+
+    if (!boardEvents.length) {
+        eventsBoardGrid.innerHTML = '';
+        eventsBoardEmpty.style.display = 'flex';
+        return;
+    }
+
+    eventsBoardEmpty.style.display = 'none';
+    const fourHoursAgo = Date.now() - (4 * 60 * 60 * 1000);
+
+    eventsBoardGrid.innerHTML = boardEvents.map((ev, idx) => {
+        const title = ev.event_title || 'Untitled Event';
+        const articleCount = Number(ev.article_count) || 0;
+        const lastUpdateTs = new Date(ev.latest_update).getTime();
+        const isLive = !Number.isNaN(lastUpdateTs) && lastUpdateTs > fourHoursAgo;
+        const activeClass = currentEventId === ev.event_id ? ' active' : '';
+        const attention = articleCount >= 10 ? 'High Attention' : articleCount >= 4 ? 'Medium Attention' : 'Emerging';
+        const timeLabel = formatDateTimeIST(ev.latest_update);
+
+        return `
+            <article class="events-board-card${activeClass}" data-event-idx="${idx}" style="--event-index:${idx};" title="Open event details">
+                <div class="events-board-card-top">
+                    <span class="events-board-chip ${isLive ? 'chip-live' : 'chip-tracking'}">${isLive ? 'Live' : 'Tracking'}</span>
+                    <span class="events-board-time">${timeAgo(ev.latest_update)}</span>
+                </div>
+                <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
+                <p class="events-board-card-meta">${escapeHtml(timeLabel)}</p>
+                <div class="events-board-card-bottom">
+                    <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
+                    <span class="events-board-open">${attention}</span>
+                </div>
+            </article>
+        `;
+    }).join('');
+
+    eventsBoardGrid.querySelectorAll('.events-board-card').forEach((card) => {
+        card.addEventListener('click', () => {
+            const idx = Number(card.getAttribute('data-event-idx'));
+            const selectedEvent = boardEvents[idx];
+            if (!selectedEvent) return;
+
+            showEventDetail(
+                selectedEvent.event_id,
+                selectedEvent.event_title || 'Untitled Event',
+                Number(selectedEvent.article_count) || 0,
+                selectedEvent.latest_update
+            );
+        });
+    });
+}
+
 function renderEvents(events) {
     const section = document.getElementById('eventsSection');
     const container = document.getElementById('eventsContainer');
 
+    if (!section || !container) return;
+
     if (!events || events.length === 0) {
         section.style.display = 'none';
+        container.innerHTML = '';
         return;
     }
 
     section.style.display = 'block';
 
     let html = '';
-    events.forEach(ev => {
+    events.forEach((ev, idx) => {
+        const eventTitle = ev.event_title || 'Untitled Event';
+        const articleCount = Number(ev.article_count) || 0;
         const timeAgoStr = timeAgo(ev.latest_update);
         const isActive = currentEventId === ev.event_id;
         // Dynamic "Live" indicator if updated in last 4 hours (Indian market is more volatile)
@@ -2529,24 +2806,39 @@ function renderEvents(events) {
                  data-event-title="${escapeHtml(ev.event_title)}"
                  data-article-count="${ev.article_count}"
                  data-latest-update="${ev.latest_update}"
-                 onclick="showEventDetail('${ev.event_id}', '${escapeHtml(ev.event_title)}', ${ev.article_count}, '${ev.latest_update}'); event.stopPropagation();"
+                 onclick="showEventDetail('${escapeForInlineJsAttr(ev.event_id)}', '${escapeForInlineJsAttr(ev.event_title)}', ${ev.article_count}, '${escapeForInlineJsAttr(ev.latest_update)}'); event.stopPropagation();"
                  style="cursor: pointer; transition: all 0.2s ease;"
                  title="Click to see all articles for this event">
                 <div class="event-card-header">
                     <span class="event-label">EVENT TRACKER</span>
                     <span class="event-time">${timeAgoStr}</span>
                 </div>
-                <h3 class="event-card-title">${escapeHtml(ev.event_title)}</h3>
+                <h3 class="event-card-title">${escapeHtml(eventTitle)}</h3>
                 <div class="event-footer">
                     <div class="event-updates">
                         <span class="event-pulse" style="display: ${isLive ? 'flex' : 'none'}"></span>
-                        <span>${ev.article_count} articles</span>
+                        <span>${articleCount} articles</span>
                     </div>
                 </div>
             </div>
         `;
     });
     container.innerHTML = html;
+
+    container.querySelectorAll('.event-card').forEach((card) => {
+        card.addEventListener('click', () => {
+            const idx = Number(card.getAttribute('data-event-idx'));
+            const selectedEvent = events[idx];
+            if (!selectedEvent) return;
+
+            showEventDetail(
+                selectedEvent.event_id,
+                selectedEvent.event_title || 'Untitled Event',
+                Number(selectedEvent.article_count) || 0,
+                selectedEvent.latest_update
+            );
+        });
+    });
 
     // Attach once to avoid stacking listeners on every refresh.
     if (!container.dataset.scrollBound) {
@@ -3194,21 +3486,29 @@ function displayNewsPanel(newsMarkers) {
             ? news.affected_stocks.join(', ')
             : 'N/A';
 
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        const titleCol = isLight ? '#0f172a' : '#e0e0e0';
+        const metaCol = isLight ? '#555570' : '#888';
+        const bgNormal = isLight ? 'rgba(108, 99, 255, 0.05)' : 'rgba(108, 99, 255, 0.08)';
+        const bgHover = isLight ? 'rgba(108, 99, 255, 0.12)' : 'rgba(108, 99, 255, 0.15)';
+        const borderNormal = isLight ? 'rgba(108, 99, 255, 0.1)' : 'rgba(108, 99, 255, 0.2)';
+        const borderHover = isLight ? 'rgba(108, 99, 255, 0.3)' : 'rgba(108, 99, 255, 0.4)';
+
         html += `
             <div style="
-                background: rgba(108, 99, 255, 0.08);
-                border: 1px solid rgba(108, 99, 255, 0.2);
+                background: ${bgNormal};
+                border: 1px solid ${borderNormal};
                 border-radius: 8px;
                 padding: 10px 12px;
                 cursor: pointer;
                 transition: all 0.2s ease;
-            " onmouseover="this.style.background='rgba(108, 99, 255, 0.15)'; this.style.borderColor='rgba(108, 99, 255, 0.4)'"
-               onmouseout="this.style.background='rgba(108, 99, 255, 0.08)'; this.style.borderColor='rgba(108, 99, 255, 0.2)'">
-                <div style="font-size: 0.78rem; font-weight: 700; color: #e0e0e0; margin-bottom: 4px; line-height: 1.3;">
+            " onmouseover="this.style.background='${bgHover}'; this.style.borderColor='${borderHover}'"
+               onmouseout="this.style.background='${bgNormal}'; this.style.borderColor='${borderNormal}'">
+                <div style="font-size: 0.78rem; font-weight: 700; color: ${titleCol}; margin-bottom: 4px; line-height: 1.3;">
                     ${escapeHtml(news.title)}
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-size: 0.7rem; color: #888;">${timeStr}</span>
+                    <span style="font-size: 0.7rem; color: ${metaCol};">${timeStr}</span>
                     <span style="
                         font-size: 0.65rem;
                         background: #6c63ff;
@@ -3313,14 +3613,23 @@ function renderLWChart(candleData) {
         width: w,
         height: h,
         layout: {
-            background: { type: LightweightCharts.ColorType.Solid, color: '#0b0f19' },
-            textColor: '#7d8490',
+            background: { 
+                type: LightweightCharts.ColorType.Solid, 
+                color: document.documentElement.getAttribute('data-theme') === 'light' ? '#ffffff' : '#0b0f19' 
+            },
+            textColor: document.documentElement.getAttribute('data-theme') === 'light' ? '#131722' : '#7d8490',
             fontFamily: "'Inter', -apple-system, sans-serif",
             fontSize: 11,
         },
         grid: {
-            vertLines: { color: 'rgba(255,255,255,0.035)', style: LightweightCharts.LineStyle.Dashed },
-            horzLines: { color: 'rgba(255,255,255,0.035)', style: LightweightCharts.LineStyle.Dashed },
+            vertLines: { 
+                color: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.035)', 
+                style: LightweightCharts.LineStyle.Dashed 
+            },
+            horzLines: { 
+                color: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.035)', 
+                style: LightweightCharts.LineStyle.Dashed 
+            },
         },
         crosshair: {
             mode: LightweightCharts.CrosshairMode.Normal,
@@ -3338,13 +3647,13 @@ function renderLWChart(candleData) {
             },
         },
         rightPriceScale: {
-            borderColor: 'rgba(255,255,255,0.06)',
-            textColor: '#7d8490',
+            borderColor: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.06)',
+            textColor: document.documentElement.getAttribute('data-theme') === 'light' ? '#131722' : '#7d8490',
             scaleMargins: { top: 0.08, bottom: 0.08 },
         },
         timeScale: {
-            borderColor: 'rgba(255,255,255,0.06)',
-            textColor: '#7d8490',
+            borderColor: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.06)',
+            textColor: document.documentElement.getAttribute('data-theme') === 'light' ? '#131722' : '#7d8490',
             timeVisible: true,
             secondsVisible: false,
             rightOffset: 8,
@@ -3399,19 +3708,21 @@ function renderLWChart(candleData) {
     if (!newsTooltip) {
         newsTooltip = document.createElement('div');
         newsTooltip.id = 'newsMarkerTooltip';
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
         newsTooltip.style.cssText = `
             position: absolute;
             top: 60px;
             right: 12px;
             z-index: 11;
-            background: rgba(11, 15, 25, 0.95);
-            border: 1px solid rgba(108, 99, 255, 0.4);
+            background: ${isLight ? 'rgba(255, 255, 255, 0.98)' : 'rgba(11, 15, 25, 0.95)'};
+            border: 1px solid ${isLight ? 'rgba(108, 99, 255, 0.2)' : 'rgba(108, 99, 255, 0.4)'};
+            color: ${isLight ? '#1a1a2e' : '#f0f0f5'};
             border-radius: 8px;
             padding: 12px;
             font-family: 'Inter', sans-serif;
             display: none;
             max-width: 340px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+            box-shadow: 0 8px 32px ${isLight ? 'rgba(0, 0, 0, 0.1)' : 'rgba(0, 0, 0, 0.6)'};
             backdrop-filter: blur(8px);
             overflow-y: auto;
             max-height: 180px;
@@ -3438,12 +3749,15 @@ function attachCrosshairTooltip() {
 
     const tooltip = document.createElement('div');
     tooltip.id = 'chartCrosshairTooltip';
+    const isLight = document.documentElement.getAttribute('data-theme') === 'light';
     tooltip.style.cssText = `
         position:absolute; top:12px; left:12px; z-index:10;
-        background:rgba(11,15,25,0.92); border:1px solid rgba(108,99,255,0.35);
+        background:${isLight ? 'rgba(255, 255, 255, 0.95)' : 'rgba(11, 15, 25, 0.92)'}; 
+        border:1px solid ${isLight ? 'rgba(108, 99, 255, 0.2)' : 'rgba(108, 99, 255, 0.35)'};
+        color: ${isLight ? '#1a1a2e' : '#f0f0f5'};
         border-radius:8px; padding:8px 12px; font-size:0.78rem; font-family:'Inter',sans-serif;
         pointer-events:none; display:none; backdrop-filter:blur(4px);
-        box-shadow:0 4px 20px rgba(0,0,0,0.5);
+        box-shadow:0 4px 20px ${isLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(0, 0, 0, 0.5)'};
     `;
     const container = document.getElementById('lwChartContainer');
     container.style.position = 'relative';
@@ -3464,15 +3778,19 @@ function attachCrosshairTooltip() {
         const chg = ((bar.close - bar.open) / bar.open * 100).toFixed(3);
         const sign = isUp ? '+' : '';
 
+        const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+        const labelCol = isLight ? '#555570' : '#9ca3af';
+        const valCol = isLight ? '#1a1a2e' : '#e0e0e0';
+
         tooltip.style.display = 'block';
         tooltip.innerHTML = `
-            <div style="color:#9ca3af;font-size:0.7rem;margin-bottom:4px;">${timeStr} · 3m</div>
+            <div style="color:${labelCol};font-size:0.7rem;margin-bottom:4px;">${timeStr} · 3m</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 16px;font-size:0.78rem;">
-                <span style="color:#9ca3af;">O</span><span style="color:#e0e0e0;font-weight:600;">${bar.open.toFixed(5)}</span>
-                <span style="color:#9ca3af;">H</span><span style="color:#26a69a;font-weight:600;">${bar.high.toFixed(5)}</span>
-                <span style="color:#9ca3af;">L</span><span style="color:#ef5350;font-weight:600;">${bar.low.toFixed(5)}</span>
-                <span style="color:#9ca3af;">C</span><span style="color:${col};font-weight:700;">${bar.close.toFixed(5)}</span>
-                <span style="color:#9ca3af;">Chg</span><span style="color:${col};font-weight:600;">${sign}${chg}%</span>
+                <span style="color:${labelCol};">O</span><span style="color:${valCol};font-weight:600;">${bar.open.toFixed(5)}</span>
+                <span style="color:${labelCol};">H</span><span style="color:#26a69a;font-weight:600;">${bar.high.toFixed(5)}</span>
+                <span style="color:${labelCol};">L</span><span style="color:#ef5350;font-weight:600;">${bar.low.toFixed(5)}</span>
+                <span style="color:${labelCol};">C</span><span style="color:${col};font-weight:700;">${bar.close.toFixed(5)}</span>
+                <span style="color:${labelCol};">Chg</span><span style="color:${col};font-weight:600;">${sign}${chg}%</span>
             </div>
         `;
     });

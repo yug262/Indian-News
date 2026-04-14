@@ -77,6 +77,17 @@ SYSTEMIC_ACTIONS = {
 }
 
 # Key Action Verbs that define the event type
+import logging
+
+logger = logging.getLogger("event_engine")
+if not logger.handlers:
+    _ch = logging.StreamHandler()
+    _ch.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s  [EVENT_ENGINE] %(message)s", datefmt="%Y-%m-%d %H:%M:%S UTC"))
+    logger.addHandler(_ch)
+logger.setLevel(logging.INFO)
+
+EVENT_LOOKBACK_HOURS = 48
+
 ACTIONS = {
     # MONETARY / MACRO
     "rate cut": "Interest Rate Cut",
@@ -146,10 +157,29 @@ ACTIONS = {
     "collapse": "Structural Collapse",
 }
 
+# Action Congruence Groups
+ACTION_GROUPS = {
+    "Earnings": {"Earnings Report", "Earnings Growth", "Earnings Release", "Financial Loss", "profit", "results", "losses"},
+    "Regulatory": {"Investigation", "Regulatory Probe", "Legal Action", "Probe", "Fraud Case", "scam", "fraud", "probe", "investigation"},
+    "Corporate": {"Strategic Merger", "Acquisition", "Takeover Bid", "Joint Venture", "Strategic Partnership", "Business Deal", "Formal Agreement", "IPO Launch", "New Listing"},
+    "Policy": {"Interest Rate Cut", "Interest Rate Hike", "Policy Hold", "Inflation Data", "CPI Release", "GDP Update"},
+    "Conflict": {"Military Strike", "Attack", "Missile Activity", "Explosion", "Conflict Escalation", "Ceasefire Talks", "Rising Tensions", "Sanctions", "Trade Action"},
+    "Leadership": {"Leadership Exit"},
+}
+
 STOPWORDS = {
     "a", "an", "the", "in", "on", "at", "for", "with", "by", "of", "and", "or", "is", "was", "be", "been", "to", "as", "amid",
-    "revives", "fuels", "stirs", "sparks", "jostle", "challenge", "challenges", "likely", "report", "despite", "hits", "slides", "slips", "anxiety"
+    "revives", "fuels", "stirs", "sparks", "jostle", "challenge", "challenges", "likely", "report", "despite", "hits", "slides", "slips", "anxiety",
+    "shares", "price", "stock", "quarterly", "results", "profit", "loss", "update", "hike", "cut", "news", "today", "yesterday", "tomorrow", "indian", "market"
 }
+
+def get_action_group(action_display_name: str) -> str:
+    """Maps a display action to a broader congruence group."""
+    if not action_display_name: return "Other"
+    for group, members in ACTION_GROUPS.items():
+        if action_display_name in members:
+            return group
+    return "Other"
 
 # ---------------------------
 # CORE ENGINE COMPONENTS
@@ -261,6 +291,7 @@ def generate_dynamic_title(news_title: str, entities: list[tuple[str, int, str]]
 def resolve_event(news_title: str, published_date_str_or_obj=None):
     """
     Main entry point: Resolves a unique, professional event bucket.
+    Keep for backward compatibility with components using the single-article resolver.
     """
     # 1. Date Handling
     date_obj = datetime.now(timezone.utc)
@@ -273,7 +304,6 @@ def resolve_event(news_title: str, published_date_str_or_obj=None):
             date_obj = published_date_str_or_obj
     
     time_bucket = date_obj.strftime("%Y_%m")
-    time_display = date_obj.strftime("%b %Y")
 
     # 2. Extract Components
     found_entities = extract_entities(news_title)
@@ -330,90 +360,189 @@ def resolve_event(news_title: str, published_date_str_or_obj=None):
             "time_bucket": time_bucket
         }
 
-# ---------------------------
-# STATEFUL EVENT GROUPING
-# ---------------------------
+# =========================================================
+# PRODUCTION-GRADE EVENT GROUPING ENGINE
+# =========================================================
 
-def are_titles_related(title1: str, title2: str, found_entities1: list, found_entities2: list) -> bool:
-    ent1_set = set([e[0] for e in found_entities1])
-    ent2_set = set([e[0] for e in found_entities2])
-    
-    shared_entities = ent1_set.intersection(ent2_set)
-    if not shared_entities:
-        return False
-        
-    only_broad = all(e in BROAD_ENTITIES for e in shared_entities)
-    
-    def get_sig(t):
-        import re
-        clean = re.sub(r'[^a-zA-Z0-9 ]', ' ', t.lower())
-        return {w for w in clean.split() if len(w) >= 4 and w not in STOPWORDS}
-        
-    w1 = get_sig(title1)
-    w2 = get_sig(title2)
-    overlap = w1.intersection(w2)
-    
-    if only_broad:
-        # E.g. Both have "SEBI" or "Crude Oil". Need 2 meaningful words to match.
-        return len(overlap) >= 2
-    else:
-        # Shared specific entity (like HDFC Bank). Need 1 meaningful word to match.
-        return len(overlap) >= 1
+from app.agents.tools import resolve_identity
 
-def process_event_grouping(news_id: int, title: str, category: str, table_name: str = 'news'):
+STRONG_CATALYST_TOKENS = {
+    "buyback", "merger", "acquisition", "acquires", "acquire", "takeover", "penalty", "raid", 
+    "sebi action", "order win", "contract awarded", "block deal", "stake sale",
+    "fired", "explosion", "scam", "fraud", "default", "bankruptcy",
+    "inflation", "repo", "rate", "divest", "disinvest"
+}
+
+WEAK_TOPIC_TOKENS = {
+    "results", "profit", "loss", "quarterly", "earnings", "ebitda", "revenue", 
+    "guidance", "outlook", "dividend", "bonus", "split", "policy", "update"
+}
+
+def get_meaningful_tokens(text: str, exclude_ids: set[str]) -> set[str]:
+    """Extracts topic-defining keywords, excluding IDs and generic finance stop words."""
+    clean = clean_text(text)
+    words = clean.split()
+    
+    meaningful = set()
+    for w in words:
+        if len(w) < 3: continue
+        if w in STOPWORDS: continue
+        # Also exclude parts of the resolved IDs if they are common words
+        if w.upper() in exclude_ids: continue
+        meaningful.add(w)
+    return meaningful
+
+def are_titles_related(title1: str, title2: str, ids1: list[str], ids2: list[str]) -> bool:
     """
-    Stateful evaluation. Should be invoked immediately after a news item is saved to DB.
+    State-of-the-art news clustering logic.
+    Primary filter: Shared Canonical Identity.
+    Secondary: Topic weighting + Action Congruence.
+    """
+    set1 = set(ids1 or [])
+    set2 = set(ids2 or [])
+    
+    shared_ids = set1.intersection(set2)
+    if not shared_ids:
+        return False
+
+    # 1. Classification & Broad Story Check
+    is_broad = len(set1) > 3 or len(set2) > 3
+    
+    # 2. Extract and Weight Keywords
+    tokens1 = get_meaningful_tokens(title1, set1)
+    tokens2 = get_meaningful_tokens(title2, set2)
+    overlap = tokens1.intersection(tokens2)
+    
+    # Calculate weighted score
+    keyword_score = 0
+    for t in overlap:
+        if t in STRONG_CATALYST_TOKENS:
+            keyword_score += 2.0
+        elif t in WEAK_TOPIC_TOKENS:
+            keyword_score += 0.5
+        else:
+            keyword_score += 1.0
+
+    # 3. Action Congruence Scoring
+    action1 = extract_action(title1)
+    action2 = extract_action(title2)
+    group1 = get_action_group(action1)
+    group2 = get_action_group(action2)
+    
+    action_score = 0
+    if group1 == group2 and group1 != "Other":
+        action_score = 2.0  # Boost for same segment (e.g. Earnings)
+    elif group1 == "Other" or group2 == "Other":
+        action_score = 1.0  # Neutral/Allowed
+    elif group1 != group2:
+        # Check for reaction arcs (e.g. Action -> Reaction)
+        # Corporate move matches price/sentiment reaction
+        if (group1 == "Corporate" and group2 == "Other") or (group1 == "Other" and group2 == "Corporate"):
+            action_score = 1.0 # Allowed reaction arc
+        else:
+            action_score = -2.0 # Conflicting context
+
+    # 4. Final Thresholds
+    total_score = keyword_score + action_score
+    
+    # Normal corporate stories: need identity + strong overlap (score ~3.0+)
+    required_score = 3.0
+    
+    # Broad sector stories: higher threshold to prevent pollution
+    if is_broad:
+        required_score = 5.0
+        
+    # Macro stories (RBI, etc): Identity is the main source
+    # Broad entities often have generic keywords, so we trust identity + moderate overlap
+    if any(s in ["RBI", "SEBI", "NSE", "BSE", "FED", "ECB", "UNION_BUDGET", "BRENT"] for s in shared_ids):
+        required_score = 2.0 # Lower threshold for Macro identities to catch related story beats
+
+    is_match = total_score >= required_score
+    
+    if is_match:
+        logger.info(f"MATCH: IDs {shared_ids} | ARCS [{'Broad' if is_broad else 'Specific'}] | SCORE {total_score} | TOPICS {overlap}")
+    else:
+        if total_score > 1.0:
+            logger.debug(f"REJECT: IDs {shared_ids} | SCORE {total_score} | REASON Insufficient Relevance")
+            
+    return is_match
+
+def process_event_grouping(news_id: int, title: str, category: str, table_name: str = 'news', ai_symbols: list[str] = None):
+    """
+    Main stateful clustering entry point.
     """
     from app.db.db import fetch_all, execute_query
     
-    found_entities = extract_entities(title)
+    # 1. Identity Resolution (Sole Truth Source)
+    new_ids = ai_symbols or []
+    # If scraper didn't provide symbols, attempt lazy resolution on title
+    if not new_ids:
+        entities = extract_entities(title)
+        new_ids = [resolve_identity(e[0]) for e in entities if resolve_identity(e[0])]
     
-    # Note: Using fetch_all to get recent news. Exclude current news so it doesn't match itself.
+    # Deduplicate and sort
+    new_ids = sorted(list(set(new_ids)))
+
+    logger.info(f"Grouping Analysis: news_id={news_id} | Identity: {new_ids}")
+
+    # 2. Fetch Stateful Candidates
     recent_news = fetch_all(f"""
-        SELECT id, title, event_id, event_title, published 
+        SELECT id, title, event_id, event_title, symbols as ids, published 
         FROM {table_name}
-        WHERE published >= NOW() - INTERVAL '48 hours'
+        WHERE published >= NOW() - (%s * INTERVAL '1 hour')
         AND id != %s
-        ORDER BY published ASC
-    """, (news_id,))
+        ORDER BY published DESC
+    """, (EVENT_LOOKBACK_HOURS, news_id))
     
     if not recent_news:
         return False
         
-    matched_group = []
+    matched_candidates = []
     
     for old in recent_news:
-        old_entities = extract_entities(old['title'])
-        if are_titles_related(title, old['title'], found_entities, old_entities):
-            matched_group.append(old)
+        old_ids = old.get('ids') or []
+        # Legacy Fallback: Resolve symbols for older rows if missing
+        if not old_ids:
+            old_entities = extract_entities(old['title'])
+            old_ids = [resolve_identity(e[0]) for e in old_entities if resolve_identity(e[0])]
             
-    if not matched_group:
+        if are_titles_related(title, old['title'], new_ids, old_ids):
+            # Calculate match score for representative selection
+            score = len(get_meaningful_tokens(title, set(new_ids)).intersection(get_meaningful_tokens(old['title'], set(old_ids))))
+            matched_candidates.append({
+                "article": old,
+                "score": score
+            })
+            
+    if not matched_candidates:
         return False
-        
-    existing_event_id = None
-    existing_event_title = None
+
+    # 3. Join Existing or Form New Event
+    # Select best representative: Highest keyword overlap score, then newest
+    matched_candidates.sort(key=lambda x: (x['score'], x['article']['published']), reverse=True)
     
-    for m in matched_group:
-        if m['event_id']:
-            existing_event_id = m['event_id']
-            existing_event_title = m['event_title']
-            break
-            
-    if existing_event_id:
-        # Join existing event
+    existing_event = next((c['article'] for c in matched_candidates if c['article']['event_id']), None)
+    
+    if existing_event:
+        event_id = existing_event['event_id']
+        event_title = existing_event['event_title']
+        logger.info(f"news_id={news_id} matched arc: JOIN [{event_title}]")
         execute_query(f"UPDATE {table_name} SET event_id = %s, event_title = %s WHERE id = %s", 
-                      (existing_event_id, existing_event_title, news_id))
+                      (event_id, event_title, news_id))
         return True
         
-    # Brand new event
-    breaking_news = matched_group[0]
-    breaking_entities = extract_entities(breaking_news['title'])
-    breaking_action = extract_action(breaking_news['title'])
+    # Brand new cluster formation
+    rep = matched_candidates[0]['article']
+    new_event_id = f"EV_{rep['id']}_{category}"
     
-    new_event_id = f"EV_{breaking_news['id']}_{category}"
-    new_event_title = generate_dynamic_title(breaking_news['title'], breaking_entities, breaking_action, category)
+    # Rep title generation
+    rep_entities = extract_entities(rep['title'])
+    rep_action = extract_action(rep['title'])
+    new_event_title = generate_dynamic_title(rep['title'], rep_entities, rep_action, category)
     
-    all_ids_to_update = [m['id'] for m in matched_group] + [news_id]
+    logger.info(f"news_id={news_id} sired new cluster: [{new_event_title}]")
+    
+    all_ids_to_update = [c['article']['id'] for c in matched_candidates] + [news_id]
     format_strings = ','.join(['%s'] * len(all_ids_to_update))
     
     execute_query(f"""

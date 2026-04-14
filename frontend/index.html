@@ -55,6 +55,15 @@
                 <div class="nav-links-desktop">
                     <!-- <a href="/predictions" class="nav-link">Predictions</a> -->
                     <!-- <a href="/global" class="nav-link">Global & Crypto</a> -->
+                    <button class="nav-view-btn is-active" data-view-target="feed" type="button" aria-pressed="true">
+                        Feed
+                    </button>
+                    <button class="nav-view-btn" data-view-target="events" type="button" aria-pressed="false">
+                        Events
+                    </button>
+                    <button class="nav-view-btn" data-view-target="noisy" type="button" aria-pressed="false">
+                        Noisy News
+                    </button>
                     <button class="btn-chart-header" onclick="openChartPanel()">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -121,12 +130,28 @@
         <div class="drawer-section">
             <h3 class="drawer-section-title">Navigation</h3>
             <nav class="drawer-nav">
-                <a href="/" class="drawer-link active">
+                <a href="#" class="drawer-link view-switch-link active" data-view-target="feed" aria-current="page">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
                         <polyline points="9 22 9 12 15 12 15 22" />
                     </svg>
-                    Indian Dashboard
+                    Live Feed
+                </a>
+                <a href="#" class="drawer-link view-switch-link" data-view-target="events">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+                        <polyline points="2 17 12 22 22 17"></polyline>
+                        <polyline points="2 12 12 17 22 12"></polyline>
+                    </svg>
+                    Events
+                </a>
+                <a href="#" class="drawer-link view-switch-link" data-view-target="noisy">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+                        <line x1="12" y1="9" x2="12" y2="13"></line>
+                        <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                    </svg>
+                    Noisy News
                 </a>
                 <!-- <a href="/predictions" class="drawer-link">
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
@@ -161,7 +186,7 @@
     </div>
 
     <!-- Filters -->
-    <section class="filters-section">
+    <section class="filters-section" id="filtersSection">
         <div class="filters-inner">
             <div class="filters-scroll" id="filtersContainer" role="tablist" aria-label="Filter by source">
                 <button class="filter-pill active" data-source="all" role="tab" aria-selected="true">All
@@ -176,7 +201,6 @@
                     <option value="useful">🟢 Useful</option>
                     <option value="medium">🟡 Medium</option>
                     <option value="neutral">⚖️ Neutral</option>
-                    <option value="noisy">🔴 Noisy</option>
                 </select>
 
                 <div class="analyzed-toggle-wrapper" id="analyzedToggle"
@@ -192,51 +216,8 @@
 
     <!-- Main Content -->
     <main class="main-content">
+        <div id="feedView">
 
-        <!-- Active Events Section -->
-        <section class="events-section" id="eventsSection" style="display: none;">
-            <div class="events-header">
-                <div class="events-brand">
-                    <div class="events-icon-box">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#6c63ff" stroke-width="2.5"
-                            stroke-linecap="round" stroke-linejoin="round">
-                            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
-                            <polyline points="2 17 12 22 22 17"></polyline>
-                            <polyline points="2 12 12 17 22 12"></polyline>
-                        </svg>
-                    </div>
-                    <h2 class="events-title">Active Market Events</h2>
-                </div>
-                <!-- Filter Badge -->
-                <div id="activeEventFilterPill" class="active-event-pill" style="display:none;">
-                    <span id="activeEventName">Filtered Event</span>
-                    <button onclick="clearEventFilter()" class="clear-event-btn" title="Clear Event Filter">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2.5">
-                            <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-            <div class="events-container-wrapper">
-                <button class="scroll-btn left" onclick="scrollEvents(-1)" aria-label="Scroll left">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-                        stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="15 18 9 12 15 6"></polyline>
-                    </svg>
-                </button>
-                <div class="events-scroll-container" id="eventsContainer">
-                    <!-- Events populated by app.js -->
-                </div>
-                <button class="scroll-btn right" onclick="scrollEvents(1)" aria-label="Scroll right">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
-                        stroke-linecap="round" stroke-linejoin="round">
-                        <polyline points="9 18 15 12 9 6"></polyline>
-                    </svg>
-                </button>
-            </div>
-        </section>
 
 
         <!-- Featured Section -->
@@ -282,6 +263,76 @@
             <h3 id="emptyStateTitle">No articles yet</h3>
             <p id="emptyStateMsg">The monitor is fetching news. Articles will appear here automatically.</p>
         </div>
+        </div>
+
+        <div id="noisyView" style="display: none;">
+            <div class="events-board-hero" >
+                <div class="events-board-copy">
+                    <p class="events-board-kicker" style="color: #ff4757;">Filter: Noisy</p>
+                    <h2 class="events-board-title">Noisy News</h2>
+                    <p class="events-board-subtitle">Articles flagged as noise, daily recaps, or low-impact commentary. Separated to keep your main feed clean.</p>
+                </div>
+            </div>
+            <div class="news-grid" id="noisyGrid">
+                <!-- Populated via JS -->
+            </div>
+        </div>
+
+        <section id="eventsBoardView" class="events-board-view" style="display: none;">
+            <div class="events-board-hero">
+                <div class="events-board-copy">
+                    <p class="events-board-kicker">Market Intelligence</p>
+                    <h2 class="events-board-title">Events Command Center</h2>
+                    <p class="events-board-subtitle">Track every active market event from the backend in one professional view. Click any event card to open full article-level details.</p>
+                </div>
+                <div class="events-board-stats">
+                    <div class="events-summary-card">
+                        <span class="events-summary-label">Active Events</span>
+                        <span class="events-summary-value" id="eventsBoardTotal">0</span>
+                    </div>
+                    <div class="events-summary-card">
+                        <span class="events-summary-label">Linked Articles</span>
+                        <span class="events-summary-value" id="eventsBoardArticles">0</span>
+                    </div>
+                    <div class="events-summary-card">
+                        <span class="events-summary-label">Latest Update</span>
+                        <span class="events-summary-value" id="eventsBoardLastUpdate">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="events-board-controls">
+                <div class="events-board-search">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8" />
+                        <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    <input id="eventsBoardSearchInput" class="events-board-search-input" type="text"
+                        placeholder="Search events by title..." aria-label="Search events" autocomplete="off">
+                </div>
+                <div class="events-board-sort-wrap">
+                    <select id="eventsBoardSort" class="events-board-sort" aria-label="Sort events">
+                        <option value="latest">Latest update</option>
+                        <option value="articles">Most articles</option>
+                        <option value="title">Title A-Z</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="eventsBoardGrid" class="events-board-grid"></div>
+
+            <div id="eventsBoardEmpty" class="events-board-empty" style="display: none;">
+                <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="12" y1="8" x2="12" y2="12" />
+                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                </svg>
+                <h3>No matching events</h3>
+                <p>Try a different search term or sort option.</p>
+            </div>
+        </section>
     </main>
 
     <!-- Live Trade View Panel -->
@@ -298,9 +349,9 @@
                         </svg>
                     </div>
                     <div>
-                        <h2 style="margin:0;font-size:1.15rem;font-weight:800;color:var(--text-main,#f0f0f0);">Live
+                        <h2 style="margin:0;font-size:1.15rem;font-weight:800;color:var(--text-primary);">Live
                             Trade View</h2>
-                        <p style="margin:0;font-size:0.75rem;color:var(--text-muted,#888);">3-minute candles ·
+                        <p style="margin:0;font-size:0.75rem;color:var(--text-secondary);">3-minute candles ·
                             Auto-updates every 3 min</p>
                     </div>
                     <div id="chartLiveBadge"

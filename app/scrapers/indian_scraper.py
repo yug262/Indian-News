@@ -14,11 +14,35 @@ from typing import List, Dict, Any
 # Add the project root to sys.path so we can import app
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
 
-from app.db.db import execute_query, fetch_one, execute_returning
+from app.db.db import execute_query, fetch_one, execute_returning, fetch_all
 from app.agents.agent import filter_indian_news
 from app.core.event_engine import process_event_grouping
 
 # ══════════════════════════════════════════════════════
+#  AUTO-ANALYSIS CONFIG
+# ══════════════════════════════════════════════════════
+AUTO_ANALYZE_RELEVANCE = ["Medium", "Useful", "High Useful"]
+API_BASE_URL = os.getenv("API_URL", "http://localhost:8000") # Use localhost unless configured
+
+# Managed resources
+GLOBAL_CLIENT: httpx.AsyncClient = None
+_BACKGROUND_TASKS = set()
+
+async def trigger_auto_analysis(news_id: int):
+    """Detached background task to hit the API server for deep analysis."""
+    if not GLOBAL_CLIENT:
+        return
+    
+    try:
+        url = f"{API_BASE_URL}/api/indian_analyze/{news_id}"
+        logger.info(f"[AUTO-ANALYZE] Triggering analysis for {news_id}...")
+        resp = await GLOBAL_CLIENT.post(url, timeout=120)
+        if resp.status_code == 200:
+            logger.info(f"[AUTO-ANALYZE] Hand-off success for {news_id}")
+        else:
+            logger.warning(f"[AUTO-ANALYZE] Hand-off returned {resp.status_code} for {news_id}: {resp.text}")
+    except Exception as e:
+        logger.error(f"[AUTO-ANALYZE] Hand-off failed for {news_id}: {e}")
 
 #  LOGGING
 # ══════════════════════════════════════════════════════
@@ -186,6 +210,7 @@ async def save_article(article):
             return 0  # Duplicate — already existed, no LLM cost
 
         new_id = insert_result['id']
+        filter_data = None
 
         # 2. Filtering Pass (Mandatory for all new articles)
         # Classifies relevance/category/symbols immediately using lightweight agent
@@ -196,38 +221,52 @@ async def save_article(article):
             )
             
             if filter_data:
+                # normalize before saving to DB: store only canonical uppercase symbols, deduplicated and sorted
+                from app.agents.tools import strict_resolve_symbols
+                normalized_symbols = strict_resolve_symbols(filter_data.get('symbols', []))
+                
                 await asyncio.to_thread(
                     execute_query,
                     """UPDATE indian_news 
                        SET news_category = %s, news_relevance = %s, news_reason = %s, symbols = %s
                        WHERE id = %s""",
-                    (filter_data['category'], filter_data['relevance'], filter_data['reason'], filter_data['symbols'], new_id)
+                    (filter_data['category'], filter_data['relevance'], filter_data['reason'], normalized_symbols, new_id)
                 )
+
+                # 2.2 Auto-Analysis Trigger (Hardened v3)
+                relevance = filter_data.get('relevance', 'Noisy')
+                if relevance in AUTO_ANALYZE_RELEVANCE:
+                    # 1. Atomically claim 'queued' state in DB first (Scraper side)
+                    # This prevents re-triggering if the scraper cycle hits the same article again
+                    updated = await asyncio.to_thread(
+                        execute_query,
+                        "UPDATE indian_news SET analysis_status = 'queued' WHERE id = %s AND analysis_status IS NULL",
+                        (new_id,)
+                    )
+                    
+                    if updated and updated > 0:
+                        # 2. Fire and Forget (Tracked)
+                        task = asyncio.create_task(trigger_auto_analysis(new_id))
+                        _BACKGROUND_TASKS.add(task)
+                        task.add_done_callback(_BACKGROUND_TASKS.discard)
+                        logger.info(f"[AUTO-ANALYZE] Queued article {new_id} ({relevance})")
+
         except Exception as fe:
             logger.warning(f"Filtering Agent error for {new_id}: {fe}")
 
-        # 3. Deep Analysis (Currently Manual)
-        # The block below is kept commented as per user preference (saves tokens/time).
-        # Users can trigger full analysis via the UI "Analyze" button.
-        """
-        analysis = await asyncio.to_thread(
-            filter_indian_news,
-            title=article['title'],
-            published_iso=article['published'].isoformat() if hasattr(article['published'], 'isoformat') else str(article['published']),
-            summary=article['description'],
-            source=article['source'],
-            current_news_id=new_id
-        )
-        
-        if analysis:
-            await asyncio.to_thread(
-                save_indian_analysis,
-                new_id, analysis
-            )
-        """
-
         # 4. Trigger stateful event grouping AFTER insert
-        # ... existing logic ...
+        try:
+            category = filter_data.get('category', 'other') if filter_data else 'other'
+            await asyncio.to_thread(
+                process_event_grouping,
+                news_id=new_id,
+                title=article['title'],
+                category=category,
+                table_name='indian_news',
+                ai_symbols=filter_data.get('symbols', []) if filter_data else []
+            )
+        except Exception as eg:
+            logger.warning(f"Event grouping error for {new_id}: {eg}")
         
         # 5. Notify all devices of new arrival via Pusher
         # await asyncio.to_thread(trigger_news_created, new_id)
@@ -287,44 +326,82 @@ async def run_scraper_cycle():
     logger.info(f"===== Cycle Complete in {duration:.2f}s: {total_new} New, {total_dup} Duplicates, {total_all} Total Articles Processed =====")
 
 async def cleanup_old_news():
-    """Deletes articles older than 24 hours from the database."""
+    """
+    Deletes articles older than 24 hours from the database.
+    Safeguard: Skips articles that have linked trade suggestions to preserve evidence/history.
+    """
     try:
-        await asyncio.to_thread(
-            execute_query,
-            "DELETE FROM indian_news WHERE published < (NOW() - INTERVAL '24 hours')"
+        # 1. Check for articles that will be SPARED due to suggestions
+        spared_rows = await asyncio.to_thread(
+            fetch_all,
+            """SELECT COUNT(*) as cnt FROM indian_news 
+               WHERE published < (NOW() - INTERVAL '24 hours')
+               AND id IN (SELECT news_id FROM suggestions)"""
         )
-        logger.info("Background cleanup: Deleted Indian news articles older than 24h.")
+        spared_count = spared_rows[0]['cnt'] if spared_rows else 0
+
+        # 2. Perform the deletion (only on non-suggestion articles)
+        deleted_count = await asyncio.to_thread(
+            execute_query,
+            """DELETE FROM indian_news 
+               WHERE published < (NOW() - INTERVAL '24 hours')
+               AND id NOT IN (SELECT news_id FROM suggestions)"""
+        )
+        
+        if deleted_count > 0:
+            logger.info(f"Background cleanup: Deleted {deleted_count} old articles. Spared {spared_count} articles with active suggestions.")
+        elif spared_count > 0:
+            logger.info(f"Background cleanup: No articles deleted, but {spared_count} articles skipped (linked to suggestions).")
+            
     except Exception as e:
         logger.error(f"Cleanup Error: {e}")
 
 
 async def main():
+    global GLOBAL_CLIENT
     logger.info("Starting Async Indian Market Scraper (20s interval)...")
     
-    # Run cleanup immediately on startup
-    await cleanup_old_news()
-    last_cleanup_time = time.time()
+    # Initialize Persistent Client
+    GLOBAL_CLIENT = httpx.AsyncClient(headers=HEADERS)
     
-    CLEANUP_INTERVAL = 30 * 60  # 30 minutes in seconds
+    try:
+        # Run cleanup immediately on startup
+        await cleanup_old_news()
+        last_cleanup_time = time.time()
+        
+        CLEANUP_INTERVAL = 30 * 60  # 30 minutes in seconds
 
-    while True:
-        try:
-            current_time = time.time()
-            
-            # Run cleanup every 30 minutes
-            if current_time - last_cleanup_time >= CLEANUP_INTERVAL:
-                await cleanup_old_news()
-                last_cleanup_time = current_time
+        while True:
+            try:
+                current_time = time.time()
+                
+                # Run cleanup every 30 minutes
+                if current_time - last_cleanup_time >= CLEANUP_INTERVAL:
+                    await cleanup_old_news()
+                    last_cleanup_time = current_time
 
-            await run_scraper_cycle()
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            logger.error(f"Global Loop Error: {e}")
-        await asyncio.sleep(20)
+                await run_scraper_cycle()
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                logger.error(f"Global Loop Error: {e}")
+            await asyncio.sleep(20)
+    finally:
+        # ══════════════════════════════════════════════════════
+        #  SHUTDOWN CLEANUP
+        # ══════════════════════════════════════════════════════
+        logger.info("Shutting down scraper and cleaning up resources...")
+        if GLOBAL_CLIENT:
+            await GLOBAL_CLIENT.aclose()
+        
+        if _BACKGROUND_TASKS:
+            logger.info(f"Waiting for {len(_BACKGROUND_TASKS)} background analysis hand-offs to finish...")
+            await asyncio.gather(*_BACKGROUND_TASKS, return_exceptions=True)
+        
+        logger.info("Scraper shutdown complete.")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Scraper stopped by user.")
+        pass
