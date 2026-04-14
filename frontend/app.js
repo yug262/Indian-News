@@ -2576,6 +2576,45 @@ async function init() {
         observer.observe(sentinel);
     }
 
+    // Setup Filter Bar Scroll Navigation
+    const filtersContainer = document.getElementById('filtersContainer');
+    const scrollLeftBtn = document.getElementById('sourceScrollLeftBtn');
+    const scrollRightBtn = document.getElementById('sourceScrollRightBtn');
+
+    if (filtersContainer && scrollLeftBtn && scrollRightBtn) {
+        const scrollAmount = 200;
+
+        scrollLeftBtn.addEventListener('click', () => {
+            filtersContainer.scrollBy({ left: -scrollAmount, behavior: 'smooth' });
+        });
+
+        scrollRightBtn.addEventListener('click', () => {
+            filtersContainer.scrollBy({ left: scrollAmount, behavior: 'smooth' });
+        });
+
+        // Optional: Hide/Show buttons based on scroll position
+        filtersContainer.addEventListener('scroll', () => {
+             const { scrollLeft, scrollWidth, clientWidth } = filtersContainer;
+             
+             if (scrollLeft > 10) {
+                 scrollLeftBtn.classList.remove('disabled');
+             } else {
+                 scrollLeftBtn.classList.add('disabled');
+             }
+             
+             if ((scrollLeft + clientWidth) < (scrollWidth - 10)) {
+                 scrollRightBtn.classList.remove('disabled');
+             } else {
+                 scrollRightBtn.classList.add('disabled');
+             }
+        });
+
+        // Trigger initial check
+        setTimeout(() => {
+            filtersContainer.dispatchEvent(new Event('scroll'));
+        }, 500); // Small delay to ensure sources are rendered
+    }
+
     await Promise.all([fetchSources(), fetchNews(), fetchStats(), fetchHolidays(), fetchEvents()]);
 }
 
@@ -2908,8 +2947,10 @@ function renderEvents(events) {
 
 function checkScrollButtons() {
     const container = document.getElementById('eventsContainer');
-    const leftBtn = document.querySelector('.scroll-btn.left');
-    const rightBtn = document.querySelector('.scroll-btn.right');
+    // More specific selectors to avoid hijacking other buttons
+    const parent = document.querySelector('.events-board-view') || document;
+    const leftBtn = parent.querySelector('.scroll-btn.left');
+    const rightBtn = parent.querySelector('.scroll-btn.right');
     if (!container || !leftBtn || !rightBtn) return;
 
     leftBtn.style.display = container.scrollLeft > 20 ? 'flex' : 'none';

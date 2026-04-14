@@ -188,10 +188,17 @@
     <!-- Filters -->
     <section class="filters-section" id="filtersSection">
         <div class="filters-inner">
-            <div class="filters-scroll" id="filtersContainer" role="tablist" aria-label="Filter by source">
-                <button class="filter-pill active" data-source="all" role="tab" aria-selected="true">All
-                    Sources</button>
-                <!-- Dynamically populated -->
+            <div class="filters-scroll-wrapper">
+                <button class="source-nav-btn left" id="sourceScrollLeftBtn" aria-label="Scroll left">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
+                <div class="filters-scroll" id="filtersContainer" role="tablist" aria-label="Filter by source">
+                    <button class="filter-pill active" data-source="all" role="tab" aria-selected="true">All Sources</button>
+                    <!-- Dynamically populated -->
+                </div>
+                <button class="source-nav-btn right" id="sourceScrollRightBtn" aria-label="Scroll right">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
             </div>
             <div class="filters-right">
                 <select class="relevance-filter-select" id="relevanceFilter" aria-label="Filter by trading relevance"
