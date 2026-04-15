@@ -1221,8 +1221,16 @@ async function analyzeArticle(newsId, btnEl) {
         });
         console.error('Analysis request error:', err);
     } finally {
-        analyzingArticles.delete(newsId);
-    }
+    analyzingArticles.delete(newsId);
+
+    document.querySelectorAll(`.analyze-btn[data-id="${newsId}"]`).forEach(btn => {
+        btn.disabled = false;
+        btn.classList.remove('analyzing');
+
+        const article = newsData.find(a => a.id === newsId);
+        btn.innerHTML = article?.analyzed ? '✅ Analyzed' : 'Analyze';
+    });
+}
 }
 
 // ---- Modal Logic ----
