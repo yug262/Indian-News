@@ -32,6 +32,11 @@ const SEARCH_DEBOUNCE = 300;
 const SCROLL_TOP_THRESHOLD = 400;
 const CONNECTION_FAIL_THRESHOLD = 2;
 
+// ---- Debug Mode ----
+// Set to true to enable verbose fetch/filter/WS logging in browser console.
+const DEBUG = false;
+function dbg(...args) { if (DEBUG) console.log('[DBG]', ...args); }
+
 let currentSource = 'all';
 let searchQuery = '';
 let currentEventId = null;
@@ -45,8 +50,14 @@ let eventsBoardSortBy = 'latest';
 
 let showOnlyAnalyzed = false;
 let currentRelevance = 'all';
-let isFetching = false;
-let consecutiveFailures = 0;
+
+// ---- Request State Machine ----
+// 'idle' | 'loading' | 'background' | 'loadmore'
+// Replaces the fragile isFetching + isLoadingMore booleans for explicit state tracking.
+let requestState = 'idle';
+
+let consecutiveFailures = 0;    // Network-level failures (no response at all)
+let consecutiveBackendFailures = 0; // Backend-level failures (HTTP 200 but status='error')
 let searchDebounceTimer = null;
 
 // ---- Pagination & Smart Refresh ----
@@ -55,9 +66,20 @@ let totalDbArticles = 0;
 let currentPage = 0;
 const articlesPerPage = 20;
 let hasMoreArticles = true;
-let isLoadingMore = false;
 const seenArticleIds = new Set();
 let _fetchAbortController = null; // Abort stale fetch requests
+let _fetchGeneration = 0;         // Monotonic counter — identify the "owning" fetchNews call
+
+// Canonical map: pill data-relevance (lowercase) → DB-stored value (title case)
+// This is the ONLY place the mapping lives. All filter logic reads from this.
+const RELEVANCE_CANONICAL = {
+    'all':        null,          // "all" means no filter (do not send to backend)
+    'high useful': 'High Useful',
+    'useful':      'Useful',
+    'medium':      'Medium',
+    'neutral':     'Neutral',
+    'noisy':       'Noisy'
+};
 
 // ---- DOM Elements ----
 const newsGrid = document.getElementById('newsGrid');
@@ -68,8 +90,6 @@ const emptyState = document.getElementById('emptyState');
 const emptyStateTitle = document.getElementById('emptyStateTitle');
 const emptyStateMsg = document.getElementById('emptyStateMsg');
 const filtersContainer = document.getElementById('filtersContainer');
-const relevanceFilter = document.getElementById('relevanceFilter');
-const analyzedToggle = document.getElementById('analyzedToggle');
 const articleCount = document.getElementById('articleCount');
 const clockEl = document.getElementById('clock');
 const refreshIndicator = document.getElementById('refreshIndicator');
@@ -89,8 +109,10 @@ const eventsBoardSort = document.getElementById('eventsBoardSort');
 const eventsBoardTotal = document.getElementById('eventsBoardTotal');
 const eventsBoardArticles = document.getElementById('eventsBoardArticles');
 const eventsBoardLastUpdate = document.getElementById('eventsBoardLastUpdate');
-const noisyView = document.getElementById('noisyView');
-const noisyGrid = document.getElementById('noisyGrid');
+const relevanceView = document.getElementById('relevanceView');
+const relevanceTitle = document.getElementById('relevanceTitle');
+const relevanceSubtitle = document.getElementById('relevanceSubtitle');
+const relevanceKicker = document.getElementById('relevanceKicker');
 
 // ---- Mobile Menu Elements ----
 const mobileMenuTrigger = document.getElementById('mobileMenuTrigger');
@@ -1931,7 +1953,6 @@ function createNewsCard(article, index, isFeatured = false) {
 function renderNews(articles, prepend = false, append = false) {
     if (!prepend && !append) {
         newsGrid.innerHTML = '';
-        if (noisyGrid) noisyGrid.innerHTML = '';
         featuredGrid.innerHTML = '';
         featuredSection.style.display = 'none';
         allNewsHeader.style.display = 'none';
@@ -1960,7 +1981,8 @@ function renderNews(articles, prepend = false, append = false) {
         updateDisplayCounts();
     }
 
-    const targetGrid = currentDashboardView === 'noisy' ? noisyGrid : newsGrid;
+    // Always render into newsGrid - relevance banner above communicates the active filter visually
+    const targetGrid = newsGrid;
 
     // Handle Featured Articles (ONLY on the first page/initial load/refresh when not searching)
     if (!prepend && !append && !searchQuery && currentDashboardView === 'feed') {
@@ -2120,32 +2142,46 @@ function formatSymbol(sym) {
 
 // ---- Fetch News (with Pagination & Smart Refresh) ----
 async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
-    if (isFetching || (isLoadMore && !hasMoreArticles)) return;
+    // --- Guard logic via state machine ---
+    if (isLoadMore && !hasMoreArticles) return;
 
-    // If it's a background refresh, we don't show the full-page loader
-    if (!isBackgroundRefresh && !isLoadMore) {
+    if (requestState !== 'idle' && (isLoadMore || isBackgroundRefresh)) {
+        dbg('fetchNews skipped (busy):', { requestState, isLoadMore, isBackgroundRefresh });
+        return;
+    }
+
+    // --- Generational ID: prevents an aborted call's finally from stomping a newer call ---
+    // Increment and capture THIS call's generation number.
+    const myGeneration = ++_fetchGeneration;
+
+    // Determine the new state
+    const newState = isLoadMore ? 'loadmore' : isBackgroundRefresh ? 'background' : 'loading';
+    dbg('fetchNews start:', { myGeneration, newState, currentSource, currentRelevance, searchQuery });
+
+    // --- UI feedback for filter/initial loads ---
+    if (newState === 'loading') {
+        showSkeletonLoader();
         showRefreshIndicator();
     }
 
-    if (isLoadMore) {
-        isLoadingMore = true;
+    if (newState === 'loadmore') {
         const indicator = document.getElementById('loadMoreIndicator');
         if (indicator) indicator.style.display = 'flex';
     }
 
-    // Abort any previous in-flight fetch to prevent pile-up
+    // Abort any previous in-flight fetch cleanly
     if (_fetchAbortController) {
+        dbg('fetchNews aborting previous request');
         _fetchAbortController.abort();
         _fetchAbortController = null;
     }
 
-    isFetching = true;
+    requestState = newState;
     _fetchAbortController = new AbortController();
     const signal = _fetchAbortController.signal;
 
     try {
         const offset = isLoadMore ? (currentPage + 1) * articlesPerPage : 0;
-        // background refresh always checks page 0
         const fetchOffset = isBackgroundRefresh ? 0 : offset;
         const fetchLimit = isBackgroundRefresh ? 20 : articlesPerPage;
 
@@ -2154,9 +2190,13 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         if (currentSource && currentSource !== 'all') {
             url += `&source=${encodeURIComponent(currentSource)}`;
         }
-        if (currentRelevance && currentRelevance !== 'all') {
-            url += `&relevance=${encodeURIComponent(currentRelevance)}`;
+
+        // FIX 1: Use the canonical (DB-casing) value, never the raw pill attribute
+        const canonicalRelevance = RELEVANCE_CANONICAL[currentRelevance];
+        if (canonicalRelevance) {
+            url += `&relevance=${encodeURIComponent(canonicalRelevance)}`;
         }
+
         if (showOnlyAnalyzed) {
             url += `&analyzed_only=true`;
         }
@@ -2166,19 +2206,27 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         if (searchQuery) {
             url += `&search=${encodeURIComponent(searchQuery)}`;
         }
-        
-        // Handle Noisy News separation
-        if (currentDashboardView === 'noisy') {
-            url += `&relevance=noisy`;
-        } else if (currentDashboardView === 'feed') {
+
+        // FIX 2: Only exclude noisy articles when no specific relevance is selected.
+        // If the user has selected the "Noisy" tab (or any other tab), do NOT add this.
+        // Previously this was always added for 'feed' view, which broke the Noisy tab
+        // and silently excluded articles from other relevance tabs too.
+        if (currentDashboardView === 'feed' && !canonicalRelevance) {
             url += `&exclude_noisy=true`;
         }
 
+        console.log('DEBUG → currentRelevance:', currentRelevance);
+        console.log('DEBUG → canonicalRelevance:', canonicalRelevance);
+        console.log('DEBUG → final URL:', url);
+
+        dbg('fetchNews fetching:', url);
         const res = await apiFetch(url, { signal });
         const json = await res.json();
 
         if (json.status === 'success') {
             const newArticles = json.data || [];
+            console.log('DEBUG → articles received:', newArticles.length);
+            dbg('fetchNews success:', { count: newArticles.length, state: newState });
 
             if (isBackgroundRefresh) {
                 // Smart Refresh: Add new articles and update existing ones seamlessly
@@ -2229,7 +2277,11 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
                 renderNews(uniqueNew, false, true); // append = true
             } else {
                 // Initial load or Filter change
-                newsData = newArticles;
+                if (newArticles.length === 0 && currentRelevance !== 'all') {
+                    console.warn('Empty result — keeping previous data');
+                } else {
+                    newsData = newArticles;
+                }
                 seenArticleIds.clear();
                 newArticles.forEach(a => seenArticleIds.add(a.id));
                 currentPage = 0;
@@ -2240,36 +2292,66 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
             // Update counts
             updateDisplayCounts();
 
+            // Recover from any previous network failures
             if (consecutiveFailures > 0) {
                 hideConnectionBanner();
                 showToast('Connection restored', 'success');
             }
             consecutiveFailures = 0;
+            consecutiveBackendFailures = 0;
+
+        } else {
+            // ── BACKEND FAILURE ──────────────────────────────────────────────────────
+            // The server responded (network is fine) but the query itself failed.
+            // e.g. DB timeout, query error. Show a soft toast, NOT the connection banner.
+            consecutiveBackendFailures++;
+            console.warn(`[fetchNews] Backend error (attempt ${consecutiveBackendFailures}):`, json.message || 'Unknown error');
+
+            if (consecutiveBackendFailures >= CONNECTION_FAIL_THRESHOLD) {
+                // DB is consistently struggling — show a less alarmist backend notice
+                showToast('Server is under load — retrying shortly', 'warning');
+                // Reset so the next success clears the toast without multiple fires
+                consecutiveBackendFailures = 0;
+            }
+            // Do NOT touch consecutiveFailures — that is reserved for real network loss.
         }
+
     } catch (err) {
         if (err.name === 'AbortError') {
-            // Fetch was intentionally cancelled — not an error
+            dbg('fetchNews aborted cleanly (gen', myGeneration, ')');
+            // Aborted calls must NOT reset requestState — a newer call owns it now.
             return;
         }
+
+        // Only handle network failures if this call is still the active one
+        if (myGeneration !== _fetchGeneration) return;
+
+        // ── NETWORK FAILURE ──────────────────────────────────────────────────────
         consecutiveFailures++;
-        console.error('Failed to fetch news:', err);
+        console.error('[fetchNews] Error:', err);
+
         if (consecutiveFailures >= CONNECTION_FAIL_THRESHOLD) {
             showConnectionBanner();
         }
-    } finally {
-        isFetching = false;
-        _fetchAbortController = null;
-        isLoadingMore = false;
-        hideRefreshIndicator();
-        const indicator = document.getElementById('loadMoreIndicator');
-        if (indicator) indicator.style.display = 'none';
 
-        // Hide/Show sentinel based on hasMoreArticles
-        const sentinel = document.getElementById('infiniteScrollSentinel');
-        if (sentinel) sentinel.style.display = hasMoreArticles ? 'block' : 'none';
+    } finally {
+        // FIX 3: Only the OWNING call (latest generation) may reset shared state.
+        // An aborted call's finally block must not stomp the newer call's requestState.
+        if (myGeneration === _fetchGeneration) {
+            requestState = 'idle';
+            _fetchAbortController = null;
+            hideRefreshIndicator();
+            hideSkeletonLoader();
+            const indicator = document.getElementById('loadMoreIndicator');
+            if (indicator) indicator.style.display = 'none';
+
+            const sentinel = document.getElementById('infiniteScrollSentinel');
+            if (sentinel) sentinel.style.display = hasMoreArticles ? 'block' : 'none';
+        } else {
+            dbg('fetchNews finally ignored (stale gen', myGeneration, ', current', _fetchGeneration, ')');
+        }
     }
 }
-
 
 
 // ---- Display Counts Helper ----
@@ -2316,6 +2398,41 @@ function hideRefreshIndicator() {
     setTimeout(() => {
         refreshIndicator.classList.remove('visible');
     }, 500);
+}
+
+// ---- Skeleton Loader ----
+function showSkeletonLoader() {
+    if (!newsGrid) return;
+    // We only show skeletons if we are loading from scratch/filter (not load-more)
+    const skeletonHtml = Array.from({ length: 6 }).map(() => `
+        <div class="skeleton-card">
+            <div class="skeleton-img skeleton-shimmer"></div>
+            <div class="skeleton-title skeleton-shimmer"></div>
+            <div class="skeleton-text skeleton-shimmer"></div>
+            <div class="skeleton-text skeleton-shimmer" style="width: 80%"></div>
+            <div class="skeleton-meta skeleton-shimmer"></div>
+        </div>
+    `).join('');
+    
+    newsGrid.innerHTML = skeletonHtml;
+    // Hide empty state if visible
+    if (emptyState) emptyState.style.display = 'none';
+    if (featuredSection) featuredSection.style.display = 'none';
+}
+
+function hideSkeletonLoader() {
+    // Safety net: if renderNews didn't run (e.g., request was aborted), manually
+    // clear any skeleton cards left in the grid.
+    if (!newsGrid) return;
+    const skeletons = newsGrid.querySelectorAll('.skeleton-card');
+    if (skeletons.length === newsGrid.children.length && skeletons.length > 0) {
+        // Grid contains ONLY skeleton cards — clear it and show empty state
+        newsGrid.innerHTML = '';
+        if (emptyState) {
+            emptyState.style.display = 'flex';
+            if (emptyStateMsg) emptyStateMsg.textContent = 'The monitor is fetching news. Articles will appear here automatically.';
+        }
+    }
 }
 
 // ---- Search Functionality ----
@@ -2385,27 +2502,92 @@ scrollTopBtn.addEventListener('click', () => {
 });
 
 // ---- Filter Click Handler ----
-filtersContainer.addEventListener('click', (e) => {
-    const pill = e.target.closest('.filter-pill');
-    if (!pill) return;
+if (filtersContainer) {
+    filtersContainer.addEventListener('click', (e) => {
+        const pill = e.target.closest('.filter-pill');
+        if (!pill) return;
 
-    filtersContainer.querySelectorAll('.filter-pill').forEach(p => {
-        p.classList.remove('active');
-        p.setAttribute('aria-selected', 'false');
-    });
-    pill.classList.add('active');
-    pill.setAttribute('aria-selected', 'true');
+        filtersContainer.querySelectorAll('.filter-pill').forEach(p => {
+            p.classList.remove('active');
+            p.setAttribute('aria-selected', 'false');
+        });
+        pill.classList.add('active');
+        pill.setAttribute('aria-selected', 'true');
 
-    currentSource = pill.dataset.source;
-    fetchNews();
-});
-
-if (relevanceFilter) {
-    relevanceFilter.addEventListener('change', (e) => {
-        currentRelevance = e.target.value;
+        currentSource = pill.dataset.source;
+        
+        // Reset state before fetching to ensure UI consistency
+        currentPage = 0;
+        hasMoreArticles = true;
+        seenArticleIds.clear();
+        
         fetchNews();
     });
 }
+
+const relevanceContainers = [
+    document.getElementById('relevanceContainer'),
+    document.getElementById('relevanceContainerMobile')
+];
+
+relevanceContainers.forEach(container => {
+    if (container) {
+        container.addEventListener('click', (e) => {
+            const pill = e.target.closest('.filter-pill');
+            if (!pill) return;
+
+            // Update UI for both desktop and mobile containers to keep them perfectly synced
+            relevanceContainers.forEach(c => {
+                if (c) {
+                    c.querySelectorAll('.filter-pill').forEach(p => {
+                        p.classList.remove('active');
+                        p.setAttribute('aria-selected', 'false');
+                    });
+                    
+                    const activePill = c.querySelector(`.filter-pill[data-relevance="${pill.dataset.relevance}"]`);
+                    if (activePill) {
+                        activePill.classList.add('active');
+                        activePill.setAttribute('aria-selected', 'true');
+                    }
+                }
+            });
+
+            currentDashboardView = 'feed'; // Switch back to feed if clicked from events view
+            currentRelevance = pill.dataset.relevance;
+            
+            // Reset state before fetching to ensure UI consistency
+            currentPage = 0;
+            hasMoreArticles = true;
+            seenArticleIds.clear();
+
+            // Update Hero section text dynamically based on selected relevance
+            if (relevanceView && relevanceTitle && relevanceSubtitle && relevanceKicker) {
+                if (currentRelevance !== 'all') {
+                    const titles = {
+                        'high useful': { title: 'High Useful News', color: '#00d4aa', subtitle: 'Crucial market movers with direct, confirmed impact.' },
+                        'useful': { title: 'Useful News', color: '#00d4aa', subtitle: 'Actionable updates and material market information.' },
+                        'medium': { title: 'Medium Relevance', color: '#f0c040', subtitle: 'Sector updates and broader market signals.' },
+                        'neutral': { title: 'Neutral News', color: '#a0aabc', subtitle: 'General updates without immediate directional bias.' },
+                        'noisy': { title: 'Noisy News', color: '#ff4757', subtitle: 'Articles flagged as noise, daily recaps, or low-impact commentary. Separated to keep your main feed clean.' }
+                    };
+                    const config = titles[currentRelevance];
+                    if (config) {
+                        relevanceTitle.textContent = config.title;
+                        relevanceSubtitle.textContent = config.subtitle;
+                        relevanceKicker.textContent = `Filter: ${currentRelevance.replace(' ', ' / ').toUpperCase()}`;
+                        relevanceKicker.style.color = config.color;
+                    }
+                }
+            }
+            
+            applyDashboardViewState();
+            fetchNews();
+            
+            if (isDrawerOpen) toggleMobileMenu();
+        });
+    }
+});
+
 
 // ---- Mobile Drawer Toggle ----
 function toggleMobileMenu() {
@@ -2453,18 +2635,22 @@ function setDashboardNavState() {
 
 function applyDashboardViewState() {
     const isEventsView = currentDashboardView === 'events';
-    const isNoisyView = currentDashboardView === 'noisy';
+    const isFeedView = currentDashboardView === 'feed';
+    
+    // Only show relevance hero if we are on the Feed view and a specific relevance is selected
+    const isRelevanceView = isFeedView && currentRelevance && currentRelevance !== 'all';
     
     if (filtersSection) {
         filtersSection.style.display = isEventsView ? 'none' : '';
     }
 
-    if (relevanceFilter) {
-        relevanceFilter.style.display = isNoisyView ? 'none' : '';
+    const relevanceFiltersSection = document.getElementById('relevanceFiltersSection');
+    if (relevanceFiltersSection) {
+        relevanceFiltersSection.style.display = isEventsView ? 'none' : '';
     }
-    
-    if (feedView) feedView.style.display = (isEventsView || isNoisyView) ? 'none' : 'block';
-    if (noisyView) noisyView.style.display = isNoisyView ? 'block' : 'none';
+
+    if (feedView) feedView.style.display = isEventsView ? 'none' : 'block';
+    if (relevanceView) relevanceView.style.display = isRelevanceView ? 'block' : 'none';
     if (eventsBoardView) eventsBoardView.style.display = isEventsView ? 'block' : 'none';
     
     setDashboardNavState();
@@ -2473,19 +2659,17 @@ function applyDashboardViewState() {
 window.switchDashboardView = function (targetView, options = {}) {
     if (targetView === 'events') {
         currentDashboardView = 'events';
-    } else if (targetView === 'noisy') {
-        currentDashboardView = 'noisy';
-        // Reset filters for noisy view to show ALL noisy news
-        currentRelevance = 'all';
+    } else {
+        currentDashboardView = 'feed';
         currentSource = 'all';
+        currentRelevance = 'all'; 
         searchQuery = '';
         if (searchInput) {
             searchInput.value = '';
             searchClear.style.display = 'none';
         }
-        if (relevanceFilter) relevanceFilter.value = 'all';
 
-        // Visually reset source pills
+        // Visually reset source and relevance pills when switching back to main feed directly via top nav
         if (filtersContainer) {
             filtersContainer.querySelectorAll('.filter-pill').forEach(p => {
                 const isAll = p.dataset.source === 'all';
@@ -2493,8 +2677,19 @@ window.switchDashboardView = function (targetView, options = {}) {
                 p.setAttribute('aria-selected', isAll ? 'true' : 'false');
             });
         }
-    } else {
-        currentDashboardView = 'feed';
+        const relContainers = [
+            document.getElementById('relevanceContainer'),
+            document.getElementById('relevanceContainerMobile')
+        ];
+        relContainers.forEach(container => {
+            if (container) {
+                 container.querySelectorAll('.filter-pill').forEach(p => {
+                    const isAll = p.dataset.relevance === 'all';
+                    p.classList.toggle('active', isAll);
+                    p.setAttribute('aria-selected', isAll ? 'true' : 'false');
+                });
+            }
+        });
     }
     
     applyDashboardViewState();
@@ -2505,8 +2700,9 @@ window.switchDashboardView = function (targetView, options = {}) {
             fetchEvents();
         }
     } else {
-        // Refresh news for the selected view (feed or noisy)
+        // Refresh news for the selected view
         currentPage = 0;
+        hasMoreArticles = true; // FIX 4: Always reset before initial fetch on view switch
         seenArticleIds.clear();
         fetchNews();
     }
@@ -2542,34 +2738,22 @@ function setupEventsBoardControls() {
     }
 }
 
-if (analyzedToggle) {
-    analyzedToggle.addEventListener('click', () => {
-        showOnlyAnalyzed = !showOnlyAnalyzed;
-        if (showOnlyAnalyzed) {
-            analyzedToggle.classList.add('active');
-        } else {
-            analyzedToggle.classList.remove('active');
-        }
-        fetchNews();
-    });
-}
-
 // ---- Initial Load ----
 async function init() {
-    if (relevanceFilter) {
-        relevanceFilter.value = 'all';
-    }
-
     bindDashboardViewNavigation();
     setupEventsBoardControls();
-    window.switchDashboardView('feed', { scroll: false });
+    
+    // NOTE: WebSocket is auto-started by the IIFE below (initWebSocket IIFE at the bottom of the file).
+    // Do NOT call initWebSocket() here — the IIFE runs immediately when this script loads.
+
+    window.switchDashboardView('feed', { scroll: false }); // This calls fetchNews() internally
 
     // Setup Infinite Scroll (IntersectionObserver)
     const sentinel = document.getElementById('infiniteScrollSentinel');
     if (sentinel) {
         const observer = new IntersectionObserver((entries) => {
-            if (entries[0].isIntersecting && hasMoreArticles && !isFetching && !isLoadingMore) {
-                console.log('[Infinite Scroll] Sentinel hit, loading more...');
+            if (entries[0].isIntersecting && hasMoreArticles && requestState === 'idle') {
+                dbg('[Infinite Scroll] Sentinel hit, loading more...');
                 fetchNews(true); // isLoadMore = true
             }
         }, { threshold: 0.1 });
@@ -2578,52 +2762,51 @@ async function init() {
 
     // Setup Filter Bar Scroll Navigation
     const filtersContainer = document.getElementById('filtersContainer');
-    const scrollLeftBtn = document.getElementById('sourceScrollLeftBtn');
-    const scrollRightBtn = document.getElementById('sourceScrollRightBtn');
+    const sourceScrollLeftBtn = document.getElementById('sourceScrollLeftBtn');
+    const sourceScrollRightBtn = document.getElementById('sourceScrollRightBtn');
+    const relevanceContainer = document.getElementById('relevanceContainer');
+    const relevanceScrollLeftBtn = document.getElementById('relevanceScrollLeftBtn');
+    const relevanceScrollRightBtn = document.getElementById('relevanceScrollRightBtn');
 
-    if (filtersContainer && scrollLeftBtn && scrollRightBtn) {
+    function setupScroll(container, leftBtn, rightBtn) {
+        if (!container || !leftBtn || !rightBtn) return;
         const scrollAmount = 200;
 
-        scrollLeftBtn.addEventListener('click', () => {
-            filtersContainer.scrollBy({ left: -scrollAmount, behavior: 'smooth' });
+        leftBtn.addEventListener('click', () => {
+            container.scrollBy({ left: -scrollAmount, behavior: 'smooth' });
         });
 
-        scrollRightBtn.addEventListener('click', () => {
-            filtersContainer.scrollBy({ left: scrollAmount, behavior: 'smooth' });
+        rightBtn.addEventListener('click', () => {
+            container.scrollBy({ left: scrollAmount, behavior: 'smooth' });
         });
 
-        // Optional: Hide/Show buttons based on scroll position
-        filtersContainer.addEventListener('scroll', () => {
-             const { scrollLeft, scrollWidth, clientWidth } = filtersContainer;
+        container.addEventListener('scroll', () => {
+             const { scrollLeft, scrollWidth, clientWidth } = container;
+             if (scrollLeft > 10) leftBtn.classList.remove('disabled');
+             else leftBtn.classList.add('disabled');
              
-             if (scrollLeft > 10) {
-                 scrollLeftBtn.classList.remove('disabled');
-             } else {
-                 scrollLeftBtn.classList.add('disabled');
-             }
-             
-             if ((scrollLeft + clientWidth) < (scrollWidth - 10)) {
-                 scrollRightBtn.classList.remove('disabled');
-             } else {
-                 scrollRightBtn.classList.add('disabled');
-             }
+             if ((scrollLeft + clientWidth) < (scrollWidth - 10)) rightBtn.classList.remove('disabled');
+             else rightBtn.classList.add('disabled');
         });
 
-        // Trigger initial check
-        setTimeout(() => {
-            filtersContainer.dispatchEvent(new Event('scroll'));
-        }, 500); // Small delay to ensure sources are rendered
+        setTimeout(() => container.dispatchEvent(new Event('scroll')), 500);
     }
 
-    await Promise.all([fetchSources(), fetchNews(), fetchStats(), fetchHolidays(), fetchEvents()]);
+    setupScroll(filtersContainer, sourceScrollLeftBtn, sourceScrollRightBtn);
+    setupScroll(relevanceContainer, relevanceScrollLeftBtn, relevanceScrollRightBtn);
+
+    // NOTE: fetchNews() is already triggered by switchDashboardView('feed') above.
+    // We only need to start the other initial data fetches here.
+    await Promise.all([fetchSources(), fetchStats(), fetchHolidays(), fetchEvents()]);
 }
 
 init();
 
 // ---- Auto-refresh (Smart Refresh) ----
 setInterval(() => {
-    fetchSources();
-    fetchNews(false, true); // isLoadMore=false, isBackgroundRefresh=true
+    // We no longer poll fetchNews or fetchSources every 30s. 
+    // WebSocket (initWebSocket) now handles discovery of new articles in real-time.
+    dbg('[Poll] Background maintenance check...');
     fetchStats();
     fetchEvents();
 }, REFRESH_INTERVAL);
@@ -2635,6 +2818,7 @@ setInterval(() => {
     let wsRetryCount = 0;
     const WS_MAX_RETRY_DELAY = 30000; // 30s max backoff
     let wsPingTimer = null;
+    let wsReconnectTimer = null;
 
     function getWsUrl() {
         // Derive ws:// or wss:// from API_BASE
@@ -2693,10 +2877,11 @@ setInterval(() => {
     }
 
     function scheduleReconnect() {
+        clearTimeout(wsReconnectTimer);
         const delay = Math.min(1000 * Math.pow(2, wsRetryCount), WS_MAX_RETRY_DELAY);
         wsRetryCount++;
         console.log(`[WS] Reconnecting in ${delay}ms (attempt ${wsRetryCount})...`);
-        setTimeout(connectWebSocket, delay);
+        wsReconnectTimer = setTimeout(connectWebSocket, delay);
     }
 
     function handleWsMessage(msg) {
@@ -2749,6 +2934,27 @@ setInterval(() => {
 
     // Start WebSocket connection
     connectWebSocket();
+
+    // Handle Tab Switching (Background Throttling Mitigation)
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            // When tab becomes active, check if connection was lost due to browser suspending background timers
+            if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+                console.log('[WS] Tab active again, fast-reconnecting...');
+                clearInterval(wsPingTimer);
+                clearTimeout(wsReconnectTimer);
+                wsRetryCount = 0; // Reset the backoff delay
+                connectWebSocket();
+                
+                // Smart refresh to fetch any data missed while the tab was asleep
+                fetchNews(false, true); 
+                fetchEvents();
+            } else if (ws && ws.readyState === WebSocket.OPEN) {
+                // Send an immediate ping to confirm connection is still alive
+                ws.send('ping');
+            }
+        }
+    });
 })();
 
 // ---- Fetch Events ----
@@ -3939,24 +4145,6 @@ function updateChartStats(symbol, candles) {
 
 
 
-// Inject CSS keyframes for chart spinner if not already present
-(function () {
-    if (document.getElementById('chartStyleTag')) return;
-    const style = document.createElement('style');
-    style.id = 'chartStyleTag';
-    style.textContent = `
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes livePulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.4; transform: scale(0.85); }
-        }
-    `;
-    document.head.appendChild(style);
-})();
-
-
-
-
 // ---- Market Status Check ----
 let dynamicHolidays = null;
 
@@ -4171,8 +4359,8 @@ function renderEventNews(articles) {
 
 function openArticleDetail(event, articleIdx) {
     event.stopPropagation();
-    if (articleIdx < 0 || articleIdx >= eventDetailData.articles.length) return;
-    const article = eventDetailData.articles[articleIdx];
+    if (articleIdx < 0 || articleIdx >= eventDetailData.filteredArticles.length) return;
+    const article = eventDetailData.filteredArticles[articleIdx];
     openModal(article);
 }
 

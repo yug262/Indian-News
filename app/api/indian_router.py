@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, Header, HTTPException, status
 from datetime import datetime, timezone
 from typing import Optional, Any, List
 import os
@@ -18,16 +18,15 @@ SERVER_START = datetime.now(timezone.utc)
 class ConnectionManager:
     """Manages WebSocket connections for real-time multi-user updates."""
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: set[WebSocket] = set()
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections.add(websocket)
         print(f"[WS] Client connected. Total: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        self.active_connections.discard(websocket)
         print(f"[WS] Client disconnected. Total: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
@@ -36,7 +35,8 @@ class ConnectionManager:
             return
         data = json.dumps(message, default=str)
         stale = []
-        for connection in self.active_connections:
+        # Snapshot the connections to avoid "set changed size during iteration" errors
+        for connection in list(self.active_connections):
             try:
                 await connection.send_text(data)
             except Exception:
@@ -45,6 +45,47 @@ class ConnectionManager:
             self.disconnect(conn)
 
 ws_manager = ConnectionManager()
+
+@router.post("/api/internal/new_articles")
+async def notify_new_articles(
+    count: int = 1, 
+    x_internal_token: Optional[str] = Header(None)
+):
+    """
+    Internal endpoint called by scrapers to notify the dashboard 
+    of new articles immediately via WebSocket.
+    """
+    # Simple security check to ensure only our scrapers can trigger global refreshes
+    if x_internal_token != "super-secret-sync-token": # Replace with os.getenv in production
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing internal token"
+        )
+
+    await ws_manager.broadcast({"type": "new_articles", "count": count})
+    return {"status": "success", "notified_clients": len(ws_manager.active_connections)}
+
+
+@router.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    Main WebSocket endpoint for real-time dashboard updates.
+    Clients connect here and receive broadcast messages (new_articles, article_updated, etc.)
+    """
+    await ws_manager.connect(websocket)
+    try:
+        # Send a welcome heartbeat so the client knows the connection is live
+        await websocket.send_text('{"type":"connected"}')
+        # Keep the connection alive — wait for client messages (or disconnection)
+        while True:
+            # We don't currently need to receive messages from the frontend,
+            # but we must await something to detect disconnection.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception:
+        ws_manager.disconnect(websocket)
+
 
 # Async helpers to run blocking DB operations
 async def run_in_executor(func, *args):
@@ -152,8 +193,8 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
         params.append(source)
     
     if relevance and relevance.lower() != "all":
-        query += " AND LOWER(news_relevance) = %s"
-        params.append(relevance.lower())
+        query += " AND news_relevance ILIKE %s"
+        params.append(relevance)
     elif exclude_noisy:
         query += " AND (news_relevance IS NULL OR LOWER(news_relevance) != 'noisy')"
         

@@ -44,6 +44,24 @@ async def trigger_auto_analysis(news_id: int):
     except Exception as e:
         logger.error(f"[AUTO-ANALYZE] Hand-off failed for {news_id}: {e}")
 
+async def notify_dashboard(new_count: int):
+    """Securely notifies the backend that new articles are available to trigger WS broadcasts."""
+    if not GLOBAL_CLIENT or new_count <= 0:
+        return
+
+    try:
+        url = f"{API_BASE_URL}/api/internal/new_articles"
+        # We must include the internal token to pass the security check I added to indian_router.py
+        headers = {"X-Internal-Token": "super-secret-sync-token"}
+        resp = await GLOBAL_CLIENT.post(url, params={"count": new_count}, headers=headers, timeout=10.0)
+        
+        if resp.status_code == 200:
+            logger.info(f"[NOTIFY] Successfully notified dashboard of {new_count} new articles.")
+        else:
+            logger.warning(f"[NOTIFY] Failed to notify dashboard (Status {resp.status_code}): {resp.text}")
+    except Exception as e:
+        logger.error(f"[NOTIFY] Error notifying dashboard: {e}")
+
 #  LOGGING
 # ══════════════════════════════════════════════════════
 logger = logging.getLogger("indian_scraper")
@@ -324,6 +342,10 @@ async def run_scraper_cycle():
     total_all = sum(s["total"] for s in source_stats.values())
     duration = time.time() - start_time
     logger.info(f"===== Cycle Complete in {duration:.2f}s: {total_new} New, {total_dup} Duplicates, {total_all} Total Articles Processed =====")
+    
+    # Notify dashboard immediately if new content was found
+    if total_new > 0:
+        await notify_dashboard(total_new)
 
 async def cleanup_old_news():
     """
