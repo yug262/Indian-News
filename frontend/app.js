@@ -3258,15 +3258,22 @@ function renderEventsBoard(events) {
 
         return `
             <article class="events-board-card${activeClass}" data-event-idx="${idx}" style="--event-index:${idx};" title="Open event details">
-                <div class="events-board-card-top">
-                    ${wrapTooltip(`<span class="events-board-chip ${isLive ? 'chip-live' : 'chip-tracking'}" aria-label="${statusLabel}">${statusLabel}</span>`, 'event_activity_status', statusKey)}
-                    <span class="events-board-time">${timeAgo(ev.latest_update)}</span>
+                <div class="events-board-card-gradient-section" style="background: ${cardGradient};">
+                    <div class="events-board-gradient-overlay"></div>
+                    <div class="events-board-card-gradient-content">
+                        <div class="events-board-card-top">
+                            ${wrapTooltip(`<span class="events-board-chip ${isLive ? 'chip-live' : 'chip-tracking'}" aria-label="${statusLabel}">${statusLabel}</span>`, 'event_activity_status', statusKey)}
+                            <span class="events-board-time">${timeAgo(ev.latest_update)}</span>
+                        </div>
+                        <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
+                    </div>
                 </div>
-                <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
-                <p class="events-board-card-meta">${escapeHtml(timeLabel)}</p>
-                <div class="events-board-card-bottom">
-                    <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
-                    ${wrapTooltip(`<span class="events-board-open" aria-label="${attention}">${attention}</span>`, 'event_attention_level', attentionKey)}
+                <div class="events-board-card-content">
+                    <p class="events-board-card-meta">${escapeHtml(timeLabel)}</p>
+                    <div class="events-board-card-bottom">
+                        <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
+                        ${wrapTooltip(`<span class="events-board-open" aria-label="${attention}">${attention}</span>`, 'event_attention_level', attentionKey)}
+                    </div>
                 </div>
             </article>
         `;
