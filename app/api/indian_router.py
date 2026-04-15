@@ -463,7 +463,7 @@ async def analyze_single_indian_article(news_id: int):
                SET analysis_status = 'processing', 
                    analysis_started_at = NOW(),
                    analysis_error = NULL
-               WHERE id = %s AND (analysis_status IS NULL OR analysis_status IN ('queued', 'failed'))
+               WHERE id = %s AND (analysis_status IS NULL OR analysis_status IN ('queued', 'failed', 'completed'))
                RETURNING id, title, published, description, source""",
             (news_id,)
         )
