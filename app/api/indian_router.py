@@ -175,7 +175,7 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
     """Get Indian news articles, sorted by newest first."""
     
     query = """SELECT id, title, link, published, source, description, image_url,
-        impact_score, impact_summary, analyzed, created_at,
+        impact_score, impact_summary, analyzed, created_at, analyzed_at,
         analysis_data, news_relevance, news_category,
         news_impact_level, news_reason, symbols,
         market_bias, signal_bucket, primary_symbol, executive_summary, 
@@ -221,6 +221,8 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
                 article['published'] = article['published'].isoformat()
             if isinstance(article.get('created_at'), datetime):
                 article['created_at'] = article['created_at'].isoformat()
+            if isinstance(article.get('analyzed_at'), datetime):
+                article['analyzed_at'] = article['analyzed_at'].isoformat()
 
         return {"status": "success", "count": len(articles), "data": articles}
     except Exception as e:
@@ -536,7 +538,7 @@ async def analyze_single_indian_article(news_id: int):
                     updated_row = await run_with_timeout(
                         lambda: fetch_one(
                             """SELECT id, title, link, published, source, description, image_url,
-                                impact_score, impact_summary, analyzed, created_at,
+                                impact_score, impact_summary, analyzed, created_at, analyzed_at,
                                 market_bias, signal_bucket, news_category, news_relevance,
                                 primary_symbol, executive_summary, analysis_data, symbols,
                                 event_id, event_title
@@ -550,6 +552,8 @@ async def analyze_single_indian_article(news_id: int):
                             updated_row['published'] = updated_row['published'].isoformat()
                         if isinstance(updated_row.get('created_at'), datetime):
                             updated_row['created_at'] = updated_row['created_at'].isoformat()
+                        if isinstance(updated_row.get('analyzed_at'), datetime):
+                            updated_row['analyzed_at'] = updated_row['analyzed_at'].isoformat()
                         row_dict = dict(updated_row)
                         # Broadcast to all connected WebSocket clients
                         await ws_manager.broadcast({"type": "article_updated", "scope": "indian", "article": row_dict})

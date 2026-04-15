@@ -161,6 +161,7 @@ updateClock();
 // ---- Time Ago ----
 function timeAgo(dateStr) {
     const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--';
     const now = new Date();
     const diffMs = now - date;
     if (diffMs < 0) return 'Just now'; // Handle clock drift gracefully
@@ -179,10 +180,36 @@ function timeAgo(dateStr) {
 
 function formatTime(dateStr) {
     const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--:--';
     return date.toLocaleTimeString('en-US', {
         hour: '2-digit', minute: '2-digit', hour12: true,
         timeZone: 'Asia/Kolkata'
     });
+}
+
+function formatUtcTime(dateStr) {
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--';
+    return date.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'UTC'
+    });
+}
+
+function formatUtcDateTime(dateStr) {
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--';
+    return date.toLocaleString('en-US', {
+        month: '2-digit',
+        day: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'UTC'
+    }) + ' UTC';
 }
 
 function formatDateTimeIST(dateStr) {
@@ -830,11 +857,9 @@ function renderAnalyzeButton(article) {
     const btnState = isAnalyzing ? 'disabled' : '';
     const btnClass = isAnalyzing ? 'analyzing' : '';
     
-    let btnText = '✨ Analyze';
+    let btnText = 'Analyze';
     if (isAnalyzing) {
         btnText = '<div class="analyzing-spinner-sm"></div> Analyzing…';
-    } else if (article.analyzed) {
-        btnText = '🔄 Analyze Again';
     }
 
     return `
@@ -1466,11 +1491,11 @@ function renderIndianCompactModal(article, analysis) {
                     const isAnalyzing = analyzingArticles.has(article.id);
                     const btnState = isAnalyzing ? 'disabled' : '';
                     const btnClass = isAnalyzing ? 'analyzing' : '';
-                    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : '🔄 Analyze Again';
+                    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : 'Analyze';
                     
                     return `
                         <button class="analyze-btn analyze-btn-sm ${btnClass}" 
-                                style="padding:14px; border-radius:12px; font-weight:700; background:rgba(108, 99, 255, 0.1); border:1px solid rgba(108, 99, 255, 0.3); color:var(--accent-1); cursor:pointer; width:100%; transition:all 0.2s;"
+                                style="display:inline-flex; justify-content:center; align-items:center; padding:10px 22px; border-radius:24px; font-weight:700; background:rgba(108, 99, 255, 0.12); border:1px solid rgba(108, 99, 255, 0.3); color:var(--accent-1); cursor:pointer; max-width:180px; width:auto; margin:0 auto; transition:all 0.2s;"
                                 data-id="${article.id}" ${btnState} 
                                 onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
                             ${btnText}
@@ -1557,11 +1582,9 @@ function openModal(article) {
     const btnState = isAnalyzing ? 'disabled' : '';
     const btnClass = isAnalyzing ? 'analyzing' : '';
     
-    let btnText = '✨ Analyze Now';
+    let btnText = 'Analyze';
     if (isAnalyzing) {
         btnText = '<div class="analyzing-spinner-sm"></div> Analyzing...';
-    } else if (article.analyzed) {
-        btnText = '🔄 Analyze Again';
     }
 
     // Match "IA Flat Display" / "Intelligence Section" from Image 6
@@ -1618,8 +1641,7 @@ function openModal(article) {
 
         <div class="modal-action-footer" style="margin-top:32px; display:flex; flex-direction:column; gap:16px;">
             <div class="modal-analyze-center" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:12px 0;">
-                
-                <button class="analyze-btn analyze-btn-sm ${btnClass}" style="padding:12px 40px; font-size:1rem; border-radius:99px; font-weight:700;" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
+                <button class="analyze-btn analyze-btn-sm ${btnClass}" style="padding:8px 22px; font-size:0.92rem; border-radius:99px; font-weight:700; width:auto; min-width:120px;" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
                     ${btnText}
                 </button>
             </div>
@@ -1954,6 +1976,7 @@ function createNewsCard(article, index, isFeatured = false) {
             <div class="card-timestamps-premium" style="margin:0;">
                 <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
                 <div class="ts-row" style="font-size:0.65rem;"><strong>We Posted:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
+                ${article.analyzed_at ? `<div class="ts-row" style="font-size:0.65rem;"><strong>Analyzed:</strong> ${timeAgo(article.analyzed_at)} · ${formatUtcTime(article.analyzed_at)}</div>` : ''}
             </div>
             <div class="card-footer-right">
                 ${renderAnalyzeButton(article)}
