@@ -2225,13 +2225,17 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
 
         if (json.status === 'success') {
             const newArticles = json.data || [];
-            console.log('DEBUG → articles received:', newArticles.length);
-            dbg('fetchNews success:', { count: newArticles.length, state: newState });
+            const filteredArticles = newArticles;
+            console.log('DEBUG → articles received:', newArticles.length, 'filtered:', filteredArticles.length);
+            if (filteredArticles.length !== newArticles.length) {
+                console.log(`DEBUG → dropped ${newArticles.length - filteredArticles.length} articles that did not match current relevance '${currentRelevance}'`);
+            }
+            dbg('fetchNews success:', { count: filteredArticles.length, state: newState });
 
             if (isBackgroundRefresh) {
                 // Smart Refresh: Add new articles and update existing ones seamlessly
                 const trulyNew = [];
-                newArticles.forEach(a => {
+                filteredArticles.forEach(a => {
                     if (!seenArticleIds.has(a.id)) {
                         trulyNew.push(a);
                     } else {
@@ -2264,28 +2268,27 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
                 }
             } else if (isLoadMore) {
                 // Infinite Scroll: Append new articles
-                if (newArticles.length < articlesPerPage) {
+                if (filteredArticles.length < articlesPerPage) {
                     hasMoreArticles = false;
                 }
                 currentPage++;
 
                 // Filter out duplicates just in case
-                const uniqueNew = newArticles.filter(a => !seenArticleIds.has(a.id));
+                const uniqueNew = filteredArticles.filter(a => !seenArticleIds.has(a.id));
                 newsData = [...newsData, ...uniqueNew];
                 uniqueNew.forEach(a => seenArticleIds.add(a.id));
 
                 renderNews(uniqueNew, false, true); // append = true
             } else {
                 // Initial load or Filter change
-                if (newArticles.length === 0 && currentRelevance !== 'all') {
-                    console.warn('Empty result — keeping previous data');
-                } else {
-                    newsData = newArticles;
+                if (filteredArticles.length === 0 && currentRelevance !== 'all') {
+                    console.warn(`No articles found for relevance '${currentRelevance}'`);
                 }
+                newsData = filteredArticles;
                 seenArticleIds.clear();
-                newArticles.forEach(a => seenArticleIds.add(a.id));
+                filteredArticles.forEach(a => seenArticleIds.add(a.id));
                 currentPage = 0;
-                hasMoreArticles = newArticles.length >= articlesPerPage;
+                hasMoreArticles = filteredArticles.length >= articlesPerPage;
                 renderNews(newsData);
             }
 
