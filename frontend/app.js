@@ -2362,6 +2362,76 @@ function updateDisplayCounts() {
     const formattedCount = displayCount.toLocaleString();
     if (articleCount) articleCount.textContent = `${formattedCount}${suffix}`;
     if (drawerCount) drawerCount.textContent = `${formattedCount}${suffix}`;
+    
+    updateRelevanceHeroStats();
+}
+
+// ---- Update Relevance Hero Stats ----
+function updateRelevanceHeroStats() {
+    if (currentRelevance === 'all') return;
+    
+    // Get current filter info
+    const relevanceConfig = {
+        'high useful': { title: 'High Useful News', color: '#00d4aa', label: 'HIGH USEFUL' },
+        'useful': { title: 'Useful News', color: '#00d4aa', label: 'USEFUL' },
+        'medium': { title: 'Medium Relevance', color: '#f0c040', label: 'MEDIUM' },
+        'neutral': { title: 'Neutral News', color: '#a0aabc', label: 'NEUTRAL' },
+        'noisy': { title: 'Noisy News', color: '#ff4757', label: 'NOISY' }
+    };
+    
+    const config = relevanceConfig[currentRelevance];
+    if (!config) return;
+    
+    // Count total and analyzed articles in current view
+    let totalCount = 0;
+    let analyzedCount = 0;
+    let latestTimestamp = null;
+    
+    if (newsData && newsData.length > 0) {
+        newsData.forEach(article => {
+            const rel = (article.news_relevance || '').toLowerCase();
+            // Check if article matches current relevance filter
+            let matches = false;
+            if (currentRelevance === 'high useful' && rel === 'high useful') matches = true;
+            else if (currentRelevance === 'useful' && rel === 'useful') matches = true;
+            else if (currentRelevance === 'medium' && rel === 'medium') matches = true;
+            else if (currentRelevance === 'neutral' && rel === 'neutral') matches = true;
+            else if (currentRelevance === 'noisy' && (rel.includes('noisy') || rel.includes('noise'))) matches = true;
+            
+            if (matches) {
+                totalCount++;
+                if (article.analyzed) analyzedCount++;
+                
+                // Track latest timestamp
+                if (article.published) {
+                    const ts = new Date(article.published).getTime();
+                    if (!latestTimestamp || ts > latestTimestamp) {
+                        latestTimestamp = ts;
+                    }
+                }
+            }
+        });
+    }
+    
+    // Update DOM
+    const articlesLabel = document.getElementById('relevanceArticlesLabel');
+    const articlesCount = document.getElementById('relevanceArticlesCount');
+    const analyzedLabel = document.getElementById('relevanceAnalyzedLabel');
+    const analyzedCountElement = document.getElementById('relevanceAnalyzedCount');
+    const latestUpdate = document.getElementById('relevanceLatestUpdate');
+    
+    if (articlesLabel) articlesLabel.textContent = `${config.label} ARTICLES`;
+    if (articlesCount) articlesCount.textContent = totalCount.toLocaleString();
+    if (analyzedLabel) analyzedLabel.textContent = `ANALYZED ARTICLES`;
+    if (analyzedCountElement) analyzedCountElement.textContent = analyzedCount.toLocaleString();
+    if (latestUpdate) {
+        if (latestTimestamp) {
+            const latestDate = new Date(latestTimestamp);
+            latestUpdate.textContent = timeAgo(latestDate.toISOString());
+        } else {
+            latestUpdate.textContent = '--';
+        }
+    }
 }
 
 // ---- Fetch Footer Stats ----
