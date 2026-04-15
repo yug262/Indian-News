@@ -390,6 +390,19 @@ const AI_TOOLTIPS = {
         partially_absorbed: { color: '#f0c040', desc: 'Some move happened already. There might be follow-through, but the easy part is done.' },
         mostly_absorbed: { color: '#ff9f43', desc: 'Most of the obvious reaction is over. Limited upside from chasing this now.' },
         exhausted: { color: '#ff4757', desc: 'Fully reflected in price. The market already digested this news completely. No edge left.' }
+    },
+    event_activity_status: {
+        _title: 'Event Status',
+        _desc: 'Shows how actively this event is moving right now.',
+        live: { color: '#00d464', desc: 'Live means this story is actively moving and has fresh momentum in the market.' },
+        tracking: { color: '#7f8ca8', desc: 'Tracking means this story is still important, and we are monitoring it for the next meaningful update.' }
+    },
+    event_attention_level: {
+        _title: 'Attention Level',
+        _desc: 'Shows how strongly the market is focused on this event.',
+        high_attention: { color: '#6C63FF', desc: 'High Attention means this event is getting strong market focus and can influence sentiment quickly.' },
+        medium_attention: { color: '#00c8b4', desc: 'Medium Attention means the event matters and is being watched, but market urgency is moderate.' },
+        emerging: { color: '#f0c040', desc: 'Emerging means this story is early and may become more important as new details come in.' }
     }
 };
 
@@ -3235,6 +3248,9 @@ function renderEventsBoard(events) {
         const isLive = !Number.isNaN(lastUpdateTs) && lastUpdateTs > fourHoursAgo;
         const activeClass = currentEventId === ev.event_id ? ' active' : '';
         const attention = articleCount >= 10 ? 'High Attention' : articleCount >= 4 ? 'Medium Attention' : 'Emerging';
+        const statusKey = isLive ? 'live' : 'tracking';
+        const statusLabel = isLive ? 'Live' : 'Tracking';
+        const attentionKey = articleCount >= 10 ? 'high_attention' : articleCount >= 4 ? 'medium_attention' : 'emerging';
         const timeLabel = formatDateTimeIST(ev.latest_update);
         
         // Generate deterministic gradient based on event_id
@@ -3242,22 +3258,15 @@ function renderEventsBoard(events) {
 
         return `
             <article class="events-board-card${activeClass}" data-event-idx="${idx}" style="--event-index:${idx};" title="Open event details">
-                <div class="events-board-card-gradient-section" style="background: ${cardGradient};">
-                    <div class="events-board-gradient-overlay"></div>
-                    <div class="events-board-card-gradient-content">
-                        <div class="events-board-card-top">
-                            <span class="events-board-chip ${isLive ? 'chip-live' : 'chip-tracking'}">${isLive ? 'Live' : 'Tracking'}</span>
-                            <span class="events-board-time">${timeAgo(ev.latest_update)}</span>
-                        </div>
-                        <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
-                    </div>
+                <div class="events-board-card-top">
+                    ${wrapTooltip(`<span class="events-board-chip ${isLive ? 'chip-live' : 'chip-tracking'}" aria-label="${statusLabel}">${statusLabel}</span>`, 'event_activity_status', statusKey)}
+                    <span class="events-board-time">${timeAgo(ev.latest_update)}</span>
                 </div>
-                <div class="events-board-card-content">
-                    <p class="events-board-card-meta">${escapeHtml(timeLabel)}</p>
-                    <div class="events-board-card-bottom">
-                        <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
-                        <span class="events-board-open">${attention}</span>
-                    </div>
+                <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
+                <p class="events-board-card-meta">${escapeHtml(timeLabel)}</p>
+                <div class="events-board-card-bottom">
+                    <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
+                    ${wrapTooltip(`<span class="events-board-open" aria-label="${attention}">${attention}</span>`, 'event_attention_level', attentionKey)}
                 </div>
             </article>
         `;
