@@ -1915,6 +1915,71 @@ function renderCardTimestamps(article) {
 }
 
 
+/**
+ * Generate a deterministic gradient for a card based on a seed (event_id, article_id, or title hash).
+ * Uses MUTED, DESATURATED colors to function as a premium accent, NOT dominant fill.
+ * Designed to enhance dark cards without overpowering them.
+ * 
+ * @param {string|number} seed - Unique seed for deterministic color (event_id, title, etc.)
+ * @param {string} category - Optional category to bias the gradient
+ * @returns {string} CSS linear-gradient string (muted, refined)
+ */
+function generateCardGradient(seed, category = '') {
+    // RICH, SATURATED color palettes that blend beautifully with dark overlay
+    // Colors are vibrant but mature—not neon bright
+    const paletteChoices = [
+        // Deep teals & cyans (premium tech)
+        { start: '#004d6d', mid: '#0a8fa7', end: '#1bb5d1' },
+        { start: '#003d5c', mid: '#17738a', end: '#2a9cb5' },
+        
+        // Rich purples & violets
+        { start: '#2d1b69', mid: '#6c3fff', end: '#a366ff' },
+        { start: '#1f0a4d', mid: '#5c2e99', end: '#8a52d4' },
+        
+        // Deep indigos & blues
+        { start: '#0f1a4d', mid: '#4a5fd4', end: '#7a8fff' },
+        { start: '#0d1f4d', mid: '#3c5fa0', end: '#6a8ad4' },
+        
+        // Warm golds & ambers
+        { start: '#4d2800', mid: '#a0620a', end: '#d4942a' },
+        { start: '#331a00', mid: '#8a5a1a', end: '#c48a3a' },
+        
+        // Deep teals with emerald
+        { start: '#004d3d', mid: '#0a8a6a', end: '#2ab59a' },
+        { start: '#003d2e', mid: '#1a7a5a', end: '#3aa080' },
+        
+        // Rich crimsons & reds
+        { start: '#4d0f1a', mid: '#a03a3a', end: '#d4696a' },
+        { start: '#5a1a26', mid: '#b03a4a', end: '#e07a8a' },
+        
+        // Deep aquas
+        { start: '#0d4d5c', mid: '#1a8a9a', end: '#3ab5d4' },
+    ];
+
+    // Hash the seed deterministically
+    let hash = 0;
+    const seedStr = String(seed);
+    for (let i = 0; i < seedStr.length; i++) {
+        hash = ((hash << 5) - hash) + seedStr.charCodeAt(i);
+        hash = hash & hash;
+    }
+
+    // Subtle category bias
+    let offset = 0;
+    const catLower = (category || '').toString().toLowerCase();
+    if (catLower.includes('corporate') || catLower.includes('event')) offset = 0;
+    else if (catLower.includes('government') || catLower.includes('policy')) offset = 4;
+    else if (catLower.includes('macro')) offset = 8;
+
+    const paletteIdx = (Math.abs(hash) + offset) % paletteChoices.length;
+    const palette = paletteChoices[paletteIdx];
+
+    // Angle variation (diagonal emphasis like article cards)
+    const angleBase = 135 + ((hash % 11) * 12 % 30);
+
+    return `linear-gradient(${angleBase}deg, ${palette.start} 0%, ${palette.mid} 50%, ${palette.end} 100%)`;
+}
+
 function getCategoryGradient(category) {
     const gradients = {
         corporate_event: 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 45%, #3b82f6 100%)',
@@ -3171,18 +3236,28 @@ function renderEventsBoard(events) {
         const activeClass = currentEventId === ev.event_id ? ' active' : '';
         const attention = articleCount >= 10 ? 'High Attention' : articleCount >= 4 ? 'Medium Attention' : 'Emerging';
         const timeLabel = formatDateTimeIST(ev.latest_update);
+        
+        // Generate deterministic gradient based on event_id
+        const cardGradient = generateCardGradient(ev.event_id, 'corporate_event');
 
         return `
             <article class="events-board-card${activeClass}" data-event-idx="${idx}" style="--event-index:${idx};" title="Open event details">
-                <div class="events-board-card-top">
-                    <span class="events-board-chip ${isLive ? 'chip-live' : 'chip-tracking'}">${isLive ? 'Live' : 'Tracking'}</span>
-                    <span class="events-board-time">${timeAgo(ev.latest_update)}</span>
+                <div class="events-board-card-gradient-section" style="background: ${cardGradient};">
+                    <div class="events-board-gradient-overlay"></div>
+                    <div class="events-board-card-gradient-content">
+                        <div class="events-board-card-top">
+                            <span class="events-board-chip ${isLive ? 'chip-live' : 'chip-tracking'}">${isLive ? 'Live' : 'Tracking'}</span>
+                            <span class="events-board-time">${timeAgo(ev.latest_update)}</span>
+                        </div>
+                        <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
+                    </div>
                 </div>
-                <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
-                <p class="events-board-card-meta">${escapeHtml(timeLabel)}</p>
-                <div class="events-board-card-bottom">
-                    <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
-                    <span class="events-board-open">${attention}</span>
+                <div class="events-board-card-content">
+                    <p class="events-board-card-meta">${escapeHtml(timeLabel)}</p>
+                    <div class="events-board-card-bottom">
+                        <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
+                        <span class="events-board-open">${attention}</span>
+                    </div>
                 </div>
             </article>
         `;

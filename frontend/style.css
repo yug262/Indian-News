@@ -5717,56 +5717,65 @@ body {
     border: 1px solid var(--border);
     border-radius: 18px;
     background: var(--bg-card);
-    padding: 17px 18px;
     cursor: pointer;
-    transition: border-color 0.28s cubic-bezier(0.16, 1, 0.3, 1), transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1), background 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: border-color 0.28s cubic-bezier(0.16, 1, 0.3, 1), transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.28s cubic-bezier(0.16, 1, 0.3, 1);
     display: flex;
     flex-direction: column;
-    gap: 12px;
     animation: eventCardReveal 0.42s ease both;
     animation-delay: calc(var(--event-index, 0) * 35ms);
     position: relative;
     overflow: hidden;
+    box-shadow: inset 0 1px 1px rgba(255,255,255,0.05), 0 4px 16px rgba(0,0,0,0.25);
+    min-height: 0;
 }
 
-.events-board-card::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: var(--accent-gradient);
-    opacity: 0.4;
-    transition: opacity 0.25s ease;
+.events-board-card-gradient-section {
+    width: 100%;
+    height: 100px;
+    flex-shrink: 0;
+    position: relative;
+    overflow: hidden;
 }
 
-.events-board-card::after {
-    content: '';
+.events-board-gradient-overlay {
     position: absolute;
     inset: 0;
-    background: linear-gradient(145deg, rgba(108, 99, 255, 0.05), transparent 42%);
-    opacity: 0;
-    transition: opacity 0.3s ease;
+    background: linear-gradient(180deg, rgba(15, 23, 42, 0.12) 0%, rgba(15, 23, 42, 0.85) 100%);
     pointer-events: none;
+    z-index: 2;
+}
+
+.events-board-card-gradient-content {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 16px 18px;
+    gap: 6px;
+    z-index: 3;
+    color: #fff;
+}
+
+.events-board-card-content {
+    padding: 16px 18px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex: 1;
+    position: relative;
+    z-index: 1;
 }
 
 .events-board-card:hover {
-    border-color: var(--border-hover);
+    border-color: var(--accent);
     transform: translateY(-4px);
-    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34), 0 0 26px rgba(108, 99, 255, 0.17);
-    background: var(--bg-card-hover);
-}
-
-.events-board-card:hover::before,
-.events-board-card:hover::after {
-    opacity: 1;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), 0 0 32px rgba(108, 99, 255, 0.25), inset 0 1px 2px rgba(255,255,255,0.15);
 }
 
 .events-board-card.active {
     border-color: rgba(108, 99, 255, 0.55);
-    box-shadow: 0 12px 28px rgba(108, 99, 255, 0.2);
-    background: linear-gradient(160deg, rgba(108, 99, 255, 0.13), rgba(255, 255, 255, 0.015)), var(--bg-card);
+    box-shadow: 0 14px 36px rgba(108, 99, 255, 0.35), inset 0 1px 2px rgba(255,255,255,0.2);
 }
 
 .events-board-card-top {
@@ -5781,11 +5790,13 @@ body {
     text-transform: uppercase;
     letter-spacing: 1.15px;
     font-weight: 800;
-    color: var(--accent-2);
-    background: rgba(0, 212, 170, 0.14);
-    border: 1px solid rgba(0, 212, 170, 0.34);
+    color: #fff;
+    background: rgba(255, 255, 255, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.3);
     border-radius: 999px;
     padding: 4px 10px;
+    backdrop-filter: blur(10px);
+    width: fit-content;
 }
 
 .events-board-chip.chip-tracking {
@@ -5797,23 +5808,28 @@ body {
 .events-board-time {
     font-size: 0.73rem;
     font-weight: 600;
-    color: var(--text-secondary);
+    color: rgba(255, 255, 255, 0.8);
 }
 
 .events-board-card-title {
     margin: 0;
-    font-size: 1.12rem;
-    line-height: 1.4;
-    color: var(--text-primary);
-    min-height: 58px;
-    padding-right: 4px;
+    font-size: 1.28rem;
+    line-height: 1.3;
+    color: #fff;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .events-board-card-meta {
     margin: 0;
-    font-size: 0.78rem;
+    font-size: 0.75rem;
     font-weight: 500;
-    color: var(--text-muted);
+    color: var(--text-secondary);
 }
 
 .events-board-card-bottom {
