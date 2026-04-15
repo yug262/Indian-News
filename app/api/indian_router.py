@@ -68,19 +68,13 @@ async def notify_new_articles(
 
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """
-    Main WebSocket endpoint for real-time dashboard updates.
-    Clients connect here and receive broadcast messages (new_articles, article_updated, etc.)
-    """
     await ws_manager.connect(websocket)
     try:
-        # Send a welcome heartbeat so the client knows the connection is live
-        await websocket.send_text('{"type":"connected"}')
-        # Keep the connection alive — wait for client messages (or disconnection)
+        await websocket.send_text(json.dumps({"type": "connected"}))
         while True:
-            # We don't currently need to receive messages from the frontend,
-            # but we must await something to detect disconnection.
-            await websocket.receive_text()
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text(json.dumps({"type": "pong"}))
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
     except Exception:
@@ -600,25 +594,3 @@ async def analyze_single_indian_article(news_id: int):
         return {"status": "error", "message": str(e)}
     finally:
         _analysis_semaphore.release()
-
-# ===== WebSocket Endpoint =====
-@router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time multi-user dashboard updates.
-    
-    Clients connect here to receive instant notifications when:
-    - An article is analyzed (article_updated)
-    - New articles arrive (new_articles)
-    """
-    await ws_manager.connect(websocket)
-    try:
-        while True:
-            # Keep connection alive; listen for client pings
-            data = await websocket.receive_text()
-            # Respond to ping with pong
-            if data == "ping":
-                await websocket.send_text(json.dumps({"type": "pong"}))
-    except WebSocketDisconnect:
-        ws_manager.disconnect(websocket)
-    except Exception:
-        ws_manager.disconnect(websocket)

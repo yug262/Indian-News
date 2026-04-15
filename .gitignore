@@ -12,3 +12,4 @@ app/scrap_news/__pycache__
 /reassign_all_events.py
 /verify_events.py
 /fix_script2.py
+config.js
