@@ -150,7 +150,7 @@ function updateClock() {
         hour: '2-digit', minute: '2-digit', second: '2-digit',
         hour12: true, timeZone: 'Asia/Kolkata'
     };
-    const timeStr = now.toLocaleTimeString('en-US', options) + ' IST';
+    const timeStr = now.toLocaleTimeString('en-US', options);
     clockEl.textContent = timeStr;
     if (drawerClock) drawerClock.textContent = timeStr;
 }
@@ -222,7 +222,7 @@ function formatDateTimeIST(dateStr) {
         minute: '2-digit',
         hour12: true,
         timeZone: 'Asia/Kolkata'
-    }) + ' IST';
+    });
 }
 
 // ---- HTML Escaping ----
@@ -1976,7 +1976,7 @@ function createNewsCard(article, index, isFeatured = false) {
             <div class="card-timestamps-premium" style="margin:0;">
                 <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
                 <div class="ts-row" style="font-size:0.65rem;"><strong>We Posted:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
-                ${article.analyzed_at ? `<div class="ts-row" style="font-size:0.65rem;"><strong>Analyzed:</strong> ${timeAgo(article.analyzed_at)} · ${formatUtcTime(article.analyzed_at)}</div>` : ''}
+                ${article.analyzed_at ? `<div class="ts-row" style="font-size:0.65rem;"><strong>Analyzed:</strong> ${timeAgo(article.analyzed_at)} · ${formatTime(article.analyzed_at)}</div>` : ''}
             </div>
             <div class="card-footer-right">
                 ${renderAnalyzeButton(article)}
@@ -4194,7 +4194,7 @@ function attachCrosshairTooltip() {
         const bar = param.seriesData.get(lwCandleSeries);
         if (!bar) { tooltip.style.display = 'none'; return; }
 
-        const timeStr = istDateFormatter.format(new Date(param.time * 1000)) + ' IST';
+        const timeStr = istDateFormatter.format(new Date(param.time * 1000));
 
         const isUp = bar.close >= bar.open;
         const col = isUp ? '#26a69a' : '#ef5350';
@@ -4363,7 +4363,7 @@ function showEventDetail(eventId, eventTitle, articleCount, latestUpdate) {
         minute: '2-digit',
         timeZone: 'Asia/Kolkata'
     });
-    updateEl.textContent = timeStr + ' IST';
+    updateEl.textContent = timeStr;
 
     const updateTime = timeAgo(latestUpdate);
     metaEl.innerHTML = `<span>${articleCount} articles</span><span>Updated ${updateTime}</span>`;

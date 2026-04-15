@@ -643,7 +643,6 @@ def save_indian_analysis(news_id: int, analysis: dict) -> None:
             impact_score      = %s,
             market_bias       = %s,
             signal_bucket     = %s,
-            news_category     = %s,
             primary_symbol    = %s,
             executive_summary = %s,
             decision_trace    = %s
