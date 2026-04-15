@@ -161,6 +161,7 @@ updateClock();
 // ---- Time Ago ----
 function timeAgo(dateStr) {
     const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--';
     const now = new Date();
     const diffMs = now - date;
     if (diffMs < 0) return 'Just now'; // Handle clock drift gracefully
@@ -179,10 +180,36 @@ function timeAgo(dateStr) {
 
 function formatTime(dateStr) {
     const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--:--';
     return date.toLocaleTimeString('en-US', {
         hour: '2-digit', minute: '2-digit', hour12: true,
         timeZone: 'Asia/Kolkata'
     });
+}
+
+function formatUtcTime(dateStr) {
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--';
+    return date.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'UTC'
+    });
+}
+
+function formatUtcDateTime(dateStr) {
+    const date = new Date(dateStr);
+    if (Number.isNaN(date.getTime())) return '--';
+    return date.toLocaleString('en-US', {
+        month: '2-digit',
+        day: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+        timeZone: 'UTC'
+    }) + ' UTC';
 }
 
 function formatDateTimeIST(dateStr) {
@@ -830,11 +857,9 @@ function renderAnalyzeButton(article) {
     const btnState = isAnalyzing ? 'disabled' : '';
     const btnClass = isAnalyzing ? 'analyzing' : '';
     
-    let btnText = '✨ Analyze';
+    let btnText = 'Analyze';
     if (isAnalyzing) {
         btnText = '<div class="analyzing-spinner-sm"></div> Analyzing…';
-    } else if (article.analyzed) {
-        btnText = '🔄 Analyze Again';
     }
 
     return `
@@ -1466,11 +1491,11 @@ function renderIndianCompactModal(article, analysis) {
                     const isAnalyzing = analyzingArticles.has(article.id);
                     const btnState = isAnalyzing ? 'disabled' : '';
                     const btnClass = isAnalyzing ? 'analyzing' : '';
-                    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : '🔄 Analyze Again';
+                    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : 'Analyze';
                     
                     return `
                         <button class="analyze-btn analyze-btn-sm ${btnClass}" 
-                                style="padding:14px; border-radius:12px; font-weight:700; background:rgba(108, 99, 255, 0.1); border:1px solid rgba(108, 99, 255, 0.3); color:var(--accent-1); cursor:pointer; width:100%; transition:all 0.2s;"
+                                style="display:inline-flex; justify-content:center; align-items:center; padding:10px 22px; border-radius:24px; font-weight:700; background:rgba(108, 99, 255, 0.12); border:1px solid rgba(108, 99, 255, 0.3); color:var(--accent-1); cursor:pointer; max-width:180px; width:auto; margin:0 auto; transition:all 0.2s;"
                                 data-id="${article.id}" ${btnState} 
                                 onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
                             ${btnText}
@@ -1557,11 +1582,9 @@ function openModal(article) {
     const btnState = isAnalyzing ? 'disabled' : '';
     const btnClass = isAnalyzing ? 'analyzing' : '';
     
-    let btnText = '✨ Analyze Now';
+    let btnText = 'Analyze';
     if (isAnalyzing) {
         btnText = '<div class="analyzing-spinner-sm"></div> Analyzing...';
-    } else if (article.analyzed) {
-        btnText = '🔄 Analyze Again';
     }
 
     // Match "IA Flat Display" / "Intelligence Section" from Image 6
@@ -1618,8 +1641,7 @@ function openModal(article) {
 
         <div class="modal-action-footer" style="margin-top:32px; display:flex; flex-direction:column; gap:16px;">
             <div class="modal-analyze-center" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:12px 0;">
-                
-                <button class="analyze-btn analyze-btn-sm ${btnClass}" style="padding:12px 40px; font-size:1rem; border-radius:99px; font-weight:700;" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
+                <button class="analyze-btn analyze-btn-sm ${btnClass}" style="padding:8px 22px; font-size:0.92rem; border-radius:99px; font-weight:700; width:auto; min-width:120px;" data-id="${article.id}" ${btnState} onclick="event.stopPropagation(); analyzeArticle(${article.id}, this)">
                     ${btnText}
                 </button>
             </div>
@@ -1885,6 +1907,34 @@ function renderCardTimestamps(article) {
 }
 
 
+function getCategoryGradient(category) {
+    const gradients = {
+        corporate_event: 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 45%, #3b82f6 100%)',
+        government_policy: 'linear-gradient(135deg, #312e81 0%, #c2410c 45%, #f59e0b 100%)',
+        macro_data: 'linear-gradient(135deg, #1e3a8a 0%, #7c3aed 45%, #d946ef 100%)',
+        default: 'linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.85) 100%)'
+    };
+    const key = (category || '').toString().trim().toLowerCase();
+    return gradients[key] || gradients.default;
+}
+
+function renderNewsMedia(article) {
+    const hasImage = article.image_url && article.image_url.toString().trim().length > 0;
+    const safeSource = escapeHtml(article.source || 'Unknown');
+    const safeTitle = escapeHtml(article.title || 'Untitled headline');
+    const fallbackGradient = getCategoryGradient(article.news_category);
+
+    return `
+        <div class="card-image ${hasImage ? '' : 'missing-image'}">
+            ${hasImage ? `<img class="card-media-img" src="${escapeHtml(article.image_url)}" alt="" onload="this.parentElement.classList.remove('missing-image');" onerror="this.style.display='none'; this.parentElement.classList.add('missing-image');">` : ''}
+            <div class="card-media-fallback" style="background: ${fallbackGradient};">
+                <div class="fallback-overlay"></div>
+                <span class="fallback-source-badge">${safeSource}</span>
+                <div class="fallback-title">${safeTitle}</div>
+            </div>
+        </div>`;
+}
+
 // ---- Render News Card ----
 function createNewsCard(article, index, isFeatured = false) {
     const card = document.createElement('div');
@@ -1892,12 +1942,7 @@ function createNewsCard(article, index, isFeatured = false) {
     card.className = isFeatured ? 'news-card featured-card' : 'news-card';
     card.style.animationDelay = `${index * 0.05}s`;
 
-    const imageHtml = `
-        <div class="card-image ${!article.image_url ? 'missing-image' : ''}">
-            ${article.image_url ? 
-                `<img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.classList.add('missing-image'); this.style.display='none';">` : 
-                `<div class="image-placeholder"></div>`}
-        </div>`;
+    const imageHtml = renderNewsMedia(article);
 
     const featuredBadge = isFeatured ? `<span class="featured-type-badge">${article.featuredType}</span>` : '';
 
@@ -1931,6 +1976,7 @@ function createNewsCard(article, index, isFeatured = false) {
             <div class="card-timestamps-premium" style="margin:0;">
                 <div class="ts-row" style="font-size:0.65rem;"><strong>Source Posted:</strong> ${timeAgo(article.published)} · ${formatTime(article.published)}</div>
                 <div class="ts-row" style="font-size:0.65rem;"><strong>We Posted:</strong> ${timeAgo(article.created_at)} · ${formatTime(article.created_at)}</div>
+                ${article.analyzed_at ? `<div class="ts-row" style="font-size:0.65rem;"><strong>Analyzed:</strong> ${timeAgo(article.analyzed_at)} · ${formatUtcTime(article.analyzed_at)}</div>` : ''}
             </div>
             <div class="card-footer-right">
                 ${renderAnalyzeButton(article)}
@@ -2225,13 +2271,17 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
 
         if (json.status === 'success') {
             const newArticles = json.data || [];
-            console.log('DEBUG → articles received:', newArticles.length);
-            dbg('fetchNews success:', { count: newArticles.length, state: newState });
+            const filteredArticles = newArticles;
+            console.log('DEBUG → articles received:', newArticles.length, 'filtered:', filteredArticles.length);
+            if (filteredArticles.length !== newArticles.length) {
+                console.log(`DEBUG → dropped ${newArticles.length - filteredArticles.length} articles that did not match current relevance '${currentRelevance}'`);
+            }
+            dbg('fetchNews success:', { count: filteredArticles.length, state: newState });
 
             if (isBackgroundRefresh) {
                 // Smart Refresh: Add new articles and update existing ones seamlessly
                 const trulyNew = [];
-                newArticles.forEach(a => {
+                filteredArticles.forEach(a => {
                     if (!seenArticleIds.has(a.id)) {
                         trulyNew.push(a);
                     } else {
@@ -2264,28 +2314,27 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
                 }
             } else if (isLoadMore) {
                 // Infinite Scroll: Append new articles
-                if (newArticles.length < articlesPerPage) {
+                if (filteredArticles.length < articlesPerPage) {
                     hasMoreArticles = false;
                 }
                 currentPage++;
 
                 // Filter out duplicates just in case
-                const uniqueNew = newArticles.filter(a => !seenArticleIds.has(a.id));
+                const uniqueNew = filteredArticles.filter(a => !seenArticleIds.has(a.id));
                 newsData = [...newsData, ...uniqueNew];
                 uniqueNew.forEach(a => seenArticleIds.add(a.id));
 
                 renderNews(uniqueNew, false, true); // append = true
             } else {
                 // Initial load or Filter change
-                if (newArticles.length === 0 && currentRelevance !== 'all') {
-                    console.warn('Empty result — keeping previous data');
-                } else {
-                    newsData = newArticles;
+                if (filteredArticles.length === 0 && currentRelevance !== 'all') {
+                    console.warn(`No articles found for relevance '${currentRelevance}'`);
                 }
+                newsData = filteredArticles;
                 seenArticleIds.clear();
-                newArticles.forEach(a => seenArticleIds.add(a.id));
+                filteredArticles.forEach(a => seenArticleIds.add(a.id));
                 currentPage = 0;
-                hasMoreArticles = newArticles.length >= articlesPerPage;
+                hasMoreArticles = filteredArticles.length >= articlesPerPage;
                 renderNews(newsData);
             }
 
@@ -2362,6 +2411,76 @@ function updateDisplayCounts() {
     const formattedCount = displayCount.toLocaleString();
     if (articleCount) articleCount.textContent = `${formattedCount}${suffix}`;
     if (drawerCount) drawerCount.textContent = `${formattedCount}${suffix}`;
+    
+    updateRelevanceHeroStats();
+}
+
+// ---- Update Relevance Hero Stats ----
+function updateRelevanceHeroStats() {
+    if (currentRelevance === 'all') return;
+    
+    // Get current filter info
+    const relevanceConfig = {
+        'high useful': { title: 'High Useful News', color: '#00d4aa', label: 'HIGH USEFUL' },
+        'useful': { title: 'Useful News', color: '#00d4aa', label: 'USEFUL' },
+        'medium': { title: 'Medium Relevance', color: '#f0c040', label: 'MEDIUM' },
+        'neutral': { title: 'Neutral News', color: '#a0aabc', label: 'NEUTRAL' },
+        'noisy': { title: 'Noisy News', color: '#ff4757', label: 'NOISY' }
+    };
+    
+    const config = relevanceConfig[currentRelevance];
+    if (!config) return;
+    
+    // Count total and analyzed articles in current view
+    let totalCount = 0;
+    let analyzedCount = 0;
+    let latestTimestamp = null;
+    
+    if (newsData && newsData.length > 0) {
+        newsData.forEach(article => {
+            const rel = (article.news_relevance || '').toLowerCase();
+            // Check if article matches current relevance filter
+            let matches = false;
+            if (currentRelevance === 'high useful' && rel === 'high useful') matches = true;
+            else if (currentRelevance === 'useful' && rel === 'useful') matches = true;
+            else if (currentRelevance === 'medium' && rel === 'medium') matches = true;
+            else if (currentRelevance === 'neutral' && rel === 'neutral') matches = true;
+            else if (currentRelevance === 'noisy' && (rel.includes('noisy') || rel.includes('noise'))) matches = true;
+            
+            if (matches) {
+                totalCount++;
+                if (article.analyzed) analyzedCount++;
+                
+                // Track latest timestamp
+                if (article.published) {
+                    const ts = new Date(article.published).getTime();
+                    if (!latestTimestamp || ts > latestTimestamp) {
+                        latestTimestamp = ts;
+                    }
+                }
+            }
+        });
+    }
+    
+    // Update DOM
+    const articlesLabel = document.getElementById('relevanceArticlesLabel');
+    const articlesCount = document.getElementById('relevanceArticlesCount');
+    const analyzedLabel = document.getElementById('relevanceAnalyzedLabel');
+    const analyzedCountElement = document.getElementById('relevanceAnalyzedCount');
+    const latestUpdate = document.getElementById('relevanceLatestUpdate');
+    
+    if (articlesLabel) articlesLabel.textContent = `${config.label} ARTICLES`;
+    if (articlesCount) articlesCount.textContent = totalCount.toLocaleString();
+    if (analyzedLabel) analyzedLabel.textContent = `ANALYZED ARTICLES`;
+    if (analyzedCountElement) analyzedCountElement.textContent = analyzedCount.toLocaleString();
+    if (latestUpdate) {
+        if (latestTimestamp) {
+            const latestDate = new Date(latestTimestamp);
+            latestUpdate.textContent = timeAgo(latestDate.toISOString());
+        } else {
+            latestUpdate.textContent = '--';
+        }
+    }
 }
 
 // ---- Fetch Footer Stats ----

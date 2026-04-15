@@ -84,11 +84,9 @@ SCHEMA_TEMPLATE = {
 REQUIRED_TOP_LEVEL_KEYS = list(SCHEMA_TEMPLATE.keys())
 
 ALLOWED_ENUMS = {
-    "signal_bucket": ["DIRECT", "AMBIGUOUS", "WEAK_PROXY", "NOISE"],
-    "event_type": ["earnings", "policy", "order_win", "macro", "regulation", "disruption", "corporate_action", "other"],
-    "event_status": ["confirmed", "developing", "rumor", "noise"],
-    "event_scope": ["single_stock", "sector", "broad_market"],
+    "signal_bucket": ["DIRECT", "AMBIGUOUS", "WEAK PROXY", "NOISE"],
+    "event_type": ["Corporate Event", "Government Policy", "Macro Data", "Global Macro Impact", "Commodity Macro", "Sector Trend", "Institutional Activity", "Sentiment Indicator", "Price Action Noise", "Routine Market Update", "Other"],
     "bias": ["bullish", "bearish", "mixed", "neutral"],
-    "horizon": ["intraday", "short_term", "medium_term"],
-    "tradeability": ["actionable_now", "wait_for_confirmation", "no_edge"],
+    "horizon": ["intraday", "short term", "medium term"],
+    "tradeability": ["Actionable Now", "Wait For Confirmation", "No Edge"],
 }
