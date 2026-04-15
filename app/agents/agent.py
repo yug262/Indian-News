@@ -658,7 +658,6 @@ def save_indian_analysis(news_id: int, analysis: dict) -> None:
         impact_score_val,
         market_bias_val[:20],
         bucket_val[:20],
-        (event.get("event_type", "general"))[:100],
         primary_symbol,
         (analysis.get("executive_summary", "") or "")[:2000],
         json.dumps(analysis.get("decision_trace", {})),
