@@ -1885,6 +1885,34 @@ function renderCardTimestamps(article) {
 }
 
 
+function getCategoryGradient(category) {
+    const gradients = {
+        corporate_event: 'linear-gradient(135deg, #0f172a 0%, #1e3a8a 45%, #3b82f6 100%)',
+        government_policy: 'linear-gradient(135deg, #312e81 0%, #c2410c 45%, #f59e0b 100%)',
+        macro_data: 'linear-gradient(135deg, #1e3a8a 0%, #7c3aed 45%, #d946ef 100%)',
+        default: 'linear-gradient(135deg, rgba(15, 23, 42, 0.95) 0%, rgba(30, 41, 59, 0.85) 100%)'
+    };
+    const key = (category || '').toString().trim().toLowerCase();
+    return gradients[key] || gradients.default;
+}
+
+function renderNewsMedia(article) {
+    const hasImage = article.image_url && article.image_url.toString().trim().length > 0;
+    const safeSource = escapeHtml(article.source || 'Unknown');
+    const safeTitle = escapeHtml(article.title || 'Untitled headline');
+    const fallbackGradient = getCategoryGradient(article.news_category);
+
+    return `
+        <div class="card-image ${hasImage ? '' : 'missing-image'}">
+            ${hasImage ? `<img class="card-media-img" src="${escapeHtml(article.image_url)}" alt="" onload="this.parentElement.classList.remove('missing-image');" onerror="this.style.display='none'; this.parentElement.classList.add('missing-image');">` : ''}
+            <div class="card-media-fallback" style="background: ${fallbackGradient};">
+                <div class="fallback-overlay"></div>
+                <span class="fallback-source-badge">${safeSource}</span>
+                <div class="fallback-title">${safeTitle}</div>
+            </div>
+        </div>`;
+}
+
 // ---- Render News Card ----
 function createNewsCard(article, index, isFeatured = false) {
     const card = document.createElement('div');
@@ -1892,12 +1920,7 @@ function createNewsCard(article, index, isFeatured = false) {
     card.className = isFeatured ? 'news-card featured-card' : 'news-card';
     card.style.animationDelay = `${index * 0.05}s`;
 
-    const imageHtml = `
-        <div class="card-image ${!article.image_url ? 'missing-image' : ''}">
-            ${article.image_url ? 
-                `<img src="${escapeHtml(article.image_url)}" alt="" onerror="this.parentElement.classList.add('missing-image'); this.style.display='none';">` : 
-                `<div class="image-placeholder"></div>`}
-        </div>`;
+    const imageHtml = renderNewsMedia(article);
 
     const featuredBadge = isFeatured ? `<span class="featured-type-badge">${article.featuredType}</span>` : '';
 
