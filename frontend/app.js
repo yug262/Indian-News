@@ -1228,7 +1228,7 @@ async function analyzeArticle(newsId, btnEl) {
         btn.classList.remove('analyzing');
 
         const article = newsData.find(a => a.id === newsId);
-        btn.innerHTML = article?.analyzed ? '✅ Analyzed' : 'Analyze';
+        btn.innerHTML = article?.analyzed ? 'Analyze' : 'Analyze';
     });
 }
 }
@@ -1618,7 +1618,6 @@ function openModal(article) {
 
         classificationHtml = `
             <div class="ia-flat-display" style="margin-top:20px; border-top:1px solid var(--border); padding-top:20px;">
-                <span class="impact-tag ${css}" style="margin-bottom:12px; display:inline-block;">📊 ${article.news_impact_level || 'Neutral'} Impact</span>
                 <div class="ia-reason-box" style="border-left:4px solid #6c63ff; background:rgba(108, 99, 255, 0.05); padding:16px; border-radius:0 8px 8px 0;">
                     <div class="reason-label" style="color:#6c63ff; font-weight:800; text-transform:uppercase; font-size:0.7rem; margin-bottom:8px; opacity:0.8;">Market Intelligence Reason</div>
                     <div class="ia-reason-text" style="font-size:0.9rem; line-height:1.5; color:var(--text-secondary);">${escapeHtml(article.news_reason || 'Analysis details not available.')}</div>
@@ -3215,6 +3214,17 @@ function updateEventsBoardSummary(events) {
     }
 }
 
+function getEventCardVariant(seed) {
+    const variants = ['variant-a', 'variant-b', 'variant-c', 'variant-d', 'variant-e'];
+    const seedStr = String(seed || '').trim();
+    let hash = 0;
+    for (let i = 0; i < seedStr.length; i++) {
+        hash = ((hash << 5) - hash) + seedStr.charCodeAt(i);
+        hash |= 0;
+    }
+    return variants[Math.abs(hash) % variants.length];
+}
+
 function renderEventsBoard(events) {
     if (!eventsBoardGrid || !eventsBoardEmpty) return;
 
@@ -3252,24 +3262,25 @@ function renderEventsBoard(events) {
         const statusLabel = isLive ? 'Live' : 'Tracking';
         const attentionKey = articleCount >= 10 ? 'high_attention' : articleCount >= 4 ? 'medium_attention' : 'emerging';
         const timeLabel = formatDateTimeIST(ev.latest_update);
+        const variant = getEventCardVariant(ev.event_id || title);
         
         // Generate deterministic gradient based on event_id
         const cardGradient = generateCardGradient(ev.event_id, 'corporate_event');
 
         return `
-            <article class="events-board-card${activeClass}" data-event-idx="${idx}" style="--event-index:${idx};" title="Open event details">
+            <article class="events-board-card ${variant}${activeClass}" data-event-idx="${idx}" style="--event-index:${idx};" title="Open event details">
                 <div class="events-board-card-gradient-section" style="background: ${cardGradient};">
                     <div class="events-board-gradient-overlay"></div>
                     <div class="events-board-card-gradient-content">
-                        <div class="events-board-card-top">
-                            ${wrapTooltip(`<span class="events-board-chip ${isLive ? 'chip-live' : 'chip-tracking'}" aria-label="${statusLabel}">${statusLabel}</span>`, 'event_activity_status', statusKey)}
-                            <span class="events-board-time">${timeAgo(ev.latest_update)}</span>
-                        </div>
                         <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
                     </div>
                 </div>
                 <div class="events-board-card-content">
-                    <p class="events-board-card-meta">${escapeHtml(timeLabel)}</p>
+                    <div class="events-board-meta-line">
+                        <span class="event-time-absolute">${escapeHtml(timeLabel)}</span>
+                        <span class="event-time-relative">${timeAgo(ev.latest_update)}</span>
+                        <span class="event-status-inline ${statusKey}">(${statusLabel.toUpperCase()})</span>
+                    </div>
                     <div class="events-board-card-bottom">
                         <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
                         ${wrapTooltip(`<span class="events-board-open" aria-label="${attention}">${attention}</span>`, 'event_attention_level', attentionKey)}
@@ -3667,6 +3678,123 @@ function updateChartStats(symbol, data) {
     change.style.color = diff >= 0 ? '#00d4aa' : '#ff4757';
 }
 
+// ---- Helper: Get bias label and description from bias value ----
+function getBiasInfo(bias) {
+    const biasStr = (bias || '').toLowerCase().trim();
+    const biasMap = {
+        'bullish': {
+            label: 'Bullish',
+            desc: 'Positive news - likely to push prices up',
+            color: '#00d4aa'
+        },
+        'bearish': {
+            label: 'Bearish',
+            desc: 'Negative news - likely to push prices down',
+            color: '#ff4757'
+        },
+        'mixed': {
+            label: 'Mixed',
+            desc: 'Both positive and negative elements',
+            color: '#ff9f43'
+        },
+        'neutral': {
+            label: 'Neutral',
+            desc: 'No clear directional impact',
+            color: '#888888'
+        }
+    };
+    return biasMap[biasStr] || {
+        label: 'Unknown',
+        desc: 'Bias analysis unavailable',
+        color: '#6c63ff'
+    };
+}
+
+// ---- Helper: Lighten hex color for gradient stops ----
+function lightenColor(hex, percent) {
+    try {
+        const num = parseInt(hex.replace('#', ''), 16);
+        const r = Math.min(255, Math.floor((num >> 16) * (1 + percent)));
+        const g = Math.min(255, Math.floor((num >> 8 & 0x00FF) * (1 + percent)));
+        const b = Math.min(255, Math.floor((num & 0x0000FF) * (1 + percent)));
+        return '#' + (0x1000000 + (r << 16) + (g << 8) + b).toString(16).slice(1);
+    } catch (e) {
+        return hex;
+    }
+}
+
+// ---- Helper: Convert hex to rgba ----
+function hexToRgba(hex, alpha = 1) {
+    try {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `rgba(${r},${g},${b},${alpha})`;
+    } catch (e) {
+        return `rgba(108,99,255,${alpha})`;
+    }
+}
+
+// ---- Helper: Extract bias-driven color from news marker analysis data ----
+function getBiasColorForMarker(newsItem, chartSymbol) {
+    const defaultColor = '#6c63ff'; // fallback purple for unknown/missing bias
+    
+    try {
+        if (!newsItem) return defaultColor;
+        
+        const analysisData = newsItem.analysis_data;
+        if (!analysisData) return defaultColor;
+        
+        // Handle stringified JSON
+        let data = analysisData;
+        if (typeof data === 'string') {
+            data = JSON.parse(data);
+        }
+        
+        if (!data) return defaultColor;
+        
+        const stockImpacts = data.stock_impacts;
+        if (!Array.isArray(stockImpacts) || stockImpacts.length === 0) {
+            return defaultColor;
+        }
+        
+        // Try to match symbol if provided
+        let relevantImpact = null;
+        if (chartSymbol) {
+            const normalizedSymbol = String(chartSymbol).trim().toUpperCase();
+            relevantImpact = stockImpacts.find(impact => 
+                impact.symbol && String(impact.symbol).trim().toUpperCase() === normalizedSymbol
+            );
+        }
+        
+        // Fall back to first impact if no symbol match
+        if (!relevantImpact) {
+            relevantImpact = stockImpacts[0];
+        }
+        
+        if (!relevantImpact) return defaultColor;
+        
+        const bias = (relevantImpact.bias || '').toLowerCase().trim();
+        
+        // Map bias to color
+        switch (bias) {
+            case 'bullish':
+                return '#00d4aa';
+            case 'bearish':
+                return '#ff4757';
+            case 'mixed':
+                return '#ff9f43';
+            case 'neutral':
+                return '#888888';
+            default:
+                return defaultColor;
+        }
+    } catch (err) {
+        console.error('[MARKER COLOR] Error extracting bias color:', err);
+        return defaultColor;
+    }
+}
+
 // ---- Fetch news markers for overlay ----
 async function fetchNewsMarkers(symbol) {
     try {
@@ -3740,14 +3868,26 @@ async function overlayNewsMarkers(symbol) {
     svg.id = 'newsOverlaySVG';
     svg.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible;';
 
-    // Defs for gradient
+    // Defs for gradients (one per unique bias color)
     const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-    defs.innerHTML = `
-        <radialGradient id="dotGrad" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stop-color="#a29bfe"/>
-            <stop offset="100%" stop-color="#6c63ff"/>
+    const gradientDefs = new Set();
+    
+    // Pre-generate gradients for all possible bias colors
+    function addGradient(colorHex, gradientId) {
+        if (gradientDefs.has(gradientId)) return;
+        const lighter = lightenColor(colorHex, 0.4);
+        defs.innerHTML += `
+        <radialGradient id="${gradientId}" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="${lighter}"/>
+            <stop offset="100%" stop-color="${colorHex}"/>
         </radialGradient>
     `;
+        gradientDefs.add(gradientId);
+    }
+    
+    // Add the default purple gradient
+    addGradient('#6c63ff', 'dotGrad');
+    
     svg.appendChild(defs);
     overlayContainer.appendChild(svg);
 
@@ -3756,6 +3896,15 @@ async function overlayNewsMarkers(symbol) {
         const time = parseInt(timeStr);
         const count = newsAtTime.length;
         const firstNews = newsAtTime[0];
+        
+        // Extract bias-driven color for this marker
+        let pairOnly = symbol;
+        if (symbol && symbol.includes(':')) {
+            pairOnly = symbol.split(':')[1];
+        }
+        const markerColor = getBiasColorForMarker(firstNews, pairOnly);
+        const gradId = 'dotGrad-' + time;
+        addGradient(markerColor, gradId);
 
         const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         g.id = 'news-g-' + time;
@@ -3767,14 +3916,14 @@ async function overlayNewsMarkers(symbol) {
         ring.classList.add('news-dot-pulse');
         ring.setAttribute('r', '8');
         ring.setAttribute('fill', 'none');
-        ring.setAttribute('stroke', '#6c63ff');
+        ring.setAttribute('stroke', markerColor);
         ring.setAttribute('stroke-width', '1.5');
         ring.setAttribute('opacity', '0.55');
 
         // Core dot
         const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
         dot.setAttribute('r', '4');
-        dot.setAttribute('fill', 'url(#dotGrad)');
+        dot.setAttribute('fill', `url(#${gradId})`);
         dot.setAttribute('stroke', '#fff');
         dot.setAttribute('stroke-width', '1.2');
 
@@ -3783,7 +3932,7 @@ async function overlayNewsMarkers(symbol) {
         line.id = 'news-line-' + time;
         line.setAttribute('x1', '0');
         line.setAttribute('y1', '0');
-        line.setAttribute('stroke', 'rgba(162,155,254,0.6)');
+        line.setAttribute('stroke', hexToRgba(markerColor, 0.6));
         line.setAttribute('stroke-width', '1');
         line.setAttribute('stroke-dasharray', '3 3');
 
@@ -3796,9 +3945,35 @@ async function overlayNewsMarkers(symbol) {
 
         const labelDiv = document.createElement('div');
         labelDiv.className = 'nml-label';
+        
+        // Extract bias for sentiment display
+        let biasData = null;
+        try {
+            if (firstNews.analysis_data) {
+                let analysisData = firstNews.analysis_data;
+                if (typeof analysisData === 'string') {
+                    analysisData = JSON.parse(analysisData);
+                }
+                if (analysisData && Array.isArray(analysisData.stock_impacts) && analysisData.stock_impacts.length > 0) {
+                    biasData = getBiasInfo(analysisData.stock_impacts[0].bias);
+                }
+            }
+        } catch (e) {
+            // Silently fall back if parsing fails
+        }
+        
+        if (!biasData) {
+            biasData = getBiasInfo(null);
+        }
+        
+        const biasHtml = biasData ? `<div class="nml-sentiment" style="color: ${biasData.color};">
+            <span class="nml-sentiment-dot" style="background: ${biasData.color};"></span>${biasData.label}: ${biasData.desc}
+        </div>` : '';
+        
         labelDiv.innerHTML = `
             <div class="nml-meta">${new Date(time * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${escapeHtml(firstNews.source || 'News')}</div>
             <div class="nml-title">${escapeHtml(count > 1 ? '(' + count + ') ' + firstNews.title : firstNews.title)}</div>
+            ${biasHtml}
         `;
         labelDiv.onclick = () => openModal(firstNews);
         labelDiv.style.cursor = 'pointer';

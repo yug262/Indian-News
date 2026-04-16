@@ -354,7 +354,7 @@ def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter
         if symbol:
             clean_symbol = symbol.replace("NSE:", "").upper()
             query = """
-            SELECT id, title, published, symbols
+            SELECT id, title, published, symbols, analysis_data
             FROM indian_news
             WHERE symbols IS NOT NULL 
               AND array_length(symbols, 1) > 0
@@ -367,7 +367,7 @@ def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter
             rows = fetch_all(query, (clean_symbol,))
         else:
             query = """
-            SELECT id, title, published, symbols
+            SELECT id, title, published, symbols, analysis_data
             FROM indian_news
             WHERE symbols IS NOT NULL 
               AND array_length(symbols, 1) > 0
@@ -393,7 +393,8 @@ def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter
                 "id": r["id"],
                 "title": r["title"],
                 "published": p_str,
-                "affected_stocks": syms if isinstance(syms, list) else []
+                "affected_stocks": syms if isinstance(syms, list) else [],
+                "analysis_data": r.get("analysis_data")
             })
         
         return {"status": "success", "symbol": symbol, "count": len(data), "data": data}
