@@ -15,7 +15,7 @@ PORT = 3000
 # Use absolute path relative to this script to avoid CWD issues
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(SCRIPT_DIR, "frontend")
-BACKEND_PROXY_URL = os.getenv("BACKEND_PROXY_URL", "http://localhost:8000")
+# BACKEND_PROXY_URL = os.getenv("BACKEND_PROXY_URL", "http://localhost:8000")
 
 class FrontendHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -23,7 +23,7 @@ class FrontendHandler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*args, directory=FRONTEND_DIR, **kwargs)
 
     def _proxy_to_backend(self, method: str):
-        target_url = urljoin(BACKEND_PROXY_URL, self.path)
+        # target_url = urljoin(BACKEND_PROXY_URL, self.path)
         body = None
         if method in ("POST", "PUT", "PATCH"):
             content_length = int(self.headers.get("Content-Length", "0") or "0")
@@ -46,7 +46,7 @@ class FrontendHandler(http.server.SimpleHTTPRequestHandler):
             
             with requests.request(
                 method=method, 
-                url=target_url, 
+                # url=target_url, 
                 headers=fwd_headers, 
                 data=body, 
                 timeout=timeout, 

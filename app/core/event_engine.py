@@ -887,7 +887,7 @@ def process_event_grouping(news_id: int, title: str, category: str, table_name: 
 
     # 2. Fetch Stateful Candidates (with category and published time for guards)
     recent_news = fetch_all(f"""
-        SELECT id, title, event_id, event_title, symbols as ids, published, news_category
+        SELECT id, title, event_id, event_title, affected_stocks, published, news_category
         FROM {table_name}
         WHERE published >= NOW() - (%s * INTERVAL '1 hour')
         AND id != %s
@@ -908,7 +908,11 @@ def process_event_grouping(news_id: int, title: str, category: str, table_name: 
     matched_candidates = []
     
     for old in recent_news:
-        old_ids = old.get('ids') or []
+        old_ids = []
+        if old.get('affected_stocks') and isinstance(old['affected_stocks'], dict):
+            stocks = old['affected_stocks']
+            old_ids = (stocks.get('direct') or []) + (stocks.get('indirect') or [])
+            
         if not old_ids:
             old_entities = extract_entities(old['title'])
             old_ids = [resolve_identity(e[0]) for e in old_entities if resolve_identity(e[0])]

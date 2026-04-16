@@ -45,7 +45,9 @@ def init_db():
                     news_relevance TEXT DEFAULT 'None',
                     news_impact_level TEXT DEFAULT 'None',
                     news_reason TEXT DEFAULT 'No analysis available.',
-                    symbols TEXT[] DEFAULT '{}',
+                    affected_sectors TEXT[] DEFAULT '{}',
+                    affected_stocks JSONB DEFAULT '{}',
+
                     
                     -- Analysis State & Output
                     analyzed BOOLEAN DEFAULT FALSE,
