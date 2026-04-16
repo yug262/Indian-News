@@ -63,6 +63,7 @@ let searchDebounceTimer = null;
 // ---- Pagination & Smart Refresh ----
 
 let totalDbArticles = 0;
+let currentNewsTotals = null;
 let currentPage = 0;
 const articlesPerPage = 20;
 let hasMoreArticles = true;
@@ -2308,6 +2309,9 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
     }
 
     requestState = newState;
+    if (!isLoadMore && !isBackgroundRefresh) {
+        currentNewsTotals = null;
+    }
     _fetchAbortController = new AbortController();
     const signal = _fetchAbortController.signal;
 
@@ -2357,11 +2361,17 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
         if (json.status === 'success') {
             const newArticles = json.data || [];
             const filteredArticles = newArticles;
+            currentNewsTotals = {
+                total_count: json.total_count ?? 0,
+                analyzed_count: json.analyzed_count ?? 0,
+                latest_published: json.latest_published ?? null,
+                count: json.count ?? filteredArticles.length
+            };
             console.log('DEBUG → articles received:', newArticles.length, 'filtered:', filteredArticles.length);
             if (filteredArticles.length !== newArticles.length) {
                 console.log(`DEBUG → dropped ${newArticles.length - filteredArticles.length} articles that did not match current relevance '${currentRelevance}'`);
             }
-            dbg('fetchNews success:', { count: filteredArticles.length, state: newState });
+            dbg('fetchNews success:', { count: filteredArticles.length, state: newState, totals: currentNewsTotals });
 
             if (isBackgroundRefresh) {
                 // Smart Refresh: Add new articles and update existing ones seamlessly
@@ -2490,7 +2500,10 @@ async function fetchNews(isLoadMore = false, isBackgroundRefresh = false) {
 
 // ---- Display Counts Helper ----
 function updateDisplayCounts() {
-    const displayCount = searchQuery ? newsData.length : totalDbArticles;
+    const needsQueryTotal = Boolean(searchQuery || currentSource !== 'all' || currentRelevance !== 'all' || currentEventId || showOnlyAnalyzed);
+    const displayCount = needsQueryTotal
+        ? (currentNewsTotals?.total_count ?? newsData.length)
+        : totalDbArticles;
     const suffix = searchQuery ? ' results' : ' articles';
 
     const formattedCount = displayCount.toLocaleString();
@@ -2516,35 +2529,43 @@ function updateRelevanceHeroStats() {
     const config = relevanceConfig[currentRelevance];
     if (!config) return;
     
-    // Count total and analyzed articles in current view
-    let totalCount = 0;
-    let analyzedCount = 0;
-    let latestTimestamp = null;
-    
-    if (newsData && newsData.length > 0) {
-        newsData.forEach(article => {
-            const rel = (article.news_relevance || '').toLowerCase();
-            // Check if article matches current relevance filter
-            let matches = false;
-            if (currentRelevance === 'high useful' && rel === 'high useful') matches = true;
-            else if (currentRelevance === 'useful' && rel === 'useful') matches = true;
-            else if (currentRelevance === 'medium' && rel === 'medium') matches = true;
-            else if (currentRelevance === 'neutral' && rel === 'neutral') matches = true;
-            else if (currentRelevance === 'noisy' && (rel.includes('noisy') || rel.includes('noise'))) matches = true;
-            
-            if (matches) {
-                totalCount++;
-                if (article.analyzed) analyzedCount++;
-                
-                // Track latest timestamp
-                if (article.published) {
-                    const ts = new Date(article.published).getTime();
-                    if (!latestTimestamp || ts > latestTimestamp) {
-                        latestTimestamp = ts;
+    // Use backend-provided totals when available so filtered counts reflect the full query result,
+    // not just the currently loaded page.
+    let totalCount = currentNewsTotals?.total_count;
+    let analyzedCount = currentNewsTotals?.analyzed_count;
+    let latestTimestamp = currentNewsTotals?.latest_published ? new Date(currentNewsTotals.latest_published).getTime() : null;
+    const hasBackendTotals = currentNewsTotals !== null;
+
+    if (!hasBackendTotals) {
+        totalCount = 0;
+        analyzedCount = 0;
+        latestTimestamp = null;
+
+        if (newsData && newsData.length > 0) {
+            newsData.forEach(article => {
+                const rel = (article.news_relevance || '').toLowerCase();
+                // Check if article matches current relevance filter
+                let matches = false;
+                if (currentRelevance === 'high useful' && rel === 'high useful') matches = true;
+                else if (currentRelevance === 'useful' && rel === 'useful') matches = true;
+                else if (currentRelevance === 'medium' && rel === 'medium') matches = true;
+                else if (currentRelevance === 'neutral' && rel === 'neutral') matches = true;
+                else if (currentRelevance === 'noisy' && (rel.includes('noisy') || rel.includes('noise'))) matches = true;
+
+                if (matches) {
+                    totalCount++;
+                    if (article.analyzed) analyzedCount++;
+
+                    // Track latest timestamp
+                    if (article.published) {
+                        const ts = new Date(article.published).getTime();
+                        if (!latestTimestamp || ts > latestTimestamp) {
+                            latestTimestamp = ts;
+                        }
                     }
                 }
-            }
-        });
+            });
+        }
     }
     
     // Update DOM

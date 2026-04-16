@@ -168,47 +168,44 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
              search: str = Query(None, description="Search in title, description, and source")):
     """Get Indian news articles, sorted by newest first."""
     
-    query = """SELECT id, title, link, published, source, description, image_url,
-        impact_score, impact_summary, analyzed, created_at, analyzed_at,
-        analysis_data, news_relevance, news_category,
-        news_impact_level, news_reason, symbols,
-        market_bias, signal_bucket, primary_symbol, executive_summary, 
-        event_id, event_title, analysis_confidence AS confidence, horizon
-    FROM indian_news WHERE 1=1"""
+    base_query = "FROM indian_news WHERE 1=1"
     params: List[Any] = []
-    
+
     if today_only:
         today = datetime.now(timezone.utc).date()
-        query += " AND DATE(published) = %s"
+        base_query += " AND DATE(published) = %s"
         params.append(today)
-        
+
     if source and source.lower() != "all":
-        query += " AND source = %s"
+        base_query += " AND source = %s"
         params.append(source)
-    
+
     if relevance and relevance.lower() != "all":
-        query += " AND news_relevance ILIKE %s"
+        base_query += " AND news_relevance ILIKE %s"
         params.append(relevance)
     elif exclude_noisy:
-        query += " AND (news_relevance IS NULL OR LOWER(news_relevance) != 'noisy')"
-        
+        base_query += " AND (news_relevance IS NULL OR LOWER(news_relevance) != 'noisy')"
+
     if analyzed_only:
-        query += " AND analyzed = TRUE"
-        
+        base_query += " AND analyzed = TRUE"
+
     if event_id:
-        query += " AND event_id = %s"
+        base_query += " AND event_id = %s"
         params.append(event_id)
-    
+
     if search and search.strip():
         search_term = f"%{_escape_ilike(search.strip())}%"
-        query += " AND (title ILIKE %s ESCAPE '\\' OR description ILIKE %s ESCAPE '\\' OR source ILIKE %s ESCAPE '\\')"
+        base_query += " AND (title ILIKE %s ESCAPE '\\' OR description ILIKE %s ESCAPE '\\' OR source ILIKE %s ESCAPE '\\')"
         params.extend([search_term, search_term, search_term])
-        
-    query += " ORDER BY published DESC LIMIT %s OFFSET %s"
-    params.extend([limit, offset])
-    
+
+    count_query = f"SELECT COUNT(*) AS total_count, COUNT(CASE WHEN analyzed THEN 1 END) AS analyzed_count, MAX(published) AS latest_published {base_query}"
+    query = f"SELECT id, title, link, published, source, description, image_url,\n        impact_score, impact_summary, analyzed, created_at, analyzed_at,\n        analysis_data, news_relevance, news_category,\n        news_impact_level, news_reason, symbols,\n        market_bias, signal_bucket, primary_symbol, executive_summary, \n        event_id, event_title, analysis_confidence AS confidence, horizon\n    {base_query} ORDER BY published DESC LIMIT %s OFFSET %s"
+    params_for_articles = params + [limit, offset]
+
     try:
-        articles = await run_with_timeout(lambda: fetch_all(query, params), 20)
+        count_result = await run_with_timeout(lambda: fetch_one(count_query, params), 20)
+        articles = await run_with_timeout(lambda: fetch_all(query, params_for_articles), 20)
+
         # Convert datetime objects to string for JSON serialization
         for article in articles:
             if isinstance(article['published'], datetime):
@@ -218,7 +215,16 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
             if isinstance(article.get('analyzed_at'), datetime):
                 article['analyzed_at'] = article['analyzed_at'].isoformat()
 
-        return {"status": "success", "count": len(articles), "data": articles}
+        response = {
+            "status": "success",
+            "count": len(articles),
+            "total_count": count_result['total_count'] if count_result else 0,
+            "analyzed_count": count_result['analyzed_count'] if count_result else 0,
+            "latest_published": count_result['latest_published'].isoformat() if count_result and isinstance(count_result.get('latest_published'), datetime) else None,
+            "data": articles
+        }
+
+        return response
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
