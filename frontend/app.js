@@ -74,12 +74,12 @@ let _fetchGeneration = 0;         // Monotonic counter — identify the "owning"
 // Canonical map: pill data-relevance (lowercase) → DB-stored value (title case)
 // This is the ONLY place the mapping lives. All filter logic reads from this.
 const RELEVANCE_CANONICAL = {
-    'all':        null,          // "all" means no filter (do not send to backend)
+    'all': null,          // "all" means no filter (do not send to backend)
     'high useful': 'High Useful',
-    'useful':      'Useful',
-    'medium':      'Medium',
-    'neutral':     'Neutral',
-    'noisy':       'Noisy'
+    'useful': 'Useful',
+    'medium': 'Medium',
+    'neutral': 'Neutral',
+    'noisy': 'Noisy'
 };
 
 // ---- DOM Elements ----
@@ -603,20 +603,56 @@ function renderCategoryBadge(category, useRichTooltip = true) {
     return badgeHtml;
 }
 
-function renderAllSymbolsBadge(symbols) {
-    if (!symbols) return '';
-    let symbolArr = symbols;
-    if (typeof symbols === 'string') {
-        try { symbolArr = JSON.parse(symbols); } catch { return ''; }
+
+
+function renderAffectedSectors(sectors) {
+    if (!sectors) return '';
+    let arr = sectors;
+    if (typeof sectors === 'string') {
+        try { arr = JSON.parse(sectors); } catch { return ''; }
     }
-    if (!Array.isArray(symbolArr) || symbolArr.length === 0) return '';
-    return symbolArr.map(sym => `
-        <span class="category-badge clickable-symbol" 
-              style="background: rgba(255, 193, 7, 0.15); color: #ffca28; border-color: rgba(255, 193, 7, 0.3); font-weight: bold; letter-spacing: 0.5px; cursor: pointer; transition: all 0.2s;"
-              onclick="event.stopPropagation(); selectChartPair('${escapeHtml(sym)}')">
-            ${escapeHtml(sym)}
+    if (!Array.isArray(arr) || arr.length === 0) return '';
+    return arr.map(sec => `
+        <span class="category-badge" title="Affected Sector"
+              style="background: rgba(0, 212, 170, 0.15); color: #00d4aa; border-color: rgba(0, 212, 170, 0.3); font-weight: bold; letter-spacing: 0.5px;">
+            ${escapeHtml(sec)}
         </span>
     `).join('');
+}
+
+function renderAffectedStocksObj(stocksObj) {
+    let obj = stocksObj;
+    if (typeof stocksObj === 'string') {
+        try { obj = JSON.parse(stocksObj); } catch { obj = null; }
+    }
+    
+    let html = '';
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        const direct = obj.direct || [];
+        const indirect = obj.indirect || [];
+        
+        if (direct.length > 0) {
+            html += direct.map(sym => `
+                <span class="category-badge clickable-symbol" title="Directly Affected"
+                      style="background: rgba(255, 71, 87, 0.15); color: #ff4757; border-color: rgba(255, 71, 87, 0.3); font-weight: bold; letter-spacing: 0.5px; cursor: pointer; transition: all 0.2s;"
+                      onclick="event.stopPropagation(); selectChartPair('${escapeHtml(sym)}')">
+                    ${escapeHtml(sym)}
+                </span>
+            `).join('');
+        }
+        
+        if (indirect.length > 0) {
+            html += indirect.map(sym => `
+                <span class="category-badge clickable-symbol" title="Indirectly Affected"
+                      style="background: rgba(255, 193, 7, 0.15); color: #ffca28; border-color: rgba(255, 193, 7, 0.3); font-weight: bold; letter-spacing: 0.5px; cursor: pointer; transition: all 0.2s;"
+                      onclick="event.stopPropagation(); selectChartPair('${escapeHtml(sym)}')">
+                    ${escapeHtml(sym)}
+                </span>
+            `).join('');
+        }
+    }
+    
+    return html;
 }
 
 function getBiasInfo(bias) {
@@ -870,7 +906,7 @@ function renderAnalyzeButton(article) {
     const isAnalyzing = analyzingArticles.has(article.id);
     const btnState = isAnalyzing ? 'disabled' : '';
     const btnClass = isAnalyzing ? 'analyzing' : '';
-    
+
     let btnText = 'Analyze';
     if (isAnalyzing) {
         btnText = '<div class="analyzing-spinner-sm"></div> Analyzing…';
@@ -1222,16 +1258,16 @@ async function analyzeArticle(newsId, btnEl) {
         });
         console.error('Analysis request error:', err);
     } finally {
-    analyzingArticles.delete(newsId);
+        analyzingArticles.delete(newsId);
 
-    document.querySelectorAll(`.analyze-btn[data-id="${newsId}"]`).forEach(btn => {
-        btn.disabled = false;
-        btn.classList.remove('analyzing');
+        document.querySelectorAll(`.analyze-btn[data-id="${newsId}"]`).forEach(btn => {
+            btn.disabled = false;
+            btn.classList.remove('analyzing');
 
-        const article = newsData.find(a => a.id === newsId);
-        btn.innerHTML = article?.analyzed ? 'Analyze' : 'Analyze';
-    });
-}
+            const article = newsData.find(a => a.id === newsId);
+            btn.innerHTML = article?.analyzed ? 'Analyze' : 'Analyze';
+        });
+    }
 }
 
 // ---- Modal Logic ----
@@ -1510,12 +1546,12 @@ function renderIndianCompactModal(article, analysis) {
 
             <div class="modal-action-footer" style="margin-top: 32px; display: flex; flex-direction: column; gap: 12px;">
                 ${(() => {
-                    const isAnalyzing = analyzingArticles.has(article.id);
-                    const btnState = isAnalyzing ? 'disabled' : '';
-                    const btnClass = isAnalyzing ? 'analyzing' : '';
-                    const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : 'Analyze';
-                    
-                    return `
+                const isAnalyzing = analyzingArticles.has(article.id);
+                const btnState = isAnalyzing ? 'disabled' : '';
+                const btnClass = isAnalyzing ? 'analyzing' : '';
+                const btnText = isAnalyzing ? '<div class="analyzing-spinner-sm"></div> Analyzing…' : 'Analyze';
+
+                return `
                         <button class="analyze-btn analyze-btn-sm ${btnClass}" 
                                 style="display:inline-flex; justify-content:center; align-items:center; padding:10px 22px; border-radius:24px; font-weight:700; background:rgba(108, 99, 255, 0.12); border:1px solid rgba(108, 99, 255, 0.3); color:var(--accent-1); cursor:pointer; max-width:180px; width:auto; margin:0 auto; transition:all 0.2s;"
                                 data-id="${article.id}" ${btnState} 
@@ -1523,7 +1559,7 @@ function renderIndianCompactModal(article, analysis) {
                             ${btnText}
                         </button>
                     `;
-                })()}
+            })()}
 
                 <a href="${escapeHtml(article.link)}" target="_blank" rel="noopener noreferrer" class="read-article-btn card-read-btn" style="text-align:center; padding:16px; border-radius:12px; font-weight:700; background:linear-gradient(90deg, #6366f1, #00d4aa); color:#fff; text-decoration:none; display:block; border:none; width:100%; box-shadow: 0 4px 15px rgba(99, 102, 241, 0.25);">
                     Read Full Article →
@@ -1603,7 +1639,7 @@ function openModal(article) {
     const isAnalyzing = analyzingArticles.has(article.id);
     const btnState = isAnalyzing ? 'disabled' : '';
     const btnClass = isAnalyzing ? 'analyzing' : '';
-    
+
     let btnText = 'Analyze';
     if (isAnalyzing) {
         btnText = '<div class="analyzing-spinner-sm"></div> Analyzing...';
@@ -1647,14 +1683,23 @@ function openModal(article) {
 
         ${descriptionHtml}
 
-        ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
-                    <div class="modal-affected-stocks" style="display:flex; align-items:center; gap:10px; margin-bottom: 8px;">
-                        <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span>
-                        <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:center;">
-                            ${renderAllSymbolsBadge(article.symbols)}
+        ${(article.affected_sectors && article.affected_sectors.length > 0) ? `
+                    <div class="modal-affected-sectors" style="display:flex; align-items:center; gap:10px; margin-bottom: 8px;">
+                        <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Sectors:</span>
+                        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                            ${renderAffectedSectors(article.affected_sectors)}
                         </div>
                     </div>
-                    ` : ''}
+        ` : ''}
+
+        ${(article.affected_stocks && Object.keys(article.affected_stocks).length > 0) ? `
+                    <div class="modal-affected-stocks" style="display:flex; align-items:center; gap:10px; margin-bottom: 8px;">
+                        <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span>
+                        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                            ${renderAffectedStocksObj(article.affected_stocks)}
+                        </div>
+                    </div>
+        ` : ''}
         
         ${classificationHtml}
         
@@ -1944,27 +1989,27 @@ function generateCardGradient(seed, category = '') {
         // Deep teals & cyans (premium tech)
         { start: '#004d6d', mid: '#0a8fa7', end: '#1bb5d1' },
         { start: '#003d5c', mid: '#17738a', end: '#2a9cb5' },
-        
+
         // Rich purples & violets
         { start: '#2d1b69', mid: '#6c3fff', end: '#a366ff' },
         { start: '#1f0a4d', mid: '#5c2e99', end: '#8a52d4' },
-        
+
         // Deep indigos & blues
         { start: '#0f1a4d', mid: '#4a5fd4', end: '#7a8fff' },
         { start: '#0d1f4d', mid: '#3c5fa0', end: '#6a8ad4' },
-        
+
         // Warm golds & ambers
         { start: '#4d2800', mid: '#a0620a', end: '#d4942a' },
         { start: '#331a00', mid: '#8a5a1a', end: '#c48a3a' },
-        
+
         // Deep teals with emerald
         { start: '#004d3d', mid: '#0a8a6a', end: '#2ab59a' },
         { start: '#003d2e', mid: '#1a7a5a', end: '#3aa080' },
-        
+
         // Rich crimsons & reds
         { start: '#4d0f1a', mid: '#a03a3a', end: '#d4696a' },
         { start: '#5a1a26', mid: '#b03a4a', end: '#e07a8a' },
-        
+
         // Deep aquas
         { start: '#0d4d5c', mid: '#1a8a9a', end: '#3ab5d4' },
     ];
@@ -1987,10 +2032,9 @@ function generateCardGradient(seed, category = '') {
     const paletteIdx = (Math.abs(hash) + offset) % paletteChoices.length;
     const palette = paletteChoices[paletteIdx];
 
-    // Angle variation (diagonal emphasis like article cards)
-    const angleBase = 135 + ((hash % 11) * 12 % 30);
-
-    return `linear-gradient(${angleBase}deg, ${palette.start} 0%, ${palette.mid} 50%, ${palette.end} 100%)`;
+    // Instead of a simple linear gradient, layer three radial blobs for a "liquid" look.
+    // When the background-position and background-size of these layers correspond to the CSS animation, they will swirl independently!
+    return `radial-gradient(circle at 0% 0%, ${palette.start} 0%, transparent 65%), radial-gradient(circle at 100% 100%, ${palette.end} 0%, transparent 65%), radial-gradient(circle at 50% 50%, ${palette.mid} 0%, transparent 65%), ${palette.start}`;
 }
 
 function getCategoryGradient(category) {
@@ -2047,11 +2091,20 @@ function createNewsCard(article, index, isFeatured = false) {
         <h2 class="card-title">${escapeHtml(article.title)}</h2>
         ${article.description ? `<p class="card-description">${escapeHtml(article.description)}</p>` : ''}
         
-        ${(Array.isArray(article.symbols) && article.symbols.length > 0) ? `
-        <div class="card-affected-stocks" style="display:block; padding:10px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); align-items:center; gap:10px; margin: 16px 0 12px 0;">
+        ${(article.affected_sectors && article.affected_sectors.length > 0) ? `
+        <div class="card-affected-sectors" style="display:block; padding:10px; border-top: 1px solid var(--border-color); align-items:center; gap:10px; margin: 16px 0 0 0;">
+            <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Sectors:</span><br>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
+                ${renderAffectedSectors(article.affected_sectors)}
+            </div>
+        </div>
+        ` : ''}
+
+        ${(article.affected_stocks && Object.keys(article.affected_stocks).length > 0) ? `
+        <div class="card-affected-stocks" style="display:block; padding:10px; border-top: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); align-items:center; gap:10px; margin: ${(article.affected_sectors && article.affected_sectors.length > 0) ? '0' : '16px 0 0 0'}; margin-bottom: 12px; border-top: ${(article.affected_sectors && article.affected_sectors.length > 0) ? 'none' : '1px solid var(--border-color)'};">
             <span style="font-size:0.6rem; color:var(--text-muted); font-weight:700; text-transform:uppercase; letter-spacing:0.8px; white-space:nowrap;">Affected Stocks:</span><br>
             <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:10px;">
-                ${renderAllSymbolsBadge(article.symbols)}
+                ${renderAffectedStocksObj(article.affected_stocks)}
             </div>
         </div>
         ` : ''}
@@ -2509,14 +2562,14 @@ function updateDisplayCounts() {
     const formattedCount = displayCount.toLocaleString();
     if (articleCount) articleCount.textContent = `${formattedCount}${suffix}`;
     if (drawerCount) drawerCount.textContent = `${formattedCount}${suffix}`;
-    
+
     updateRelevanceHeroStats();
 }
 
 // ---- Update Relevance Hero Stats ----
 function updateRelevanceHeroStats() {
     if (currentRelevance === 'all') return;
-    
+
     // Get current filter info
     const relevanceConfig = {
         'high useful': { title: 'High Useful News', color: '#00d4aa', label: 'HIGH USEFUL' },
@@ -2525,10 +2578,10 @@ function updateRelevanceHeroStats() {
         'neutral': { title: 'Neutral News', color: '#a0aabc', label: 'NEUTRAL' },
         'noisy': { title: 'Noisy News', color: '#ff4757', label: 'NOISY' }
     };
-    
+
     const config = relevanceConfig[currentRelevance];
     if (!config) return;
-    
+
     // Use backend-provided totals when available so filtered counts reflect the full query result,
     // not just the currently loaded page.
     let totalCount = currentNewsTotals?.total_count;
@@ -2567,14 +2620,14 @@ function updateRelevanceHeroStats() {
             });
         }
     }
-    
+
     // Update DOM
     const articlesLabel = document.getElementById('relevanceArticlesLabel');
     const articlesCount = document.getElementById('relevanceArticlesCount');
     const analyzedLabel = document.getElementById('relevanceAnalyzedLabel');
     const analyzedCountElement = document.getElementById('relevanceAnalyzedCount');
     const latestUpdate = document.getElementById('relevanceLatestUpdate');
-    
+
     if (articlesLabel) articlesLabel.textContent = `${config.label} ARTICLES`;
     if (articlesCount) articlesCount.textContent = totalCount.toLocaleString();
     if (analyzedLabel) analyzedLabel.textContent = `ANALYZED ARTICLES`;
@@ -2638,7 +2691,7 @@ function showSkeletonLoader() {
             <div class="skeleton-meta skeleton-shimmer"></div>
         </div>
     `).join('');
-    
+
     newsGrid.innerHTML = skeletonHtml;
     // Hide empty state if visible
     if (emptyState) emptyState.style.display = 'none';
@@ -2700,7 +2753,7 @@ window.addEventListener('resize', updateHeaderHeight);
 
 window.addEventListener('scroll', () => {
     const currentScrollY = window.scrollY;
-    
+
     // Scroll-to-top button logic
     if (currentScrollY > SCROLL_TOP_THRESHOLD) {
         scrollTopBtn.classList.add('visible');
@@ -2718,7 +2771,7 @@ window.addEventListener('scroll', () => {
             filtersSection.classList.remove('filters-hidden');
         }
     }
-    
+
     lastScrollY = currentScrollY;
 }, { passive: true });
 
@@ -2740,12 +2793,12 @@ if (filtersContainer) {
         pill.setAttribute('aria-selected', 'true');
 
         currentSource = pill.dataset.source;
-        
+
         // Reset state before fetching to ensure UI consistency
         currentPage = 0;
         hasMoreArticles = true;
         seenArticleIds.clear();
-        
+
         fetchNews();
     });
 }
@@ -2768,7 +2821,7 @@ relevanceContainers.forEach(container => {
                         p.classList.remove('active');
                         p.setAttribute('aria-selected', 'false');
                     });
-                    
+
                     const activePill = c.querySelector(`.filter-pill[data-relevance="${pill.dataset.relevance}"]`);
                     if (activePill) {
                         activePill.classList.add('active');
@@ -2779,7 +2832,7 @@ relevanceContainers.forEach(container => {
 
             currentDashboardView = 'feed'; // Switch back to feed if clicked from events view
             currentRelevance = pill.dataset.relevance;
-            
+
             // Reset state before fetching to ensure UI consistency
             currentPage = 0;
             hasMoreArticles = true;
@@ -2804,10 +2857,10 @@ relevanceContainers.forEach(container => {
                     }
                 }
             }
-            
+
             applyDashboardViewState();
             fetchNews();
-            
+
             if (isDrawerOpen) toggleMobileMenu();
         });
     }
@@ -2861,10 +2914,10 @@ function setDashboardNavState() {
 function applyDashboardViewState() {
     const isEventsView = currentDashboardView === 'events';
     const isFeedView = currentDashboardView === 'feed';
-    
+
     // Only show relevance hero if we are on the Feed view and a specific relevance is selected
     const isRelevanceView = isFeedView && currentRelevance && currentRelevance !== 'all';
-    
+
     if (filtersSection) {
         filtersSection.style.display = isEventsView ? 'none' : '';
     }
@@ -2877,7 +2930,7 @@ function applyDashboardViewState() {
     if (feedView) feedView.style.display = isEventsView ? 'none' : 'block';
     if (relevanceView) relevanceView.style.display = isRelevanceView ? 'block' : 'none';
     if (eventsBoardView) eventsBoardView.style.display = isEventsView ? 'block' : 'none';
-    
+
     setDashboardNavState();
 }
 
@@ -2887,7 +2940,7 @@ window.switchDashboardView = function (targetView, options = {}) {
     } else {
         currentDashboardView = 'feed';
         currentSource = 'all';
-        currentRelevance = 'all'; 
+        currentRelevance = 'all';
         searchQuery = '';
         if (searchInput) {
             searchInput.value = '';
@@ -2908,7 +2961,7 @@ window.switchDashboardView = function (targetView, options = {}) {
         ];
         relContainers.forEach(container => {
             if (container) {
-                 container.querySelectorAll('.filter-pill').forEach(p => {
+                container.querySelectorAll('.filter-pill').forEach(p => {
                     const isAll = p.dataset.relevance === 'all';
                     p.classList.toggle('active', isAll);
                     p.setAttribute('aria-selected', isAll ? 'true' : 'false');
@@ -2916,7 +2969,7 @@ window.switchDashboardView = function (targetView, options = {}) {
             }
         });
     }
-    
+
     applyDashboardViewState();
 
     if (currentDashboardView === 'events') {
@@ -2967,7 +3020,7 @@ function setupEventsBoardControls() {
 async function init() {
     bindDashboardViewNavigation();
     setupEventsBoardControls();
-    
+
     // NOTE: WebSocket is auto-started by the IIFE below (initWebSocket IIFE at the bottom of the file).
     // Do NOT call initWebSocket() here — the IIFE runs immediately when this script loads.
 
@@ -3006,12 +3059,12 @@ async function init() {
         });
 
         container.addEventListener('scroll', () => {
-             const { scrollLeft, scrollWidth, clientWidth } = container;
-             if (scrollLeft > 10) leftBtn.classList.remove('disabled');
-             else leftBtn.classList.add('disabled');
-             
-             if ((scrollLeft + clientWidth) < (scrollWidth - 10)) rightBtn.classList.remove('disabled');
-             else rightBtn.classList.add('disabled');
+            const { scrollLeft, scrollWidth, clientWidth } = container;
+            if (scrollLeft > 10) leftBtn.classList.remove('disabled');
+            else leftBtn.classList.add('disabled');
+
+            if ((scrollLeft + clientWidth) < (scrollWidth - 10)) rightBtn.classList.remove('disabled');
+            else rightBtn.classList.add('disabled');
         });
 
         setTimeout(() => container.dispatchEvent(new Event('scroll')), 500);
@@ -3170,9 +3223,9 @@ setInterval(() => {
                 clearTimeout(wsReconnectTimer);
                 wsRetryCount = 0; // Reset the backoff delay
                 connectWebSocket();
-                
+
                 // Smart refresh to fetch any data missed while the tab was asleep
-                fetchNews(false, true); 
+                fetchNews(false, true);
                 fetchEvents();
             } else if (ws && ws.readyState === WebSocket.OPEN) {
                 // Send an immediate ping to confirm connection is still alive
@@ -3284,13 +3337,17 @@ function renderEventsBoard(events) {
         const attentionKey = articleCount >= 10 ? 'high_attention' : articleCount >= 4 ? 'medium_attention' : 'emerging';
         const timeLabel = formatDateTimeIST(ev.latest_update);
         const variant = getEventCardVariant(ev.event_id || title);
-        
+
         // Generate deterministic gradient based on event_id
         const cardGradient = generateCardGradient(ev.event_id, 'corporate_event');
 
+        // Fluid animation params based on index to differentiate each card
+        const flowDuration = 12 + (idx % 8); // Duration between 12s and 19s
+        const flowDelay = -(idx * 2.5); // Deep offset to desynchronize cards instantly
+
         return `
             <article class="events-board-card ${variant}${activeClass}" data-event-idx="${idx}" style="--event-index:${idx};" title="Open event details">
-                <div class="events-board-card-gradient-section" style="background: ${cardGradient};">
+                <div class="events-board-card-gradient-section" style="background: ${cardGradient}; animation-duration: ${flowDuration}s; animation-delay: ${flowDelay}s;">
                     <div class="events-board-gradient-overlay"></div>
                     <div class="events-board-card-gradient-content">
                         <h3 class="events-board-card-title">${escapeHtml(title)}</h3>
@@ -3300,7 +3357,7 @@ function renderEventsBoard(events) {
                     <div class="events-board-meta-line">
                         <span class="event-time-absolute">${escapeHtml(timeLabel)}</span>
                         <span class="event-time-relative">${timeAgo(ev.latest_update)}</span>
-                        <span class="event-status-inline ${statusKey}">(${statusLabel.toUpperCase()})</span>
+                        <span class="event-status-badge ${statusKey}">${statusLabel.toUpperCase()}</span>
                     </div>
                     <div class="events-board-card-bottom">
                         <span class="events-board-article-count">${articleCount.toLocaleString()} articles</span>
@@ -3759,44 +3816,44 @@ function hexToRgba(hex, alpha = 1) {
 // ---- Helper: Extract bias-driven color from news marker analysis data ----
 function getBiasColorForMarker(newsItem, chartSymbol) {
     const defaultColor = '#6c63ff'; // fallback purple for unknown/missing bias
-    
+
     try {
         if (!newsItem) return defaultColor;
-        
+
         const analysisData = newsItem.analysis_data;
         if (!analysisData) return defaultColor;
-        
+
         // Handle stringified JSON
         let data = analysisData;
         if (typeof data === 'string') {
             data = JSON.parse(data);
         }
-        
+
         if (!data) return defaultColor;
-        
+
         const stockImpacts = data.stock_impacts;
         if (!Array.isArray(stockImpacts) || stockImpacts.length === 0) {
             return defaultColor;
         }
-        
+
         // Try to match symbol if provided
         let relevantImpact = null;
         if (chartSymbol) {
             const normalizedSymbol = String(chartSymbol).trim().toUpperCase();
-            relevantImpact = stockImpacts.find(impact => 
+            relevantImpact = stockImpacts.find(impact =>
                 impact.symbol && String(impact.symbol).trim().toUpperCase() === normalizedSymbol
             );
         }
-        
+
         // Fall back to first impact if no symbol match
         if (!relevantImpact) {
             relevantImpact = stockImpacts[0];
         }
-        
+
         if (!relevantImpact) return defaultColor;
-        
+
         const bias = (relevantImpact.bias || '').toLowerCase().trim();
-        
+
         // Map bias to color
         switch (bias) {
             case 'bullish':
@@ -3892,7 +3949,7 @@ async function overlayNewsMarkers(symbol) {
     // Defs for gradients (one per unique bias color)
     const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
     const gradientDefs = new Set();
-    
+
     // Pre-generate gradients for all possible bias colors
     function addGradient(colorHex, gradientId) {
         if (gradientDefs.has(gradientId)) return;
@@ -3905,10 +3962,10 @@ async function overlayNewsMarkers(symbol) {
     `;
         gradientDefs.add(gradientId);
     }
-    
+
     // Add the default purple gradient
     addGradient('#6c63ff', 'dotGrad');
-    
+
     svg.appendChild(defs);
     overlayContainer.appendChild(svg);
 
@@ -3917,7 +3974,7 @@ async function overlayNewsMarkers(symbol) {
         const time = parseInt(timeStr);
         const count = newsAtTime.length;
         const firstNews = newsAtTime[0];
-        
+
         // Extract bias-driven color for this marker
         let pairOnly = symbol;
         if (symbol && symbol.includes(':')) {
@@ -3966,7 +4023,7 @@ async function overlayNewsMarkers(symbol) {
 
         const labelDiv = document.createElement('div');
         labelDiv.className = 'nml-label';
-        
+
         // Extract bias for sentiment display
         let biasData = null;
         try {
@@ -3982,15 +4039,15 @@ async function overlayNewsMarkers(symbol) {
         } catch (e) {
             // Silently fall back if parsing fails
         }
-        
+
         if (!biasData) {
             biasData = getBiasInfo(null);
         }
-        
+
         const biasHtml = biasData ? `<div class="nml-sentiment" style="color: ${biasData.color};">
             <span class="nml-sentiment-dot" style="background: ${biasData.color};"></span>${biasData.label}: ${biasData.desc}
         </div>` : '';
-        
+
         labelDiv.innerHTML = `
             <div class="nml-meta">${new Date(time * 1000).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · ${escapeHtml(firstNews.source || 'News')}</div>
             <div class="nml-title">${escapeHtml(count > 1 ? '(' + count + ') ' + firstNews.title : firstNews.title)}</div>
@@ -4331,22 +4388,22 @@ function renderLWChart(candleData) {
         width: w,
         height: h,
         layout: {
-            background: { 
-                type: LightweightCharts.ColorType.Solid, 
-                color: document.documentElement.getAttribute('data-theme') === 'light' ? '#ffffff' : '#0b0f19' 
+            background: {
+                type: LightweightCharts.ColorType.Solid,
+                color: document.documentElement.getAttribute('data-theme') === 'light' ? '#ffffff' : '#0b0f19'
             },
             textColor: document.documentElement.getAttribute('data-theme') === 'light' ? '#131722' : '#7d8490',
             fontFamily: "'Inter', -apple-system, sans-serif",
             fontSize: 11,
         },
         grid: {
-            vertLines: { 
-                color: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.035)', 
-                style: LightweightCharts.LineStyle.Dashed 
+            vertLines: {
+                color: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.035)',
+                style: LightweightCharts.LineStyle.Dashed
             },
-            horzLines: { 
-                color: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.035)', 
-                style: LightweightCharts.LineStyle.Dashed 
+            horzLines: {
+                color: document.documentElement.getAttribute('data-theme') === 'light' ? 'rgba(0,0,0,0.04)' : 'rgba(255,255,255,0.035)',
+                style: LightweightCharts.LineStyle.Dashed
             },
         },
         crosshair: {

@@ -352,24 +352,28 @@ async def filter_indian_news(title: str, description: str = "") -> Optional[Dict
         if relevance not in ALLOWED_RELEVANCE:
             relevance = "Noisy"
 
-        # 2. Strict Parse Mentions
-        company_mentions = data.get("company_mentions", [])
-        if not isinstance(company_mentions, list):
-            company_mentions = []
+        # 2. Extract affected sectors and stocks safely
+        affected_sectors = data.get("affected_sectors", [])
+        if not isinstance(affected_sectors, list):
+            affected_sectors = []
             
-        # 3. Call Resolver safely
-        if not company_mentions:
-            resolved_symbols = []
-        else:
-            from app.agents.tools import strict_resolve_symbols
-            resolved_symbols = strict_resolve_symbols(company_mentions)
+        affected_stocks = data.get("affected_stocks", {})
+        if not isinstance(affected_stocks, dict):
+            affected_stocks = {}
+
+        # 3. Safely process (symbols removed)
+        company_mentions = []
+        direct_syms = affected_stocks.get('direct', []) if isinstance(affected_stocks.get('direct'), list) else []
+        indirect_syms = affected_stocks.get('indirect', []) if isinstance(affected_stocks.get('indirect'), list) else []
+        company_mentions = direct_syms + indirect_syms
             
         # 4. Final Output Formation
         return {
             "category": category,
             "relevance": relevance,
             "reason": str(data.get("reason", "No specific reason provided.")),
-            "symbols": resolved_symbols
+            "affected_sectors": affected_sectors,
+            "affected_stocks": affected_stocks
         }
 
     except Exception as e:

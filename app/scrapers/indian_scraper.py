@@ -10,6 +10,8 @@ import httpx
 from bs4 import BeautifulSoup
 import socket
 from typing import List, Dict, Any
+from dateutil import parser as date_parser
+
 
 # Add the project root to sys.path so we can import app
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..'))
@@ -177,7 +179,18 @@ async def fetch_feed_task(client: httpx.AsyncClient, source: str, url: str) -> L
             if published_parsed:
                 published = datetime(*published_parsed[:6], tzinfo=timezone.utc)
             else:
-                published = datetime.now(timezone.utc)
+                raw_published = getattr(entry, 'published', getattr(entry, 'updated', None))
+                if raw_published:
+                    try:
+                        published = date_parser.parse(raw_published)
+                        if published.tzinfo is None:
+                            published = published.replace(tzinfo=timezone.utc)
+                        else:
+                            published = published.astimezone(timezone.utc)
+                    except Exception:
+                        published = datetime.now(timezone.utc)
+                else:
+                    published = datetime.now(timezone.utc)
 
             # 4. Skip if the article is already older than 24 hours
             if (datetime.now(timezone.utc) - published).total_seconds() > 24 * 3600:
@@ -215,13 +228,13 @@ async def save_article(article):
             execute_returning,
             """INSERT INTO indian_news 
                (title, link, title_hash, published, source, description, image_url, 
-                news_category, news_relevance, news_reason, symbols, analyzed)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                news_category, news_relevance, news_reason, analyzed)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (title_hash) DO NOTHING
                RETURNING id""",
             (article['title'], article['link'], article['title_hash'], 
              article['published'], article['source'], article['description'], article['image_url'],
-             'None', 'None', 'No analysis available.', [], False)
+             'None', 'None', 'No analysis available.', False)
         )
 
         if not insert_result:
@@ -239,16 +252,26 @@ async def save_article(article):
             )
             
             if filter_data:
-                # normalize before saving to DB: store only canonical uppercase symbols, deduplicated and sorted
-                from app.agents.tools import strict_resolve_symbols
-                normalized_symbols = strict_resolve_symbols(filter_data.get('symbols', []))
+                affected_sectors = filter_data.get('affected_sectors', [])
+                affected_stocks = filter_data.get('affected_stocks', {})
+                
+                # We extract a normalized list of all affected stocks to keep the event engine linking working.
+                direct_syms = affected_stocks.get('direct', []) if isinstance(affected_stocks, dict) else []
+                indirect_syms = affected_stocks.get('indirect', []) if isinstance(affected_stocks, dict) else []
+                normalized_symbols = direct_syms + indirect_syms
+
+                import json
+                try:
+                    affected_stocks_json = json.dumps(affected_stocks)
+                except Exception:
+                    affected_stocks_json = '{}'
                 
                 await asyncio.to_thread(
                     execute_query,
                     """UPDATE indian_news 
-                       SET news_category = %s, news_relevance = %s, news_reason = %s, symbols = %s
+                       SET news_category = %s, news_relevance = %s, news_reason = %s, affected_sectors = %s, affected_stocks = %s
                        WHERE id = %s""",
-                    (filter_data['category'], filter_data['relevance'], filter_data['reason'], normalized_symbols, new_id)
+                    (filter_data.get('category'), filter_data.get('relevance'), filter_data.get('reason'), affected_sectors, affected_stocks_json, new_id)
                 )
 
                 # 2.2 Auto-Analysis Trigger (Hardened v3)
@@ -281,7 +304,7 @@ async def save_article(article):
                 title=article['title'],
                 category=category,
                 table_name='indian_news',
-                ai_symbols=filter_data.get('symbols', []) if filter_data else []
+                ai_symbols=normalized_symbols if filter_data else []
             )
         except Exception as eg:
             logger.warning(f"Event grouping error for {new_id}: {eg}")

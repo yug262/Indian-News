@@ -382,9 +382,16 @@
     left: 0;
     width: 100%;
     height: 100%;
-    background: linear-gradient(135deg, rgba(108, 99, 255, 0.05), transparent);
-    opacity: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(108, 99, 255, 0.18) 20%, rgba(0, 212, 170, 0.2) 50%, rgba(108, 99, 255, 0.18) 80%, transparent 100%);
+    background-repeat: no-repeat;
+    background-size: 250% 100%;
+    background-position: 0% 50%;
+    opacity: 0.6;
+    pointer-events: none;
     transition: opacity 0.4s ease;
+    animation: eventCardFlow 10s linear infinite;
+    will-change: background-position;
+    z-index: 0;
 }
 
 .event-card:hover {
@@ -392,6 +399,18 @@
     border-color: rgba(108, 99, 255, 0.4);
     box-shadow: 0 12px 40px rgba(108, 99, 255, 0.15);
     background: var(--bg-card-hover);
+}
+
+@keyframes eventCardFlow {
+    0% {
+        background-position: 0% 50%;
+    }
+    50% {
+        background-position: 100% 50%;
+    }
+    100% {
+        background-position: 0% 50%;
+    }
 }
 
 .event-card:hover::before {
@@ -5749,12 +5768,37 @@ body {
     min-height: 0;
 }
 
+@keyframes gradientFlow {
+    0% {
+        background-position: 0% 0%, 100% 100%, 50% 50%, 0% 0%;
+        background-size: 200% 200%, 200% 200%, 200% 200%, 100% 100%;
+    }
+    25% {
+        background-position: 100% 0%, 0% 100%, 100% 50%, 0% 0%;
+        background-size: 250% 250%, 150% 150%, 250% 250%, 100% 100%;
+    }
+    50% {
+        background-position: 100% 100%, 0% 0%, 50% 100%, 0% 0%;
+        background-size: 150% 150%, 250% 250%, 200% 200%, 100% 100%;
+    }
+    75% {
+        background-position: 0% 100%, 100% 0%, 50% 0%, 0% 0%;
+        background-size: 200% 200%, 150% 150%, 150% 150%, 100% 100%;
+    }
+    100% {
+        background-position: 0% 0%, 100% 100%, 50% 50%, 0% 0%;
+        background-size: 200% 200%, 200% 200%, 200% 200%, 100% 100%;
+    }
+}
+
 .events-board-card-gradient-section {
     width: 100%;
-    height: 100px;
+    height: 110px;
     flex-shrink: 0;
     position: relative;
     overflow: hidden;
+    /* animation timings are now dynamically applied via inline style for variation */
+    animation: gradientFlow cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 .events-board-card-gradient-section::before {
@@ -5942,7 +5986,7 @@ body {
 
 .event-time-absolute,
 .event-time-relative,
-.event-status-inline {
+.event-status-badge {
     display: inline-flex;
     align-items: center;
 }
@@ -5951,15 +5995,28 @@ body {
     color: rgba(255,255,255,0.72);
 }
 
-.event-status-inline {
-    color: rgba(255,255,255,0.72);
+.event-status-badge {
+    margin-left: auto;
+    padding: 0.32rem 0.8rem;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.92);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
 }
 
-.event-status-inline.live {
+.event-status-badge.live {
+    background: rgba(0, 212, 170, 0.16);
+    border: 1px solid rgba(0, 212, 170, 0.25);
     color: #00d4aa;
 }
 
-.event-status-inline.tracking {
+.event-status-badge.tracking {
+    background: rgba(159, 154, 255, 0.16);
+    border: 1px solid rgba(159, 154, 255, 0.25);
     color: #9f9aff;
 }
 

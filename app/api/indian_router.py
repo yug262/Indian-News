@@ -199,7 +199,7 @@ async def get_indian_news(source: str = Query(None, description="Filter news by 
         params.extend([search_term, search_term, search_term])
 
     count_query = f"SELECT COUNT(*) AS total_count, COUNT(CASE WHEN analyzed THEN 1 END) AS analyzed_count, MAX(published) AS latest_published {base_query}"
-    query = f"SELECT id, title, link, published, source, description, image_url,\n        impact_score, impact_summary, analyzed, created_at, analyzed_at,\n        analysis_data, news_relevance, news_category,\n        news_impact_level, news_reason, symbols,\n        market_bias, signal_bucket, primary_symbol, executive_summary, \n        event_id, event_title, analysis_confidence AS confidence, horizon\n    {base_query} ORDER BY published DESC LIMIT %s OFFSET %s"
+    query = f"SELECT id, title, link, published, source, description, image_url,\n        impact_score, impact_summary, analyzed, created_at, analyzed_at,\n        analysis_data, news_relevance, news_category,\n        news_impact_level, news_reason, affected_sectors, affected_stocks,\n        market_bias, signal_bucket, primary_symbol, executive_summary, \n        event_id, event_title, analysis_confidence AS confidence, horizon\n    {base_query} ORDER BY published DESC LIMIT %s OFFSET %s"
     params_for_articles = params + [limit, offset]
 
     try:
@@ -360,23 +360,19 @@ def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter
         if symbol:
             clean_symbol = symbol.replace("NSE:", "").upper()
             query = """
-            SELECT id, title, published, symbols, analysis_data
+            SELECT id, title, published, affected_stocks, analysis_data
             FROM indian_news
-            WHERE symbols IS NOT NULL 
-              AND array_length(symbols, 1) > 0
-              AND (
-                symbols @> ARRAY[%s]
-              )
+            WHERE affected_stocks IS NOT NULL 
+              AND affected_stocks::text ILIKE %s
             ORDER BY published DESC
             LIMIT 500
             """
-            rows = fetch_all(query, (clean_symbol,))
+            rows = fetch_all(query, (f'%"{clean_symbol}"%',))
         else:
             query = """
-            SELECT id, title, published, symbols, analysis_data
+            SELECT id, title, published, affected_stocks, analysis_data
             FROM indian_news
-            WHERE symbols IS NOT NULL 
-              AND array_length(symbols, 1) > 0
+            WHERE affected_stocks IS NOT NULL AND affected_stocks::text != '{}'
             ORDER BY published DESC
             LIMIT 500
             """
@@ -384,8 +380,10 @@ def get_nse_news_markers(symbol: Optional[str] = Query(None, description="Filter
         
         data = []
         for r in rows:
-            # Column in DB is 'symbols' (text[])
-            syms = r.get("symbols", [])
+            stocks_data = r.get("affected_stocks")
+            syms = []
+            if isinstance(stocks_data, dict):
+                syms = stocks_data.get('direct', []) + stocks_data.get('indirect', [])
             
             p = r["published"]
             if hasattr(p, "isoformat"):
@@ -541,7 +539,8 @@ async def analyze_single_indian_article(news_id: int):
                             """SELECT id, title, link, published, source, description, image_url,
                                 impact_score, impact_summary, analyzed, created_at, analyzed_at,
                                 market_bias, signal_bucket, news_category, news_relevance,
-                                primary_symbol, executive_summary, analysis_data, symbols,
+                                primary_symbol, executive_summary, analysis_data,
+                                affected_sectors, affected_stocks,
                                 event_id, event_title
                             FROM indian_news WHERE id = %s""", (news_id,)
                         ),
