@@ -344,7 +344,7 @@ async def filter_indian_news(title: str, description: str = "") -> Optional[Dict
         ALLOWED_CATEGORIES = {"corporate_event", "government_policy", "macro_data", "global_macro_impact", "commodity_macro", "sector_trend", "institutional_activity", "sentiment_indicator", "price_action_noise", "routine_market_update", "other"}
         ALLOWED_RELEVANCE = {"High Useful", "Useful", "Medium", "Neutral", "Noisy"}
 
-        category = str(data.get("category", "routine_market_update")).strip()
+        category = str(data.get("category", "routine_market_update")).strip().lower().replace(" ", "_")
         if category not in ALLOWED_CATEGORIES:
             category = "other"
 

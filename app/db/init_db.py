@@ -22,130 +22,154 @@ DB_CONFIG = {
 def get_connection():
     return psycopg2.connect(**DB_CONFIG)
 
+def ensure_columns(cur, table_name, columns):
+    """
+    Checks for missing columns in a table and adds them.
+    'columns' should be a list of tuples: (column_name, definition)
+    Example: ('news_category', "TEXT DEFAULT 'None'")
+    """
+    cur.execute(f"""
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = %s;
+    """, (table_name,))
+    existing_columns = {row[0].lower() for row in cur.fetchall()}
+    
+    for col_name, definition in columns:
+        if col_name.lower() not in existing_columns:
+            print(f"    - Adding missing column '{col_name}' to '{table_name}'...")
+            try:
+                cur.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {definition};")
+            except Exception as e:
+                print(f"      ❌ Could not add column '{col_name}': {e}")
+
 def init_db():
     print("Initializing Indian News Database...")
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             # 1. Indian News Table
-            print("  - Creating 'indian_news' table...")
+            print("  - Creating/Syncing 'indian_news' table...")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS indian_news (
                     id SERIAL PRIMARY KEY,
                     title TEXT NOT NULL,
                     link TEXT NOT NULL,
                     title_hash TEXT UNIQUE NOT NULL,
-                    published TIMESTAMP WITH TIME ZONE,
-                    source TEXT,
-                    description TEXT,
-                    image_url TEXT,
-                    
-                    -- Lightweight Classification
-                    news_category TEXT DEFAULT 'None',
-                    news_relevance TEXT DEFAULT 'None',
-                    news_impact_level TEXT DEFAULT 'None',
-                    news_reason TEXT DEFAULT 'No analysis available.',
-                    affected_sectors TEXT[] DEFAULT '{}',
-                    affected_stocks JSONB DEFAULT '{}',
-
-                    
-                    -- Analysis State & Output
-                    analyzed BOOLEAN DEFAULT FALSE,
-                    impact_score INTEGER,
-                    impact_summary TEXT,
-                    analysis_data JSONB,
-                    market_bias TEXT DEFAULT 'neutral',
-                    signal_bucket TEXT DEFAULT 'UNCLASSIFIED',
-                    primary_symbol TEXT,
-                    executive_summary TEXT,
-                    decision_trace JSONB,
-                    
-                    -- Grouping & Identity
-                    event_id TEXT,
-                    event_title TEXT,
-                    
-                    -- Timing & Quality
-                    analysis_confidence INTEGER DEFAULT 0,
-                    horizon TEXT,
-                    analysis_status TEXT, -- queued, processing, completed, failed
-                    analysis_error TEXT,
-                    analysis_started_at TIMESTAMP WITH TIME ZONE,
-                    analysis_completed_at TIMESTAMP WITH TIME ZONE,
-                    
-                    -- Metadata
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    analyzed_at TIMESTAMP WITH TIME ZONE
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
                 );
             """)
+            
+            indian_news_cols = [
+                ('published', 'TIMESTAMP WITH TIME ZONE'),
+                ('source', 'TEXT'),
+                ('description', 'TEXT'),
+                ('image_url', 'TEXT'),
+                ('news_category', "TEXT DEFAULT 'None'"),
+                ('news_relevance', "TEXT DEFAULT 'None'"),
+                ('news_impact_level', "TEXT DEFAULT 'None'"),
+                ('news_reason', "TEXT DEFAULT 'No analysis available.'"),
+                ('affected_sectors', "TEXT[] DEFAULT '{}'"),
+                ('affected_stocks', "JSONB DEFAULT '{}'"),
+                ('analyzed', "BOOLEAN DEFAULT FALSE"),
+                ('impact_score', 'INTEGER'),
+                ('impact_summary', 'TEXT'),
+                ('analysis_data', 'JSONB'),
+                ('market_bias', "TEXT DEFAULT 'neutral'"),
+                ('signal_bucket', "TEXT DEFAULT 'UNCLASSIFIED'"),
+                ('primary_symbol', 'TEXT'),
+                ('executive_summary', 'TEXT'),
+                ('decision_trace', 'JSONB'),
+                ('event_id', 'TEXT'),
+                ('event_title', 'TEXT'),
+                ('analysis_confidence', 'INTEGER DEFAULT 0'),
+                ('horizon', 'TEXT'),
+                ('analysis_status', 'TEXT'),
+                ('analysis_error', 'TEXT'),
+                ('analysis_started_at', 'TIMESTAMP WITH TIME ZONE'),
+                ('analysis_completed_at', 'TIMESTAMP WITH TIME ZONE'),
+                ('analyzed_at', 'TIMESTAMP WITH TIME ZONE')
+            ]
+            ensure_columns(cur, 'indian_news', indian_news_cols)
 
-            # 2. NSE Companies Table (Synced by nse_pipeline)
-            print("  - Creating 'nse_companies' table...")
+            # 2. NSE Companies Table
+            print("  - Creating/Syncing 'nse_companies' table...")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS nse_companies (
-                    symbol TEXT PRIMARY KEY,
-                    company_name TEXT,
-                    series TEXT
+                    symbol TEXT PRIMARY KEY
                 );
             """)
+            ensure_columns(cur, 'nse_companies', [
+                ('company_name', 'TEXT'),
+                ('series', 'TEXT')
+            ])
 
-            # 3. Enriched Companies Table (Used by Agent Tools)
-            print("  - Creating 'companies' table...")
+            # 3. Enriched Companies Table
+            print("  - Creating/Syncing 'companies' table...")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS companies (
                     id SERIAL PRIMARY KEY,
-                    nse_symbol TEXT UNIQUE,
-                    company_name TEXT NOT NULL,
-                    isin TEXT,
-                    nse_company_name TEXT,
-                    series TEXT,
-                    sector TEXT,
-                    industry TEXT,
-                    macro TEXT,
-                    basic_industry TEXT
+                    nse_symbol TEXT UNIQUE
                 );
             """)
+            ensure_columns(cur, 'companies', [
+                ('company_name', 'TEXT NOT NULL'),
+                ('isin', 'TEXT'),
+                ('nse_company_name', 'TEXT'),
+                ('series', 'TEXT'),
+                ('sector', 'TEXT'),
+                ('industry', 'TEXT'),
+                ('macro', 'TEXT'),
+                ('basic_industry', 'TEXT')
+            ])
 
-            # 4. NSE Candles Table (3-Minute Intervals)
-            print("  - Creating 'nse_candles_3m' table...")
+            # 4. NSE Candles Table
+            print("  - Creating/Syncing 'nse_candles_3m' table...")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS nse_candles_3m (
                     symbol TEXT NOT NULL,
                     time TIMESTAMP WITH TIME ZONE NOT NULL,
-                    open NUMERIC,
-                    high NUMERIC,
-                    low NUMERIC,
-                    close NUMERIC,
                     PRIMARY KEY (symbol, time)
                 );
             """)
+            ensure_columns(cur, 'nse_candles_3m', [
+                ('open', 'NUMERIC'),
+                ('high', 'NUMERIC'),
+                ('low', 'NUMERIC'),
+                ('close', 'NUMERIC')
+            ])
 
-            # 5. System State Table (Real-time Sync)
-            print("  - Creating 'indian_system_state' table...")
+            # 5. System State Table
+            print("  - Creating/Syncing 'indian_system_state' table...")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS indian_system_state (
-                    key TEXT PRIMARY KEY,
-                    value BIGINT,
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    key TEXT PRIMARY KEY
                 );
             """)
+            ensure_columns(cur, 'indian_system_state', [
+                ('value', 'BIGINT'),
+                ('updated_at', 'TIMESTAMP WITH TIME ZONE DEFAULT NOW()')
+            ])
 
-            # 6. Suggestions / Watchlist Table
-            print("  - Creating 'suggestions' table...")
+            # 6. Suggestions Table
+            print("  - Creating/Syncing 'suggestions' table...")
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS suggestions (
-                    id SERIAL PRIMARY KEY,
-                    news_id INTEGER REFERENCES indian_news(id) ON DELETE CASCADE,
-                    suggestion_type TEXT, -- buy, sell, watch, avoid
-                    asset TEXT,           -- Symbol
-                    direction TEXT,       -- bullish, bearish, neutral
-                    reasoning TEXT,
-                    market_logic TEXT,
-                    time_window TEXT,
-                    invalidation TEXT,
-                    confidence INTEGER,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    id SERIAL PRIMARY KEY
                 );
             """)
+            ensure_columns(cur, 'suggestions', [
+                ('news_id', 'INTEGER REFERENCES indian_news(id) ON DELETE CASCADE'),
+                ('suggestion_type', 'TEXT'),
+                ('asset', 'TEXT'),
+                ('direction', 'TEXT'),
+                ('reasoning', 'TEXT'),
+                ('market_logic', 'TEXT'),
+                ('time_window', 'TEXT'),
+                ('invalidation', 'TEXT'),
+                ('confidence', 'INTEGER'),
+                ('created_at', 'TIMESTAMP WITH TIME ZONE DEFAULT NOW()')
+            ])
 
             # 7. Indexes for Performance
             print("  - Creating indexes...")

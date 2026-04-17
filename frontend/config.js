@@ -1,3 +1,3 @@
 window.APP_CONFIG = {
-    BACKEND_URL: 'https://misprincipled-dumpish-chelsie.ngrok-free.dev'
+    BACKEND_URL: 'http://localhost:8000',
 };

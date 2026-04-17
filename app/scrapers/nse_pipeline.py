@@ -433,6 +433,15 @@ class TVStreamer:
         self._should_run = True
 
     def on_message(self, ws, message):
+        # Periodically check if market closed to disconnect cleanly
+        now_ts = time.time()
+        if not hasattr(self, '_last_market_check') or now_ts - self._last_market_check > 60:
+            self._last_market_check = now_ts
+            if not get_market_status().is_open:
+                print(f"🛑 [Stream {self.stream_id}] Market closed, closing WebSocket...")
+                ws.close()
+                return
+
         if message.startswith("~h~"):
             ws.send(message)
             return
@@ -486,8 +495,11 @@ class TVStreamer:
                 target_time = target_dt.strftime("%Y-%m-%d %H:%M:%S")
                 print(f"🔴 [Stream {self.stream_id}] Market CLOSED ({reason}).")
                 print(f"📅 Reopening at: {target_time} IST")
-                print(f"💤 Sleeping for {sleep_secs // 3600}h {(sleep_secs % 3600) // 60}m {(sleep_secs % 60)}s...")
-                time.sleep(sleep_secs)
+                
+                # Check the real time every 30 seconds instead of a long sleep
+                # This prevents issues where OS sleep/suspend pauses time.sleep()
+                while not get_market_status().is_open:
+                    time.sleep(30)
 
     def start(self):
         headers = {
