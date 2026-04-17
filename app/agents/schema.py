@@ -1,92 +1,117 @@
-# app/ind/schema.py
-"""
-Indian Equities Analysis Schema — V6.1
-
-Compact schema with impact triggers (killers + amplifiers).
-"""
-
 SCHEMA_TEMPLATE = {
-    "signal_bucket": "",        # DIRECT | AMBIGUOUS | WEAK_PROXY | NOISE
+    "signal_bucket": "",            # enum: DIRECT | AMBIGUOUS | WEAK_PROXY | NOISE
 
     "event": {
         "title": "",
-        "event_type": "",       # earnings | policy | order_win | macro | regulation | disruption | corporate_action | other
-        "status": "",           # confirmed | developing | rumor | noise
-        "scope": ""             # single_stock | sector | broad_market
+        "event_type": "",           # enum: see below
+        "status": "",               # enum: confirmed | developing | rumor | follow_up | noise
+        "scope": ""                 # enum: single_stock | peer_group | sector | broad_market
     },
 
     "core_view": {
-        "market_bias": "",      # bullish | bearish | mixed | neutral
-        "impact_score": 0,      # 0-10
-        "confidence": 0,        # 0-85
-        "horizon": ""           # intraday | short_term | medium_term
+        "market_bias": "",          # enum: bullish | bearish | mixed | neutral
+        "impact_score": 0,          # integer 0-10
+        "confidence": 0,            # integer 0-85, hard-capped by source_context.confidence_cap
+        "horizon": ""               # enum: intraday | short_term | medium_term | "" (if no_edge)
     },
 
     "stock_impacts": [
         {
-            "symbol": "",           # NSE ticker (e.g. RELIANCE, INFY)
+            "symbol": "",
             "company_name": "",
-            "bias": "",             # bullish | bearish | mixed | neutral
-            "reaction": "",         # weak | moderate | strong | uncertain
-            "timing": "",           # open | intraday | short_term
-            "why": "",
-            "confidence": 0         # 0-85
+            "bias": "",             # enum: bullish | bearish | mixed | neutral
+            "reaction": "",         # enum: gap_up | gap_down | intraday_rally |
+                                    #       intraday_decline | flat_upside_bias |
+                                    #       flat_downside_bias | volatile | unclear
+            "timing": "",           # enum: intraday | next_session | short_term | unclear
+            "why": "",              # max 2 sentences, specific transmission logic
+            "confidence": 0         # integer 0-85
         }
     ],
 
     "sector_impacts": [
         {
             "sector": "",
-            "bias": "",             # bullish | bearish | mixed | neutral
-            "why": ""
+            "bias": "",             # enum: bullish | bearish | mixed | neutral
+            "why": ""               # max 2 sentences, specific mechanism
         }
     ],
 
     "impact_triggers": {
-        "impact_killers": [         # events that would NEGATE the current thesis
+        "impact_killers": [
             {
-                "trigger": "",      # what to watch (specific, observable)
-                "why": ""           # why it breaks the thesis
+                "trigger": "",      # specific observable condition
+                "why": ""           # what market effect follows
             }
         ],
-        "impact_amplifiers": [      # events that would STRENGTHEN the current thesis
+        "impact_amplifiers": [
             {
-                "trigger": "",      # what to watch (specific, observable)
-                "why": ""           # why it amplifies the thesis
+                "trigger": "",
+                "why": ""
             }
         ]
     },
 
     "evidence_quality": {
-        "confirmed": [],            # list of strings: facts explicitly stated/verified in the news
-        "unknowns_risks": []        # list of strings: missing info, assumptions, or risks not yet confirmed
+        "confirmed": [],            # max 4 items, each string max 15 words
+        "unknowns_risks": []        # max 3 items, each string, specific gaps only
     },
 
     "tradeability": {
-        "classification": "",       # actionable_now | wait_for_confirmation | no_edge
-        "priced_in_assessment": "", # REMAINING IMPACT: Has the move already happened? What % of impact is left? What to expect NOW.
-        "remaining_impact_state": "",   # untouched | early | partially_absorbed | mostly_absorbed | exhausted
-        "reason": "",               # why this classification — 1-2 sentences
-        "what_to_do": "",           # plain-English action plan for RIGHT NOW, given the time elapsed since news broke
+        "classification": "",
+        "time_since_publication_hours": 0.0,  # NEW FIELD
+        "remaining_impact_state": "",
+        "priced_in_assessment": "",
+        "reason": "",
+        "what_to_do": ""
     },
 
     "decision_trace": {
         "event_identification": "",
         "entity_mapping": "",
         "impact_scoring": "",
+        "market_reaction_tests": "",  # NEW: "Confirmation: YES/NO, Rejection: YES/NO, Time: Xh"
         "remaining_impact": "",
         "tradeability_reasoning": ""
     },
 
-    "executive_summary": ""
+    "executive_summary": ""         # max 2 sentences, no new conclusions
 }
 
-REQUIRED_TOP_LEVEL_KEYS = list(SCHEMA_TEMPLATE.keys())
-
 ALLOWED_ENUMS = {
-    "signal_bucket": ["DIRECT", "AMBIGUOUS", "WEAK PROXY", "NOISE"],
-    "event_type": ["Corporate Event", "Government Policy", "Macro Data", "Global Macro Impact", "Commodity Macro", "Sector Trend", "Institutional Activity", "Sentiment Indicator", "Price Action Noise", "Routine Market Update", "Other"],
-    "bias": ["bullish", "bearish", "mixed", "neutral"],
-    "horizon": ["intraday", "short term", "medium term"],
-    "tradeability": ["Actionable Now", "Wait For Confirmation", "No Edge"],
+    "signal_bucket": [
+        "DIRECT", "AMBIGUOUS", "WEAK_PROXY", "NOISE"
+    ],
+    "event_type": [
+        "Corporate Event", "Government Policy", "Macro Data",
+        "Global Macro Impact", "Commodity Macro", "Sector Trend",
+        "Institutional Activity", "Sentiment Indicator",
+        "Price Action Noise", "Routine Market Update", "Other"
+    ],
+    "event_status": [
+        "confirmed", "developing", "rumor", "follow_up", "noise"
+    ],
+    "event_scope": [
+        "single_stock", "peer_group", "sector", "broad_market"
+    ],
+    "bias": [
+        "bullish", "bearish", "mixed", "neutral"
+    ],
+    "horizon": [
+        "intraday", "short_term", "medium_term", ""
+    ],
+    "stock_reaction": [
+        "gap_up", "gap_down", "intraday_rally", "intraday_decline",
+        "flat_upside_bias", "flat_downside_bias", "volatile", "unclear"
+    ],
+    "stock_timing": [
+        "intraday", "next_session", "short_term", "unclear"
+    ],
+    "tradeability": [
+        "actionable_now", "wait_for_confirmation", "no_edge"
+    ],
+    "remaining_impact_state": [
+        "untouched", "early", "partially_absorbed",
+        "mostly_absorbed", "exhausted", "not_applicable"
+    ]
 }
