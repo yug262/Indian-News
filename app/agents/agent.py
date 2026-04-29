@@ -37,6 +37,7 @@ from app.agents.tools import (
     get_peer_reaction,
     get_broad_market_snapshot,
     resolve_company,
+    resolve_identity,
 )
 
 
@@ -297,7 +298,7 @@ async def filter_indian_news(title: str, description: str = "") -> Optional[Dict
                     config=types.GenerateContentConfig(
                         system_instruction=INDIAN_MARKET_CLASSIFY_PROMPT,
                         temperature=0.1,
-                        max_output_tokens=300,
+                        max_output_tokens=400,
                         response_mime_type="application/json"
                     )
                 )
@@ -361,11 +362,67 @@ async def filter_indian_news(title: str, description: str = "") -> Optional[Dict
         if not isinstance(affected_stocks, dict):
             affected_stocks = {}
 
-        # 3. Safely process (symbols removed)
-        company_mentions = []
-        direct_syms = affected_stocks.get('direct', []) if isinstance(affected_stocks.get('direct'), list) else []
-        indirect_syms = affected_stocks.get('indirect', []) if isinstance(affected_stocks.get('indirect'), list) else []
-        company_mentions = direct_syms + indirect_syms
+        # 3. SMART DB-BACKED SYMBOL RESOLUTION
+        # The LLM outputs company names OR symbols. We resolve BOTH through
+        # resolve_identity() which checks: aliases → DB exact match → macro entities.
+        # This guarantees only real, DB-verified NSE symbols in the output.
+        direct_raw = affected_stocks.get('direct', []) if isinstance(affected_stocks.get('direct'), list) else []
+        indirect_raw = affected_stocks.get('indirect', []) if isinstance(affected_stocks.get('indirect'), list) else []
+        
+        def _resolve_to_nse_symbol(name_or_symbol: str) -> str | None:
+            """Try resolve_identity first (handles names + aliases), then fall back to direct DB check."""
+            val = str(name_or_symbol).strip()
+            if not val:
+                return None
+            # 1. Try resolve_identity (handles 'Tata Steel' → TATASTEEL, 'SBI' → SBIN, etc.)
+            resolved = resolve_identity(val)
+            if resolved and _validate_nse_symbol(resolved):
+                return resolved
+            # 2. Fallback: maybe it's already a valid NSE symbol
+            upper_val = val.upper()
+            if _validate_nse_symbol(upper_val):
+                return upper_val
+            return None
+        
+        # Resolve and cap direct stocks (max 3)
+        validated_direct = []
+        seen_symbols = set()
+        for raw in direct_raw:
+            symbol = _resolve_to_nse_symbol(raw)
+            if symbol and symbol not in seen_symbols:
+                validated_direct.append(symbol)
+                seen_symbols.add(symbol)
+                logger.info(f"[FILTER] Resolved direct: '{raw}' → {symbol}")
+                if len(validated_direct) >= 3:
+                    break
+            else:
+                logger.info(f"[FILTER] Rejected direct (unresolvable): '{raw}'")
+        
+        # Resolve and cap indirect stocks (max 2)
+        validated_indirect = []
+        for raw in indirect_raw:
+            symbol = _resolve_to_nse_symbol(raw)
+            if symbol and symbol not in seen_symbols:
+                validated_indirect.append(symbol)
+                seen_symbols.add(symbol)
+                logger.info(f"[FILTER] Resolved indirect: '{raw}' → {symbol}")
+                if len(validated_indirect) >= 2:
+                    break
+            else:
+                logger.info(f"[FILTER] Rejected indirect (unresolvable/duplicate): '{raw}'")
+        
+        # Rebuild validated affected_stocks with only DB-verified symbols
+        affected_stocks = {
+            "direct": validated_direct,
+            "indirect": validated_indirect
+        }
+        
+        # If relevance is Noisy, enforce empty sectors and stocks
+        if relevance == "Noisy":
+            affected_sectors = []
+            affected_stocks = {"direct": [], "indirect": []}
+
+        company_mentions = validated_direct + validated_indirect
             
         # 4. Final Output Formation
         return {
