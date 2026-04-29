@@ -29,12 +29,19 @@ STEP 2 — RELEVANCE (ULTRA-STRICT)
 
 STEP 2A — AUTOMATIC NOISY (if ANY is true → Noisy, STOP):
 
-1. PRICE/MOVEMENT WORDS in headline or description:
-   "surged", "jumped", "rallied", "soared", "plunged", "fell", "dropped",
-   "tanked", "rose", "gained", "lost", "climbed", "slumped", "tumbled",
-   "up X%", "down X%", "hit high/low", "touches", "breaches"
+1. PRICE/MOVEMENT WORDS about STOCK PRICES (not earnings data):
+   "shares surged", "stock jumped", "rallied", "soared", "plunged",
+   "shares fell", "shares dropped", "tanked", "stock rose", "stock gained",
+   "stock lost", "climbed", "slumped", "tumbled", "up X%", "down X%"
+   EXCEPTION: If the % change is about PROFIT, REVENUE, INCOME, EBITDA,
+   or DIVIDEND — that is EARNINGS DATA, not price movement. Do NOT
+   disqualify earnings results. "Net profit rises 52%" = earnings = OK.
+   "Shares rise 5%" = price movement = Noisy.
 
-2. PERCENTAGE/POINT MOVES for any stock, index, or commodity.
+2. STOCK/INDEX PERCENTAGE MOVES (not company financial metrics):
+   "Sensex up 500 points", "Nifty gains 1.2%", "Stock up 3%"
+   EXCEPTION: "Revenue up 10%", "Profit rises 52%", "EBITDA margin at 25%"
+   are financial metrics from results — these are NOT disqualified.
 
 3. SPECULATION: "may", "could", "might", "expected to", "likely to",
    "set to", "poised to", "hopes of", "optimism about", "bets on",

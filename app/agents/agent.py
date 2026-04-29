@@ -312,22 +312,34 @@ async def filter_indian_news(title: str, description: str = "") -> Optional[Dict
                 pre_filter_category = "sentiment_indicator"
                 break
         
-        # 2. Price movement in headline
+        # 2. Price movement in headline (but NOT earnings/results data)
         if not pre_filter_reason:
-            price_patterns = [
-                r'\b(?:surge[ds]?|jump[sed]?|rall(?:y|ied|ies)|soar[sed]?|plunge[ds]?)\b',
-                r'\b(?:tank[sed]?|slump[sed]?|tumble[ds]?|crash(?:es|ed)?)\b',
-                r'\b(?:climb[sed]?|drop(?:s|ped)?|fell|fall[s]?)\b',
-                r'\b(?:hit[s]?\s+(?:52[- ]week|all[- ]time|record)\s+(?:high|low))\b',
-                r'\b(?:up|down|rose|gained|lost|added)\s+\d+[\.\d]*\s*%',
-                r'\d+[\.\d]*\s*%\s*(?:up|down|higher|lower|gain|loss|rise|fall)',
-                r'\b\d+\s*(?:points?|pts)\b',
+            # BYPASS: If headline is about earnings/results, % changes refer to
+            # profit/revenue/income — NOT stock price. Let the LLM handle these.
+            earnings_keywords = [
+                'result', 'results', 'profit', 'revenue', 'income', 'earnings',
+                'dividend', 'ebitda', 'margin', 'turnover', 'net worth',
+                'q1', 'q2', 'q3', 'q4', 'quarterly', 'annual', 'fy2', 'fy2',
+                'order win', 'order book', 'bags order', 'wins order', 'secures order',
+                'reports', 'announces', 'declares', 'posts'
             ]
-            for pat in price_patterns:
-                if re.search(pat, title_lower):
-                    pre_filter_reason = "Headline describes price movement which is already priced in."
-                    pre_filter_category = "price_action_noise"
-                    break
+            is_earnings_headline = any(kw in title_lower for kw in earnings_keywords)
+            
+            if not is_earnings_headline:
+                price_patterns = [
+                    r'\b(?:surge[ds]?|jump[sed]?|rall(?:y|ied|ies)|soar[sed]?|plunge[ds]?)\b',
+                    r'\b(?:tank[sed]?|slump[sed]?|tumble[ds]?|crash(?:es|ed)?)\b',
+                    r'\b(?:climb[sed]?|drop(?:s|ped)?|fell|fall[s]?)\b',
+                    r'\b(?:hit[s]?\s+(?:52[- ]week|all[- ]time|record)\s+(?:high|low))\b',
+                    r'\b(?:up|down|rose|gained|lost|added)\s+\d+[\.\d]*\s*%',
+                    r'\d+[\.\d]*\s*%\s*(?:up|down|higher|lower|gain|loss|rise|fall)',
+                    r'\b\d+\s*(?:points?|pts)\b',
+                ]
+                for pat in price_patterns:
+                    if re.search(pat, title_lower):
+                        pre_filter_reason = "Headline describes price movement which is already priced in."
+                        pre_filter_category = "price_action_noise"
+                        break
         
         # 3. Opinion / Stock picks lists
         if not pre_filter_reason:
