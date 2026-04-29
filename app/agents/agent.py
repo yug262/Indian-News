@@ -288,6 +288,100 @@ async def filter_indian_news(title: str, description: str = "") -> Optional[Dict
     try:
         user_msg = f"Headline: {title}\nDescription: {description[:500]}"
         
+        # ── CODE-LEVEL PRE-FILTER ──────────────────────────────
+        # Catch guaranteed-Noisy patterns BEFORE wasting LLM tokens
+        import re
+        title_lower = title.lower()
+        desc_lower = (description or "").lower()
+        combined = f"{title_lower} {desc_lower}"
+        
+        pre_filter_reason = None
+        pre_filter_category = None
+        
+        # 1. Explainer / Analysis articles (always Noisy)
+        explainer_patterns = [
+            r'\bexplainer\b', r'\bexplained\b', r'\bdecoded\b',
+            r'\bwhat\s+.{1,30}\s+means\b', r'\bwhy\s+.{1,30}\s+happened\b',
+            r'\bhow\s+.{1,30}\s+affects?\b', r'\ball you need to know\b',
+            r'\bimpact of\b', r'\banalysis:\b', r'\bopinion:\b',
+            r'\bcolumn:\b', r'\bview:\b', r'\bin focus\b',
+        ]
+        for pat in explainer_patterns:
+            if re.search(pat, title_lower):
+                pre_filter_reason = "Explainer/analysis article about an existing event, not a new market-moving event."
+                pre_filter_category = "sentiment_indicator"
+                break
+        
+        # 2. Price movement in headline
+        if not pre_filter_reason:
+            price_patterns = [
+                r'\b(?:surge[ds]?|jump[sed]?|rall(?:y|ied|ies)|soar[sed]?|plunge[ds]?)\b',
+                r'\b(?:tank[sed]?|slump[sed]?|tumble[ds]?|crash(?:es|ed)?)\b',
+                r'\b(?:climb[sed]?|drop(?:s|ped)?|fell|fall[s]?)\b',
+                r'\b(?:hit[s]?\s+(?:52[- ]week|all[- ]time|record)\s+(?:high|low))\b',
+                r'\b(?:up|down|rose|gained|lost|added)\s+\d+[\.\d]*\s*%',
+                r'\d+[\.\d]*\s*%\s*(?:up|down|higher|lower|gain|loss|rise|fall)',
+                r'\b\d+\s*(?:points?|pts)\b',
+            ]
+            for pat in price_patterns:
+                if re.search(pat, title_lower):
+                    pre_filter_reason = "Headline describes price movement which is already priced in."
+                    pre_filter_category = "price_action_noise"
+                    break
+        
+        # 3. Opinion / Stock picks lists
+        if not pre_filter_reason:
+            opinion_patterns = [
+                r'\b(?:top|best)\s+\d+\s+(?:stocks?|picks?|buys?|shares?)\b',
+                r'\bstocks?\s+to\s+(?:buy|watch|avoid)\b',
+                r'\bmultibagger\b', r'\bwealth\s+creator\b',
+                r'\bbrokerage\s+(?:calls?|picks?|targets?)\b',
+                r'\btarget\s+(?:price|₹|rs)\b',
+            ]
+            for pat in opinion_patterns:
+                if re.search(pat, title_lower):
+                    pre_filter_reason = "Analyst opinion or stock recommendation list, not a market event."
+                    pre_filter_category = "sentiment_indicator"
+                    break
+        
+        # 4. Routine market updates
+        if not pre_filter_reason:
+            routine_patterns = [
+                r'\bmarket\s+(?:wrap|recap|roundup|update|preview|opens?\s+(?:flat|higher|lower))\b',
+                r'\bmarkets?\s+today\b', r'\bclosing\s+bell\b', r'\bopening\s+bell\b',
+                r'\bpre[- ]market\b', r'\bweekly\s+(?:wrap|roundup)\b',
+            ]
+            for pat in routine_patterns:
+                if re.search(pat, title_lower):
+                    pre_filter_reason = "Routine market update or recap with no new actionable event."
+                    pre_filter_category = "routine_market_update"
+                    break
+
+        # 5. Compliance / Procedural news
+        if not pre_filter_reason:
+            compliance_patterns = [
+                r'\b(?:pan|kyc|itr|form)\s+(?:mandatory|required|rules?|changes?|deadline)\b',
+                r'\btax\s+(?:return|filing|deadline|form)\b',
+                r'\bnew\s+(?:pan|kyc|itr)\s+rules?\b',
+            ]
+            for pat in compliance_patterns:
+                if re.search(pat, title_lower):
+                    pre_filter_reason = "Tax/compliance procedure change affecting individuals, no stock price impact."
+                    pre_filter_category = "other"
+                    break
+        
+        # If pre-filter caught it, return immediately (no LLM call needed)
+        if pre_filter_reason:
+            logger.info(f"[PRE-FILTER] Caught as Noisy: {title[:60]}... | Reason: {pre_filter_reason[:50]}")
+            return {
+                "category": pre_filter_category or "other",
+                "relevance": "Noisy",
+                "reason": pre_filter_reason,
+                "affected_sectors": [],
+                "affected_stocks": {"direct": [], "indirect": []}
+            }
+        
+        # ── LLM CALL ──────────────────────────────────────────
         response = None
         for attempt in range(3):
             try:
@@ -351,6 +445,13 @@ async def filter_indian_news(title: str, description: str = "") -> Optional[Dict
 
         relevance = str(data.get("relevance", "Noisy")).strip()
         if relevance not in ALLOWED_RELEVANCE:
+            relevance = "Noisy"
+
+        # ── POST-FILTER: Category-based Noisy enforcement ──
+        # These categories should NEVER be non-Noisy, regardless of what the LLM says
+        ALWAYS_NOISY_CATEGORIES = {"sentiment_indicator", "price_action_noise", "routine_market_update", "other"}
+        if category in ALWAYS_NOISY_CATEGORIES and relevance != "Noisy":
+            logger.info(f"[POST-FILTER] Forcing Noisy for category={category}, was={relevance}")
             relevance = "Noisy"
 
         # 2. Extract affected sectors and stocks safely
